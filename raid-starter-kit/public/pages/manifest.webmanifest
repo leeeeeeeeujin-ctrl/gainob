@@ -1,9 +1,0 @@
-{
-  "name": "Raid Starter Kit",
-  "short_name": "RSK",
-  "start_url": "./lobby.html",
-  "scope": "./",
-  "display": "standalone",
-  "background_color": "#111111",
-  "theme_color": "#111111"
-}
