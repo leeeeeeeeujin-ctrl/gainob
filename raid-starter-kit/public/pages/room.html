@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>방 - Raid Starter Kit</title>
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body>
+  <header class="header">
+    <div class="container">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <h1 style="margin: 0; font-size: 24px;">🏰 Raid Room</h1>
+        </div>
+        <div class="row">
+          <a href="lobby.html" class="btn">로비로</a>
+          <button id="leaveRoom" class="btn danger">탈퇴</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container grid" style="grid-template-columns: 1fr 450px;">
+    <section>
+      <div id="aiChat"></div>
+      <div style="height: 16px;"></div>
+      <div id="genChat"></div>
+    </section>
+
+    <aside>
+      <div id="roomMeta" class="card"></div>
+      <div style="height: 16px;"></div>
+      <div id="slots"></div>
+      <div style="height: 16px;"></div>
+      <div class="card" id="hostCtrl" style="display: none;">
+        <h4>호스트 컨트롤</h4>
+        <div class="row" style="margin-bottom: 8px; align-items:center;">
+          <label class="meta" style="min-width:84px">프롬프트</label>
+          <select id="promptSel" class="input" style="max-width: 260px"></select>
+          <a href="prompt.html" class="btn">편집</a>
+        </div>
+        <div class="row" style="margin-bottom: 8px; align-items:center;">
+          <label class="meta" style="min-width:84px">API 키</label>
+          <input id="apiKey" class="input" placeholder="Gemini API Key" style="max-width: 260px">
+          <button id="saveKey" class="btn">저장</button>
+        </div>
+        <div class="card" style="margin-bottom:8px">
+          <b>미리보기</b>
+          <pre id="promptPreview" class="mono" style="white-space:pre-wrap; max-height:160px; overflow:auto; margin-top:6px"></pre>
+        </div>
+        <div class="row" style="margin-bottom: 8px;">
+          <input id="speaker" class="input" placeholder="발화 슬롯 (숫자)" style="max-width: 150px;">
+          <button id="setSp" class="btn">발화자 지정</button>
+        </div>
+        <div class="row">
+          <button id="runPrompt" class="btn">프롬프트 실행</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import { Store } from '../core/store.js';
+    import { API } from '../core/api.js';
+    import { WS } from '../core/ws.js';
+    import { mountGeneralChat } from '../components/chat-general.js';
+    import { mountAiChat } from '../components/chat-ai.js';
+    import { mountSlotsGrid } from '../components/slots-grid.js';
+let __COUNTDOWN_ETD = 0;      // 카운트다운 종료 예정 시각 (ms)
+let __COUNTDOWN_TIMER = null; // 폴백 타이머 핸들
+// 서버에서 AI 히스토리 가져오기
+async function fetchAiHistory(roomId, n = 40) {
+  const r = await fetch(`/api/rooms/${roomId}/history?n=${n}`);
+  if (!r.ok) throw new Error('history HTTP ' + r.status);
+  const j = await r.json();
+  return Array.isArray(j.history) ? j.history : [];
+}
+
+// 히스토리 → Gemini contents 변환
+function historyToContents(history, newUserText) {
+  const contents = [];
+  for (const h of history) {
+    if (!h || !h.text) continue;
+    const role = (h.role === 'model') ? 'model' :
+                 (h.role === 'system') ? 'system' : 'user';
+    contents.push({ role, parts: [{ text: h.text }] });
+  }
+  if (newUserText && newUserText.trim()) {
+    contents.push({ role: 'user', parts: [{ text: newUserText }] });
+  }
+  return contents;
+}
+
+
+    // AI 채널 판별(서버 구현 차이 흡수)
+    const isAiChannel = (msg) =>
+      (msg?.kind === 'ai') ||
+      (msg?.channel === 'ai') ||
+      (msg?.to === 'ai') ||
+      (msg?.tab === 'ai');
+
+    // URL 파라미터에서 방 ID 가져오기
+    const params = new URLSearchParams(location.search);
+    const roomId = params.get('room');
+    let __AI_BUSY = false;   // 자동응답 중복 방지 플래그
+
+    // 이미 다른 방에 락이 있으면 진입 차단
+    const active = localStorage.getItem('RSK_ACTIVE_ROOM');
+    if (active && active !== roomId) {
+      alert('다른 방에 참여중입니다. 먼저 그 방에서 탈퇴하세요.');
+      location.href = 'lobby.html';
+      throw new Error('locked');
+    }
+    // 이 방을 현재 락으로 설정
+    localStorage.setItem('RSK_ACTIVE_ROOM', roomId);
+    
+    if (!roomId) {
+      alert('방 ID가 없습니다');
+      location.href = 'lobby.html';
+    }
+
+    const clientId = Store.state.clientId;
+    const myName = () => Store.state.name;
+
+    // WebSocket 연결
+    WS.connect();
+    WS.join(roomId, clientId, myName());
+
+    // 채팅 컴포넌트 마운트
+    const genChat = mountGeneralChat(document.getElementById('genChat'), {
+      roomId,
+      clientId,
+      nameGetter: myName
+    });
+
+    const aiChat = mountAiChat(document.getElementById('aiChat'), {
+      roomId,
+      clientId,
+      nameGetter: myName
+    });
+
+    // 슬롯 그리드 마운트
+    const slotsGrid = mountSlotsGrid(document.getElementById('slots'), {
+      host: false,
+      async onClaim(slotNo) {
+        const char = Store.state.roster[0] || null;
+        if (!char) {
+          alert('로스터에 캐릭터가 없습니다. 먼저 캐릭터를 추가하세요.');
+          return;
+        }
+        try {
+          await API.claim(roomId, {
+            clientId,
+            name: myName(),
+            slotNo,
+            char
+          });
+          refresh();
+        } catch (error) {
+          alert('슬롯 점유 실패: ' + error.message);
+        }
+      },
+      async onRelease() {
+        try {
+          await API.release(roomId, { clientId });
+          refresh();
+        } catch (error) {
+          alert('슬롯 해제 실패: ' + error.message);
+        }
+      },
+      async onReady() {
+        try {
+          await API.ready(roomId, { clientId });
+          refresh();
+        } catch (error) {
+          alert('준비 상태 변경 실패: ' + error.message);
+        }
+      },
+      async onKick(slotNo) {
+        if (!confirm('이 플레이어를 추방하시겠습니까?')) return;
+        try {
+          await API.kick(roomId, { clientId, targetSlot: slotNo });
+          refresh();
+        } catch (error) {
+          alert('추방 실패: ' + error.message);
+        }
+      },
+    });
+
+    const metaBox = document.getElementById('roomMeta');
+    const hostBox = document.getElementById('hostCtrl');
+    const promptSel = document.getElementById('promptSel');
+    const promptPreview = document.getElementById('promptPreview');
+    const apiKeyInput = document.getElementById('apiKey');
+    const saveKeyBtn = document.getElementById('saveKey');
+
+    // 방 정보 새로고침
+    async function refresh() {
+      try {
+        const { room } = await API.getRoom(roomId);
+        render(room);
+      } catch (error) {
+        localStorage.removeItem('RSK_ACTIVE_ROOM'); // 존재하지 않는 방이면 락 정리
+        console.error('방이 없는 것 같습니다:', error);
+      }
+    }
+
+    function render(room) {
+      metaBox.innerHTML = `
+        <h4>${room.title}</h4>
+        <div class="meta">${room.desc}</div>
+        <div class="meta">상태: ${room.status} · 모드: ${room.aiMode} · 발화자: ${room.speakerSlot}</div>
+      `;
+
+      // 호스트 플래그 + 버튼 라벨
+      window.IS_HOST = (room.hostId === clientId);
+      const leaveBtn = document.getElementById('leaveRoom');
+      if (leaveBtn) {
+        leaveBtn.textContent = window.IS_HOST ? '방 종료(삭제)' : '탈퇴';
+      }
+
+      // ① 슬롯 그리드 렌더
+      slotsGrid.render(room, clientId);
+
+      // ② 호스트 컨트롤 영역 표시/초기화
+      const isHost = room.hostId === clientId;
+      slotsGrid.setHost(isHost);
+      hostBox.style.display = isHost ? 'block' : 'none';
+      if (isHost) {
+        const prompts = Store.loadPrompts();
+        promptSel.innerHTML =
+          (prompts || []).map(p => `<option value="${p.id}">${p.label || p.id}</option>`).join('')
+          || '<option value="">(저장된 프롬프트 없음)</option>';
+        const last = localStorage.getItem('RSK_ROOM_PROMPT_' + room.id) || '';
+        promptSel.value = last;
+        apiKeyInput.value = localStorage.getItem('RSK_ROOM_APIKEY_' + room.id) || '';
+        updatePreview(room);
+      }
+
+      // ③ AI 채팅 발화권 업데이트
+      const mySlot = room.slots.find(s => (s.playerId || s.clientId) === clientId);
+      const canSpeak = isHost || room.aiMode === 'free' || room.speakerSlot === mySlot?.slotNo;
+      aiChat.updateSpeak(canSpeak, room.aiMode, room.speakerSlot);
+
+     // ── [교체] 게임 시작/중지 버튼 상태 갱신 ─────────────────────
+const startBtn = hostBox.querySelector('#start');
+if (startBtn) {
+  const occupied = (room.slots || []).filter(s => (s?.playerId || s?.clientId));
+  const allReady = occupied.length > 0 && occupied.every(s => !!s.ready);
+  const st = String(room.status || '').toLowerCase();
+  const running = ['running', 'playing', 'started', 'active', 'in-progress'].includes(st);
+
+  // 진행 중이면: '게임 중지'(항상 활성)
+  // 진행 전이면: '게임 시작'(모두 준비일 때만 활성)
+  startBtn.textContent = running ? '게임 중지' : '게임 시작';
+  startBtn.disabled   = running ? false : !allReady;
+  startBtn.title      = running
+    ? '게임을 중지하고 슬롯 잠금을 해제합니다'
+    : (allReady ? '' : '모든 참가자가 준비 완료해야 시작할 수 있습니다');
+}
+
+    } // render 끝
+
+    // 호스트 컨트롤 이벤트
+    promptSel?.addEventListener('change', () => {
+      localStorage.setItem('RSK_ROOM_PROMPT_'+roomId, promptSel.value || '');
+      updatePreviewCache();
+    });
+
+    saveKeyBtn?.addEventListener('click', () => {
+      localStorage.setItem('RSK_ROOM_APIKEY_'+roomId, (apiKeyInput.value||'').trim());
+      alert('API 키를 저장했습니다 (로컬)');
+    });
+
+    function updatePreviewCache(){
+      // 최신 방 상태로 미리보기 갱신
+      API.getRoom(roomId).then(({room})=> updatePreview(room)).catch(()=>{});
+    }
+
+    function updatePreview(room){
+      const prompts = Store.loadPrompts();
+      const cur = prompts.find(p => p.id === (promptSel.value||''));
+      if (!cur){ promptPreview.textContent = ''; return; }
+      promptPreview.textContent = expandTemplate(cur.text||'', room);
+    }
+
+    // 템플릿 치환기
+    function expandTemplate(tpl, room){
+      function getSlot(n){ return room.slots?.find(s=>s.slotNo===n) || {}; }
+      function charAll(c){ if(!c) return ''; const lines=[]; lines.push(`${c.name||''}`); if(c.title) lines.push(`- ${c.title}`); if(c.desc) lines.push(c.desc); (c.abilities||[]).forEach((a,i)=>{ if(a?.name||a?.text) lines.push(`• (${i+1}) ${a.name||''} — ${a.text||''}`); }); return lines.filter(Boolean).join('\n'); }
+      return (tpl||'').replace(/\{\{\s*([\w.\[\]]+)\s*\}\}/g, (_, key)=>{
+        if(key.startsWith('slot')){
+          const m = key.match(/^slot(\d+)\.(.+)$/); if(!m) return '';
+          const n = parseInt(m[1],10); const rest=m[2]; const slot=getSlot(n); const c=slot.char||{};
+          if(rest==='char.all') return charAll(c);
+          if(rest.startsWith('char.abilities[')){
+            const mm = rest.match(/^char\.abilities\[(\d+)\]\.(name|text)$/); if(!mm) return '';
+            const idx=parseInt(mm[1],10)-1; const field=mm[2]; return c.abilities?.[idx]?.[field]||'';
+          }
+          const map={ 'char.name':c.name,'char.desc':c.desc,'char.title':c.title };
+          return map[rest]||'';
+        }
+        if (key.startsWith('me.')) {
+          const mySlot = room.slots.find(s => (s.playerId || s.clientId) === clientId);
+          return expandTemplate(`{{slot${mySlot?.slotNo||1}.${key.slice(3)}}}`, room);
+        }
+        if(key==='room.title') return room.title||'';
+        if(key==='room.desc') return room.desc||'';
+        return '';
+      });
+    }
+
+async function callGemini(apiKey, contentsOrText){
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const contents = Array.isArray(contentsOrText)
+    ? contentsOrText
+    : [{ role:'user', parts:[{ text: String(contentsOrText||'') }] }];
+  const body = { contents };
+  const r = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const j = await r.json();
+  const out = j?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('\n') || '(빈 응답)';
+  return out;
+}
+
+    document.getElementById('runPrompt')?.addEventListener('click', async () => {
+      const prompts = Store.loadPrompts();
+      const cur = prompts.find(p => p.id === (promptSel.value||''));
+      if (!cur) { alert('프롬프트를 선택하세요'); return; }
+      const key = (apiKeyInput.value||'').trim() || localStorage.getItem('RSK_ROOM_APIKEY_'+roomId) || '';
+      if (!key) { alert('API 키가 필요합니다'); return; }
+      try{
+        // 방 상태 가져와 치환
+        const { room } = await API.getRoom(roomId);
+        const expanded = expandTemplate(cur.text||'', room);
+        const resp = await callGemini(key, expanded);
+        await API.runPrompt(roomId, { clientId, text: resp });
+      }catch(e){
+        alert('프롬프트 실행 실패: '+e.message);
+      }
+    });
+
+    hostBox.querySelector('#setSp').onclick = async () => {
+      const slotNo = parseInt(hostBox.querySelector('#speaker').value, 10);
+      if (!slotNo) return;
+      
+      try {
+        await API.speaker(roomId, { clientId, slotNo });
+        refresh();
+      } catch (error) {
+        alert('발화자 지정 실패: ' + error.message);
+      }
+    };
+
+
+
+
+    // WebSocket 이벤트 핸들러
+    WS.on('ROOM_STATE', (message) => {
+      if (message.room?.id === roomId) {
+        render(message.room);
+      }
+    });
+
+    WS.on('CHAT_PUSH', async (message) => {
+      const msg = message.message;
+      if (!msg || msg.roomId !== roomId) return;
+
+      // 1) 화면 로그는 기존대로
+      if (isAiChannel(msg)) {
+        aiChat.log.push(msg.name, msg.text);
+      } else {
+        genChat.push(msg.name, msg.text);
+        return; // ★ 일반 채널은 여기서 끝 — 건들지 않음
+      }
+
+      // 2) 루프 방지: AI/시스템이 보낸 메시지는 무시
+      if (/^(?:\[?AI\]?|SYSTEM)$/i.test(msg.name || '')) return;
+
+      // 3) 동시에 여러 요청 방지
+      if (__AI_BUSY) return;
+
+      // 4) 키 없으면 조용히 패스
+      const key =
+        (apiKeyInput.value || '').trim() ||
+        localStorage.getItem('RSK_ROOM_APIKEY_' + roomId) || '';
+      if (!key) { console.warn('[AI] API 키 없음'); return; }
+
+try {
+  __AI_BUSY = true;
+
+  // 1) 서버에서 최근 히스토리 불러오기
+  const history = await fetchAiHistory(roomId, 40);
+
+  // 2) 사용자가 방금 친 텍스트에 템플릿 치환 적용
+  let promptText = msg.text || '';
+  try {
+    const { room } = await API.getRoom(roomId);
+    promptText = expandTemplate(promptText, room);
+  } catch (_) {}
+
+  // 3) 히스토리 + 새 입력을 contents로 구성
+  const contents = historyToContents(history, promptText);
+
+  // 4) 모델 호출
+  const key =
+    (apiKeyInput.value || '').trim() ||
+    localStorage.getItem('RSK_ROOM_APIKEY_' + roomId) || '';
+  if (!key) { console.warn('[AI] API 키 없음'); return; }
+
+  const resp = await callGemini(key, contents);
+
+  // 5) 모델 응답을 서버에 기록(= model 역할 저장 + 브로드캐스트)
+  await fetch(`/api/rooms/${roomId}/chat/ai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: resp })
+  });
+} catch (e) {
+  console.warn('[AI] 자동응답 실패:', e);
+} finally {
+  __AI_BUSY = false;
+}
+
+    });
+WS.on('COUNTDOWN_TICK', (message) => {
+  genChat.sys('게임 시작까지 ' + message.n + '초...');
+  const startBtn = hostBox.querySelector('#start');
+  if (startBtn) { startBtn.textContent = `카운트다운 ${message.n}초...`; startBtn.disabled = true; startBtn.title = '카운트다운 중'; }
+});
+
+WS.on('COUNTDOWN_DONE', (message) => {
+  refresh();
+  const startBtn = hostBox.querySelector('#start');
+  if (startBtn) { startBtn.textContent = '게임 중지'; startBtn.disabled = false; startBtn.title = '게임을 중지하고 슬롯 잠금을 해제합니다'; }
+});
+
+
+    // 초기화
+    refresh();
+
+    // 탈퇴/방 종료 버튼 핸들러
+    document.getElementById('leaveRoom')?.addEventListener('click', async () => {
+      if (window.IS_HOST) {
+        if (!confirm('정말 이 방을 종료(삭제)할까요?')) return;
+        try {
+          // ① 종료 안내 채팅 전송
+          try {
+            if (API.chat) {
+              await API.chat(roomId, { name: '[SYSTEM]', text: '방이 종료됩니다.' });
+            } else if (WS.emit) {
+              WS.emit('CHAT', { roomId, message: { name: '[SYSTEM]', text: '방이 종료됩니다.' } });
+            } else {
+              await fetch(`/api/rooms/${roomId}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: '[SYSTEM]', text: '방이 종료됩니다.' })
+              });
+            }
+          } catch (e) {
+            console.warn('시스템 메시지 전송 실패:', e);
+          }
+
+          // ② 잠깐 대기 (브로드캐스트 여유)
+          await new Promise(r => setTimeout(r, 200));
+
+          // ③ 호스트는 방 삭제 호출
+          if (API.deleteRoom) {
+            await API.deleteRoom(roomId, { clientId });
+          } else {
+            const res = await fetch(`/api/rooms/${roomId}/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ clientId })
+            });
+            if (!res.ok) throw new Error('방 삭제 실패');
+          }
+        } catch (e) {
+          alert('방 삭제 중 오류: ' + (e?.message || e));
+          return;
+        }
+      } else {
+        if (!confirm('이 방에서 탈퇴하시겠습니까?')) return;
+        try {
+          // 일반 참가자는 슬롯 해제만
+          try { await API.release(roomId, { clientId }); } catch (_) {}
+        } catch (e) {
+          alert('탈퇴 처리 중 오류: ' + (e?.message || e));
+          return;
+        }
+      }
+
+      // 공통 정리: 락 해제 후 로비로
+      localStorage.removeItem('RSK_ACTIVE_ROOM');
+      location.href = 'lobby.html';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>로비 - Raid Starter Kit</title>
+  <link rel="stylesheet" href="../styles/base.css">
+</head>
+<body>
+  <header class="header">
+    <div class="container">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <h1 style="margin: 0; font-size: 24px;">🏰 Raid Lobby</h1>
+        </div>
+        <div class="row">
+          <input id="myName" class="input" style="max-width: 200px;" placeholder="플레이어 이름">
+          <a href="character.html" class="btn">캐릭터 생성</a>
+          <a href="roster.html" class="btn">로스터</a>
+          <a href="prompt.html" class="btn">프롬프트</a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container grid" style="grid-template-columns: 1fr 400px;">
+    <section class="card">
+      <div class="row" style="justify-content: space-between;">
+        <h3>방 목록</h3>
+        <button id="mk" class="btn primary">방 만들기</button>
+      </div>
+      <div id="rooms" class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 16px;"></div>
+    </section>
+
+    <aside class="card">
+      <h3>로비 채팅</h3>
+      <div id="log" style="height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: #fafafa; margin-bottom: 8px;"></div>
+      <div class="row">
+        <input id="txt" class="input grow" placeholder="메시지를 입력하세요...">
+        <button id="send" class="btn primary">전송</button>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import { Store } from '../core/store.js';
+    import { API } from '../core/api.js';
+    import { WS } from '../core/ws.js';
+
+    const roomsBox = document.getElementById('rooms');
+    const nameInput = document.getElementById('myName');
+    const log = document.getElementById('log');
+    const txt = document.getElementById('txt');
+
+    // 이름 설정
+    nameInput.value = Store.state.name;
+    nameInput.addEventListener('change', () => {
+      Store.setName(nameInput.value.trim() || 'Player');
+    });
+
+async function loadRooms() {
+  try {
+    const active = localStorage.getItem('RSK_ACTIVE_ROOM'); // ★ 락 키
+    const clientId = Store.state.clientId;
+    const { rooms } = await API.listRooms();
+
+    roomsBox.innerHTML = rooms.map(room => {
+      const isActive = active && room.id === active;
+      const locked   = !!active && !isActive; // 다른 방은 잠금
+
+      const actionHtml = isActive
+        ? `<a class="btn" href="room.html?room=${room.id}">참여중 · 재입장</a>`
+        : (locked
+            ? `<button class="btn" disabled title="다른 방에 참여중입니다">참가하기</button>`
+            : `<a class="btn primary" href="room.html?room=${room.id}">참가하기</a>`);
+
+      return `
+        <div class="card">
+          <h4>${room.title}</h4>
+          <div class="meta">${room.players}/${room.max}명 · ${room.boss ? '보스 있음' : '보스 없음'} · ${room.status}</div>
+          <div class="row" style="margin-top:8px;">
+            ${actionHtml}
+          </div>
+        </div>
+      `;
+    }).join('') || '<div class="meta">방이 없습니다</div>';
+
+    // “방 만들기” 버튼도 잠금
+    const mk = document.getElementById('mk');
+    if (mk) {
+      if (active) {
+        mk.disabled = true;
+        mk.title = '다른 방에 참여중입니다';
+      } else {
+        mk.disabled = false;
+        mk.removeAttribute('title');
+      }
+    }
+  } catch (error) {
+    console.error('방 목록 로드 실패:', error);
+    roomsBox.innerHTML = '<div class="meta">방 목록을 불러올 수 없습니다</div>';
+  }
+}
+
+
+    // 방 만들기: 모달/폼 UI로 대체
+    document.getElementById('mk').addEventListener('click', () => {
+      if (document.getElementById('roomModal')) return;
+      const modal = document.createElement('div');
+      modal.id = 'roomModal';
+      modal.style = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:1000;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;';
+      modal.innerHTML = `
+        <div style="background:#fff;padding:32px 24px;border-radius:12px;min-width:320px;box-shadow:0 4px 24px #0002;max-width:90vw;">
+          <h3 style="margin-top:0">방 설정</h3>
+          <div style="margin-bottom:12px">
+            <label>방 이름<br><input id="roomTitle" class="input" style="width:100%" value="새 방"></label>
+          </div>
+          <div style="margin-bottom:12px">
+            <label>설명<br><input id="roomDesc" class="input" style="width:100%"></label>
+          </div>
+          <div style="margin-bottom:12px">
+            <label>최대 인원<br><input id="roomMax" class="input" type="number" min="1" max="12" value="4" style="width:80px"></label>
+          </div>
+          <div style="margin-bottom:12px">
+            <label>AI 모드<br>
+              <select id="roomAIMode" class="input">
+                <option value="queue">순차 발화(기본)</option>
+                <option value="free">자유 발화</option>
+              </select>
+            </label>
+          </div>
+          <div style="margin-bottom:12px">
+            <label>관전자 허용(명)<br><input id="roomSpec" class="input" type="number" min="0" max="20" value="0" style="width:80px"></label>
+          </div>
+          <div style="margin-top:20px;display:flex;gap:8px;justify-content:flex-end;">
+            <button id="roomCancel" class="btn">취소</button>
+            <button id="roomCreate" class="btn primary">방 만들기</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector('#roomCancel').onclick = () => modal.remove();
+      modal.querySelector('#roomCreate').onclick = async () => {
+        const title = modal.querySelector('#roomTitle').value.trim() || '새 방';
+        const desc = modal.querySelector('#roomDesc').value.trim();
+        const maxPlayers = Math.max(1, Math.min(12, parseInt(modal.querySelector('#roomMax').value, 10) || 4));
+        const openSlots = Array.from({ length: maxPlayers }, (_, i) => i + 1);
+        const aiMode = modal.querySelector('#roomAIMode').value;
+        const spectatorsMax = Math.max(0, Math.min(20, parseInt(modal.querySelector('#roomSpec').value, 10) || 0));
+        try {
+          const { room } = await API.createRoom({
+            clientId: Store.state.clientId,
+            title,
+            desc,
+            maxPlayers,
+            openSlots,
+            aiMode,
+            spectatorsMax
+          });
+          location.href = 'room.html?room=' + room.id;
+        } catch (error) {
+          alert('방 생성 실패: ' + error.message);
+        }
+      };
+    });
+
+    // 채팅 기능
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+    }
+
+    function pushChat(name, text) {
+      const div = document.createElement('div');
+      div.style.marginBottom = '4px';
+      div.innerHTML = `<b>${escapeHtml(name)}:</b> ${escapeHtml(text)}`;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function sendMessage() {
+      const message = txt.value.trim();
+      if (!message) return;
+      
+      txt.value = '';
+      WS.chatSend(Store.state.clientId, 'general', Store.state.name, message);
+    }
+
+    document.getElementById('send').addEventListener('click', sendMessage);
+    txt.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        sendMessage();
+      }
+    });
+
+    // WebSocket 연결
+    WS.connect();
+    WS.on('LOBBY_STATE', (message) => {
+      (message.chat || []).forEach(chat => pushChat(chat.name, chat.text));
+    });
+    WS.on('CHAT_PUSH', (message) => {
+      if (message.message && message.message.roomId === 'lobby') {
+        pushChat(message.message.name, message.message.text);
+      }
+    });
+
+    // 초기화
+    WS.join('lobby', Store.state.clientId);
+(async () => {
+  const active = localStorage.getItem('RSK_ACTIVE_ROOM');
+  if (!active) { loadRooms(); return; }
+
+  try {
+    const { room } = await API.getRoom(active);
+    // 내가 그 방에 실제로 포함되어 있는지(슬롯 점유 or 소켓 참여 기준)를 체크하려면
+    // room.slots.some(s => s?.clientId === Store.state.clientId) 정도로 확인 가능
+    // (room 구조에 맞춰 필요시 보강)
+
+  } catch {
+    // 방이 없거나 접근 실패 → 유령 락
+    localStorage.removeItem('RSK_ACTIVE_ROOM');
+  } finally {
+    loadRooms();
+  }
+})();
+  </script>
+</body>
+</html>
