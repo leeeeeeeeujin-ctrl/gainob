@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>프롬프트 편집기 - Raid Starter Kit</title>
   <link rel="stylesheet" href="../styles/base.css">
+<link rel="manifest" href="./manifest.webmanifest">
 </head>
 <body>
   <header class="header">
@@ -194,5 +195,11 @@
     initSlots();
     render();
   </script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js');
+  }
+</script>
+
 </body>
 </html>

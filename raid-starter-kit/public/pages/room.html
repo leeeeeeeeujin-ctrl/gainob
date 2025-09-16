@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>방 - Raid Starter Kit</title>
   <link rel="stylesheet" href="../styles/base.css">
+<link rel="manifest" href="./manifest.webmanifest">
 </head>
 <body>
   <header class="header">
@@ -496,5 +497,211 @@ WS.on('COUNTDOWN_DONE', (message) => {
       location.href = 'lobby.html';
     });
   </script>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>프롬프트 편집기 - Raid Starter Kit</title>
+  <link rel="stylesheet" href="../styles/base.css">
+<link rel="manifest" href="./manifest.webmanifest">
+</head>
+<body>
+  <header class="header">
+    <div class="container">
+      <div class="row" style="justify-content: space-between;">
+        <b>프롬프트 편집기</b>
+        <div class="row">
+          <a href="lobby.html" class="btn">로비</a>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="container grid" style="grid-template-columns: 1fr 380px;">
+    <section class="card" id="editorBox">
+      <div class="row" style="justify-content: space-between;">
+        <div><b>프롬프트 목록</b></div>
+        <div>
+          <button id="addPrompt" class="btn">새 프롬프트</button>
+          <button id="delPrompt" class="btn danger">삭제</button>
+        </div>
+      </div>
+      <select id="promptList" class="input" style="margin-top:8px"></select>
+
+      <div class="card" style="margin-top:12px">
+        <div class="row" style="justify-content: space-between; align-items: center;">
+          <b>내용</b>
+          <input id="promptLabel" class="input" placeholder="라벨" style="max-width: 240px;">
+        </div>
+        <textarea id="promptText" class="input mono" rows="10" placeholder="여기에 프롬프트 텍스트를 입력하세요" style="margin-top:8px"></textarea>
+        <div class="row" style="justify-content: flex-end; margin-top:8px">
+          <button id="savePrompt" class="btn primary">저장</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="card" id="varsBox">
+      <b>변수 팔레트</b>
+      <div class="meta" style="margin-top:6px">항목을 선택하면 텍스트에 해당 변수가 삽입됩니다.</div>
+
+      <div class="card" style="margin-top:8px">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <b>캐릭터</b>
+          <span class="meta" id="selSlotHint">선택 슬롯: 1</span>
+        </div>
+        <div id="slotsRow" class="row" style="flex-wrap:wrap;gap:6px;margin-top:6px"></div>
+        <div id="charFields" class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:8px">
+        <b>방</b>
+        <div id="roomFields" class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module">
+    import { Store } from '../core/store.js';
+
+    // 상태
+    let list = Store.loadPrompts();
+    let curId = list[0]?.id || '';
+
+    // 엘리먼트
+    const sel = document.getElementById('promptList');
+    const txt = document.getElementById('promptText');
+    const label = document.getElementById('promptLabel');
+    const slotsRow = document.getElementById('slotsRow');
+    const charFields = document.getElementById('charFields');
+    const roomFields = document.getElementById('roomFields');
+    const selSlotHint = document.getElementById('selSlotHint');
+    let selectedSlot = 1;
+
+    // ─────────────────────────────────────────────────────────────
+    // 렌더러 (단일)
+    function render() {
+      // 항상 최신 목록 로드
+      list = Store.loadPrompts();
+
+      // 1) 목록 채우기
+      sel.innerHTML = (list || []).map(p => `<option value="${p.id}">${p.label || p.id}</option>`).join('');
+
+      // 2) 현재 선택값 보정
+      if (!curId || !list.some(p => p.id === curId)) {
+        curId = list[0]?.id || '';
+      }
+      sel.value = curId || '';
+
+      // 3) 상세 반영
+      const cur = list.find(p => p.id === curId);
+      txt.value = cur?.text || '';
+      label.value = cur?.label || '';
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 슬롯/변수 팔레트 (초기화 1회)
+    function initSlots() {
+      // 슬롯 버튼: 1회 렌더, 클릭 시 class 토글만
+      slotsRow.innerHTML = Array.from({length:12}, (_, i) => {
+        const n = i + 1;
+        return `<button class="btn${n===selectedSlot ? ' primary' : ''}" data-slot="${n}">${n}</button>`;
+      }).join('');
+
+      slotsRow.addEventListener('click', (e) => {
+        const n = parseInt(e.target?.dataset?.slot || '', 10);
+        if (!n || n === selectedSlot) return;
+        selectedSlot = n;
+        selSlotHint.textContent = `선택 슬롯: ${n}`;
+        // 토글
+        slotsRow.querySelectorAll('button').forEach(b => {
+          const bn = parseInt(b.dataset.slot, 10);
+          b.classList.toggle('primary', bn === selectedSlot);
+        });
+      });
+
+      // 캐릭터 필드(정적)
+      const charFieldDefs = [
+        { label:'이름',   build:(n)=>`{{slot${n}.char.name}}` },
+        { label:'설명',   build:(n)=>`{{slot${n}.char.desc}}` },
+        { label:'능력1',  build:(n)=>`{{slot${n}.char.abilities[1].name}} — {{slot${n}.char.abilities[1].text}}` },
+        { label:'능력2',  build:(n)=>`{{slot${n}.char.abilities[2].name}} — {{slot${n}.char.abilities[2].text}}` },
+        { label:'능력3',  build:(n)=>`{{slot${n}.char.abilities[3].name}} — {{slot${n}.char.abilities[3].text}}` },
+        { label:'능력4',  build:(n)=>`{{slot${n}.char.abilities[4].name}} — {{slot${n}.char.abilities[4].text}}` },
+        { label:'모두',   build:(n)=>`{{slot${n}.char.all}}` },
+      ];
+      charFields.innerHTML = charFieldDefs.map((f, i) => `<button class="btn" data-idx="${i}">${f.label}</button>`).join('');
+      charFields.addEventListener('click', (e) => {
+        const idx = parseInt(e.target?.dataset?.idx || '', 10);
+        if (Number.isNaN(idx)) return;
+        insertAtCursor(charFieldDefs[idx].build(selectedSlot));
+      });
+
+      // 방 필드(정적)
+      const roomFieldDefs = [
+        { label:'제목', tag:'{{room.title}}' },
+        { label:'설명', tag:'{{room.desc}}' },
+      ];
+      roomFields.innerHTML = roomFieldDefs.map((f, i) => `<button class="btn" data-room="${i}">${f.label}</button>`).join('');
+      roomFields.addEventListener('click', (e) => {
+        const idx = parseInt(e.target?.dataset?.room || '', 10);
+        if (Number.isNaN(idx)) return;
+        insertAtCursor(roomFieldDefs[idx].tag);
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 조작(추가/삭제/저장) — Store의 단건 API 사용
+    document.getElementById('addPrompt').onclick = () => {
+      const id = Store.addPrompt({ label: '새 프롬프트', text: '' });
+      curId = id;
+      render();
+    };
+
+    document.getElementById('delPrompt').onclick = () => {
+      if (!curId) return;
+      if (!confirm('삭제할까요?')) return;
+      Store.removePrompt(curId);
+      const next = Store.loadPrompts();
+      curId = next[0]?.id || '';
+      render();
+    };
+
+    document.getElementById('savePrompt').onclick = () => {
+      if (!curId) return;
+      Store.updatePrompt(curId, {
+        label: (label.value || '').trim() || '프롬프트',
+        text: txt.value || ''
+      });
+      render();
+      alert('저장했습니다');
+    };
+
+    // 선택 변경
+    sel.onchange = () => { curId = sel.value; render(); };
+
+    // 텍스트 삽입 유틸
+    function insertAtCursor(text) {
+      const start = txt.selectionStart || 0;
+      const end = txt.selectionEnd || start;
+      const value = txt.value || '';
+      txt.value = value.slice(0, start) + text + value.slice(end);
+      txt.focus();
+      txt.selectionStart = txt.selectionEnd = start + text.length;
+    }
+
+    // 초기화
+    initSlots();
+    render();
+  </script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js');
+  }
+</script>
+
+</body>
+</html>
+
 </body>
 </html>
