@@ -108,7 +108,7 @@
         const aiMode = modal.querySelector('#roomAIMode').value;
         const spectatorsMax = Math.max(0, Math.min(20, parseInt(modal.querySelector('#roomSpec').value,10)||0));
         try{
-          const { room } = await API.createRoom({ clientId: Store.state.clientId, title, desc, maxPlayers, openSlots, aiMode, spectatorsMax });
+          const { room } = await API.create({ clientId: Store.state.clientId, title, desc, maxPlayers, openSlots, aiMode, spectatorsMax });
           location.href = 'room.html?room=' + encodeURIComponent(room.id);
         }catch(e){ alert('방 생성 실패: ' + (e?.message || e)); }
       };
@@ -119,7 +119,7 @@
       const message = txt.value.trim();
       if (!message) return;
       txt.value = '';
-      WS.chatSend(Store.state.clientId, 'general', Store.state.name, message);
+      WS.chatSend('lobby', Store.state.name, message, 'general');
     }
     document.getElementById('send').addEventListener('click', sendMessage);
     txt.addEventListener('keypress', (e)=>{ if (e.key === 'Enter') sendMessage(); });
