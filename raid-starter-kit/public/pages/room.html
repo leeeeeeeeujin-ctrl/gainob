@@ -92,6 +92,16 @@
     // refresh/render functions (get room, render UI, set host flag, slots render, aiChat.updateSpeak 등.)
     async function refresh(){ try{ const {room} = await API.getRoom(roomId); render(room); }catch(e){ localStorage.removeItem('RSK_ACTIVE_ROOM'); console.error('방이 없는 것 같습니다:', e); } }
     function render(room){
+  // --- normalize to avoid .includes on undefined ---
+  try {
+    room.slots = Array.isArray(room.slots) ? room.slots : [];
+    ['ready','muted','banned','lockedSlots','moderators','hosts'].forEach(k=>{
+      if (!Array.isArray(room[k])) room[k] = [];
+    });
+    if (room.speakerSlot == null || Number.isNaN(Number(room.speakerSlot))) room.speakerSlot = null;
+    if (typeof room.boss !== 'boolean') room.boss = !!room.boss;
+  } catch(_) {}
+
       metaBox.innerHTML = `<h4>${room.title}</h4><div class="meta">${room.desc}</div><div class="meta">상태: ${room.status} · 모드: ${room.aiMode} · 발화자: ${room.speakerSlot}</div>`;
       window.IS_HOST = (room.hostId === clientId);
       const leaveBtn = document.getElementById('leaveRoom'); if(leaveBtn) leaveBtn.textContent = window.IS_HOST ? '방 종료(삭제)' : '탈퇴';
