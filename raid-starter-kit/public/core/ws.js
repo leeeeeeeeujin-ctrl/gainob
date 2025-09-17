@@ -1,55 +1,84 @@
 // core/ws.js
+
+// 기본값: 반드시 /ws 포함
 const DEFAULT_WS_URL = 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
-const WS_URL = localStorage.getItem('RSK_WS_URL') || DEFAULT_WS_URL;
+
+// URL 정규화: https → wss, /ws 미포함이면 붙여줌
+function normalizeWS(raw) {
+  try {
+    let u = (raw || '').trim();
+    if (!u) u = DEFAULT_WS_URL;
+
+    // 스킴 보정
+    if (u.startsWith('http://')) u = 'ws://'  + u.slice(7);
+    if (u.startsWith('https://')) u = 'wss://' + u.slice(8);
+
+    // 프로토콜 없으면 wss:// 붙이기
+    if (!/^wss?:\/\//i.test(u)) u = 'wss://' + u.replace(/^\/+/, '');
+
+    // 경로에 /ws 없으면 추가
+    const url = new URL(u);
+    if (!url.pathname || url.pathname === '/' ) url.pathname = '/ws';
+    if (!/\/ws$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\/+$/, '') + '/ws';
+
+    return url.toString();
+  } catch (_) {
+    return DEFAULT_WS_URL;
+  }
+}
+
+const RAW_WS_URL = localStorage.getItem('RSK_WS_URL') || DEFAULT_WS_URL;
+const WS_URL = normalizeWS(RAW_WS_URL);
 
 export const WS = {
   _sock: null,
-  _handlers: {},     // { TYPE: [fn, fn...] }
-  _queue: [],        // open 전 송신 대기열
+  _handlers: {},      // { TYPE: [fn...] }
+  _queue: [],         // open 전에 보낼 메시지들
   _retries: 0,
   _maxRetries: 5,
   _retryTimer: null,
 
   connect() {
-    // 이미 열렸거나 연결중이면 재사용
+    // 이미 OPEN/CONNECTING이면 재사용
     if (this._sock && (this._sock.readyState === WebSocket.OPEN || this._sock.readyState === WebSocket.CONNECTING)) {
       return;
     }
-    try { if (this._sock) this._sock.close(); } catch(_) {}
+    try { this._sock?.close(); } catch(_) {}
     clearTimeout(this._retryTimer);
 
+    console.log('[WS] connecting to', WS_URL);
     this._sock = new WebSocket(WS_URL);
 
     this._sock.onopen = () => {
-      console.log('WebSocket connected');
+      console.log('[WS] connected');
       this._retries = 0;
       // 대기열 비우기
       while (this._queue.length) {
-        try { this._sock.send(this._queue.shift()); } catch (e) { console.warn('WS flush fail:', e); break; }
+        const data = this._queue.shift();
+        try { this._sock.send(data); } catch (e) { console.warn('[WS] flush fail:', e); break; }
       }
     };
 
     this._sock.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        const t = msg?.type;
-        const list = this._handlers[t] || [];
+        const list = this._handlers[msg?.type] || [];
         list.forEach(fn => { try { fn(msg); } catch(_){} });
       } catch (err) {
-        console.warn('WS onmessage parse error:', err);
+        console.warn('[WS] onmessage parse error:', err);
       }
     };
 
     this._sock.onerror = (e) => {
-      console.warn('WebSocket error:', e);
+      console.warn('[WS] error:', e);
     };
 
     this._sock.onclose = (ev) => {
-      console.log('WebSocket disconnected:', ev?.code || ev);
+      console.log('[WS] disconnected:', ev?.code || ev);
       if (this._retries < this._maxRetries) {
-        const wait = Math.min(30000, 2000 * Math.pow(2, this._retries)); // 2s,4s,8s,16s,30s…
+        const wait = Math.min(30000, 2000 * Math.pow(2, this._retries)); // 2s→4s→8s→16s→30s
         this._retries++;
-        console.log(`재연결 시도 ${this._retries}/${this._maxRetries} (${wait}ms 후)`);
+        console.log(`[WS] reconnect ${this._retries}/${this._maxRetries} in ${wait}ms`);
         clearTimeout(this._retryTimer);
         this._retryTimer = setTimeout(() => this.connect(), wait);
       }
@@ -59,45 +88,32 @@ export const WS = {
   _safeSend(obj) {
     const data = JSON.stringify(obj);
     if (this._sock && this._sock.readyState === WebSocket.OPEN) {
-      try { this._sock.send(data); } catch (e) { console.warn('WS send fail:', e); }
+      try { this._sock.send(data); } catch (e) { console.warn('[WS] send fail:', e); }
     } else {
-      // 아직 미연결이면 큐에 쌓고 connect 트리거
+      // CONNECTING/나머지 상태 → 큐에 쌓고 connect 보장
       this._queue.push(data);
       this.connect();
     }
   },
 
-  // === 외부 API ===
+  // 외부 API
   on(type, fn) {
-    if (!this._handlers[type]) this._handlers[type] = [];
-    this._handlers[type].push(fn);
+    (this._handlers[type] ||= []).push(fn);
   },
-
   off(type, fn) {
-    const arr = this._handlers[type];
-    if (!arr) return;
-    const i = arr.indexOf(fn);
-    if (i >= 0) arr.splice(i, 1);
+    const arr = this._handlers[type]; if (!arr) return;
+    const i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1);
   },
-
   emit(type, payload = {}) {
     this._safeSend({ type, ...payload });
   },
-
   join(roomId, clientId, name) {
     this._safeSend({ type: 'join', roomId, clientId, name });
   },
-
-  // 로비/룸 공용 채팅 송신기 (로비는 roomId='lobby' 관례)
+  // 로비/룸 공용 채팅 전송 (로비는 roomId='lobby')
   chatSend(roomId, name, text, kind = 'gen') {
-    // 서버 구현에 맞춰 필드명 조정 가능
-    this._safeSend({
-      type: 'CHAT',
-      roomId,
-      message: { name, text, kind }   // kind: 'ai' | 'gen'
-    });
+    this._safeSend({ type: 'CHAT', roomId, message: { name, text, kind } });
   },
-
   close() {
     try { this._sock?.close(); } catch(_) {}
     this._sock = null;
