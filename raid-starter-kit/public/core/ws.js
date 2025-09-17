@@ -111,10 +111,13 @@ export const WS = {
     this._safeSend({ type: 'join', roomId, clientId, name });
   },
   // 로비/룸 공용 채팅 전송 (로비는 roomId='lobby')
- chatSend(roomId, name, text, kind = 'gen') {
-   // 서버는 roomId를 무시하고 join 시점의 _roomId를 씀
-   this._safeSend({ type: 'chat', name, text, kind });
- },
+chatSend(roomId, name, text, kind = 'gen') {
+  // 서버는 평면형을 기대하므로 이 포맷으로 보냄
+  // - type: 'chat'
+  // - fields: name, text, kind
+  // roomId는 server 측에서 join 시점에 기억하므로 따로 보내지 않아도 됨
+  this._safeSend({ type: 'chat', name, text, kind });
+},
   close() {
     try { this._sock?.close(); } catch(_) {}
     this._sock = null;
