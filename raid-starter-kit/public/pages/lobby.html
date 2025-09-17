@@ -130,7 +130,7 @@
     WS.on('CHAT_PUSH', (msg) => { if (msg.message && msg.message.roomId === 'lobby') pushChat(msg.message.name, msg.message.text); });
 
     // 초기화: join lobby, 유령 락 정리, loadRooms
-    WS.join('lobby', Store.state.clientId);
+    WS.join('lobby', Store.state.clientId, Store.state.name);
     (async () => {
       const active = localStorage.getItem('RSK_ACTIVE_ROOM');
       if (!active) { await loadRooms(); return; }
