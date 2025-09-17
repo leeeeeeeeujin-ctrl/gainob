@@ -127,7 +127,18 @@
     // WS
     WS.connect();
     WS.on('LOBBY_STATE', (msg) => { (msg.chat||[]).forEach(c=> pushChat(c.name, c.text)); });
-    WS.on('CHAT_PUSH', (msg) => { if (msg.message && msg.message.roomId === 'lobby') pushChat(msg.message.name, msg.message.text); });
+    WS.on('CHAT_PUSH', (msg) => {
+  // 형태가 달라도 일단 찍어보기
+  console.log('[CHAT_PUSH]', msg);
+
+  const m = msg?.message || msg; // message 래핑 없을 가능성도 고려
+  if (!m) return;
+
+  // 테스트 기간엔 roomId 필터 잠깐 완화 — 문제 해결되면 다시 'lobby'만 필터
+  if (!m.roomId || m.roomId === 'lobby') {
+    pushChat(m.name || 'Player', m.text || '');
+  }
+});
 
     // 초기화: join lobby, 유령 락 정리, loadRooms
     WS.join('lobby', Store.state.clientId, Store.state.name);
