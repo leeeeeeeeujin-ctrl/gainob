@@ -111,9 +111,10 @@ export const WS = {
     this._safeSend({ type: 'join', roomId, clientId, name });
   },
   // 로비/룸 공용 채팅 전송 (로비는 roomId='lobby')
-  chatSend(roomId, name, text, kind = 'gen') {
-    this._safeSend({ type: 'CHAT', roomId, message: { name, text, kind } });
-  },
+ chatSend(roomId, name, text, kind = 'gen') {
+   // 서버는 roomId를 무시하고 join 시점의 _roomId를 씀
+   this._safeSend({ type: 'chat', name, text, kind });
+ },
   close() {
     try { this._sock?.close(); } catch(_) {}
     this._sock = null;
