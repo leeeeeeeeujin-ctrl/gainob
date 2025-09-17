@@ -62,6 +62,14 @@ export const WS = {
     this._sock.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+// ④ 원문 로깅(무조건 확인용) — 나중에 지워도 됨
+console.log('[WS<-raw]', e.data);
+
+// ⑤ 서버가 살짝 다른 스키마로 보낼 때 관용 처리
+if (msg && msg.type === 'CHAT' && msg.message) msg.type = 'CHAT_PUSH';
+if (msg && msg.type === 'CHAT_PUSH' && msg.roomId && !msg.message) {
+  msg.message = { roomId: msg.roomId, name: msg.name, text: msg.text, kind: msg.kind || 'gen' };
+}
         const list = this._handlers[msg?.type] || [];
         list.forEach(fn => { try { fn(msg); } catch(_){} });
       } catch (err) {
