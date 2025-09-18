@@ -3,35 +3,47 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Room (Clean)</title>
+  <title>Room (Slots x12 + AI/Prompt)</title>
   <style>
-    :root { --gap: 12px; --b:#e5e7eb; --fg:#111827; --muted:#6b7280; }
+    :root { --gap: 12px; --b:#e5e7eb; --fg:#111827; --muted:#6b7280; --accent:#111827; --danger:#b91c1c; }
     * { box-sizing: border-box; }
-    body { margin:0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); }
-    header { border-bottom:1px solid var(--b); padding:12px 16px; display:flex; align-items:center; gap:10px; }
+    body { margin:0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); background:#fafafa; }
+    header { border-bottom:1px solid var(--b); padding:12px 16px; display:flex; align-items:center; gap:10px; background:#fff; position:sticky; top:0; z-index:5; }
     header h1 { margin:0; font-size:18px; }
-    .container { display:grid; grid-template-columns: 1fr 320px; gap:var(--gap); padding:16px; }
-    .card { border:1px solid var(--b); border-radius:10px; padding:12px; }
+    .container { display:flex; flex-direction:column; gap:var(--gap); padding:16px; }
     .row { display:flex; gap:8px; align-items:center; }
     .col { display:flex; flex-direction:column; gap:8px; }
+    .card { border:1px solid var(--b); border-radius:10px; padding:12px; background:#fff; }
     .btn { border:1px solid var(--b); padding:6px 10px; border-radius:8px; background:#fff; cursor:pointer; }
-    .btn.primary { background:#111827; color:#fff; border-color:#111827; }
-    .btn.danger { background:#b91c1c; color:#fff; border-color:#b91c1c; }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
-    .input { border:1px solid var(--b); border-radius:8px; padding:6px 8px; width:100%; }
-    ul.slots { list-style:none; padding:0; margin:0; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; }
-    ul.slots li { border:1px solid var(--b); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:6px; }
-    .muted { color:var(--muted); }
-    .chatlog { height: 240px; overflow:auto; border:1px solid var(--b); border-radius:8px; padding:8px; background:#fff; }
-    .chatitem { margin:4px 0; }
+    .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .btn.danger { background:var(--danger); color:#fff; border-color:var(--danger); }
+    .btn.ghost { background:#fff; color:var(--accent); border-color:var(--accent); }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .input, textarea, select { border:1px solid var(--b); border-radius:8px; padding:6px 8px; width:100%; background:#fff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
     .meta { color:var(--muted); font-size:12px; }
-    @media (max-width: 860px){ .container { grid-template-columns: 1fr; } }
+    .grid-top { display:grid; grid-template-columns: 1fr 1fr; gap:var(--gap); }
+    .grid-mid { display:grid; grid-template-columns: 1.5fr 1fr; gap:var(--gap); }
+    .chatlog { height: 220px; overflow:auto; border:1px solid var(--b); border-radius:8px; padding:8px; background:#fff; }
+    .chatitem { margin:4px 0; }
+    .pill { font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--b); background:#fff; }
+    .pill.ready { background:#e6ffe6; border-color:#a7f3d0; }
+    .pill.lock { background:#fff8e1; border-color:#fde68a; }
+    .slots { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:8px; }
+    .slot { border:1px solid var(--b); border-radius:10px; padding:8px; background:#fff; display:flex; flex-direction:column; gap:6px; }
+    .slot .name { font-weight:600; }
+    .cap { color:#374151; font-weight:600; }
+    .muted { color:var(--muted); }
+    .abil { font-size:12px; color:#374151; }
+    .abil + .abil { margin-top:4px; }
+    @media (max-width: 1100px){ .grid-mid { grid-template-columns:1fr; } .grid-top{ grid-template-columns:1fr; } .slots{ grid-template-columns: repeat(3, minmax(0,1fr)); } }
+    @media (max-width: 760px){ .slots{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
   </style>
 </head>
 <body>
 <header>
   <h1>🏰 Room</h1>
-  <div class="row" style="margin-left:auto; gap:8px;">
+  <div class="row" style="margin-left:auto">
     <a class="btn" href="lobby.html">로비로</a>
     <button id="leaveBtn" class="btn">탈퇴</button>
     <button id="deleteBtn" class="btn danger" style="display:none">방 삭제</button>
@@ -39,30 +51,58 @@
 </header>
 
 <div class="container">
-  <section class="col">
-    <div id="meta" class="card"></div>
-
-    <div class="card">
+  <!-- 상단: 일반 채팅 / AI 채팅 -->
+  <div class="grid-top">
+    <!-- 일반 채팅 -->
+    <section class="card col">
       <div class="row" style="justify-content:space-between;">
-        <strong>슬롯</strong>
-        <span class="meta">내 ID: <code id="meId"></code></span>
+        <strong>일반 채팅</strong>
+        <span class="meta">누구나 대화 가능</span>
       </div>
-      <ul id="slotList" class="slots"></ul>
-    </div>
-
-    <div class="card col">
-      <div class="row" style="gap:8px;">
-        <input id="chatInput" class="input" placeholder="메시지를 입력하세요 (Enter)"/>
-        <button id="chatSend" class="btn">전송</button>
+      <div id="genLog" class="chatlog"></div>
+      <div class="row">
+        <input id="genInput" class="input" placeholder="메시지를 입력하세요 (Enter)"/>
+        <button id="genSend" class="btn">전송</button>
       </div>
-      <div id="chatLog" class="chatlog"></div>
-    </div>
-  </section>
+    </section>
 
-  <aside class="col">
-    <div class="card">
+    <!-- AI 채팅(프롬프트) -->
+    <section class="card col">
+      <div class="row" style="justify-content:space-between;">
+        <strong>AI 채팅 / 프롬프트</strong>
+        <span class="meta" id="aiPermHint">호스트/허용 슬롯만 전송 가능</span>
+      </div>
+      <div class="row">
+        <select id="promptSel" class="input" style="max-width:50%"></select>
+        <button id="refreshPrompts" class="btn">목록 새로고침</button>
+        <button id="allowBtn" class="btn ghost" title="호스트 전용">허용 슬롯</button>
+        <button id="newPromptBtn" class="btn ghost" title="호스트 전용">+ 프롬프트</button>
+      </div>
+      <div id="varsBox" class="row" style="flex-wrap:wrap; gap:6px;"></div>
+      <textarea id="aiInput" class="input mono" rows="4" placeholder="프롬프트/대화 내용을 입력하세요"></textarea>
+      <div class="meta">미리보기</div>
+      <div id="preview" class="card mono" style="white-space:pre-wrap;max-height:120px;overflow:auto;"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button id="aiSend" class="btn primary">AI에게 전송</button>
+      </div>
+      <div id="aiLog" class="chatlog" style="margin-top:8px"></div>
+    </section>
+  </div>
+
+  <!-- 중하단: 방 메타/슬롯 · 호스트 패널 -->
+  <div class="grid-mid">
+    <section class="card col">
+      <div id="meta"></div>
+      <div class="row" style="flex-wrap:wrap; gap:6px; margin-top:6px">
+        <span class="pill" id="meIdPill">내 ID: -</span>
+        <span class="pill" id="slotInfoPill">내 슬롯: -</span>
+      </div>
+      <div class="slots" id="slots"></div>
+    </section>
+
+    <aside class="card col">
       <strong>호스트 컨트롤</strong>
-      <div id="hostOnly" class="col" style="margin-top:8px; display:none;">
+      <div id="hostOnly" class="col" style="display:none;">
         <div class="row">
           <input id="speakerIn" class="input" placeholder="발화 슬롯 번호"/>
           <button id="speakerBtn" class="btn">발화자 지정</button>
@@ -72,242 +112,410 @@
         </div>
       </div>
       <div id="hostHint" class="meta">호스트가 아닙니다.</div>
-    </div>
-  </aside>
+    </aside>
+  </div>
 </div>
 
 <script>
-// ==== Minimal, dependency-free Room client ====
+// ==== Config (localStorage로 오버라이드 가능) ====
+const API_BASE = localStorage.RSK_API_BASE || 'https://raid-api.leeeeeeeeujin.workers.dev';
+const WS_URL   = localStorage.RSK_WS_URL   || 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
 
-// 0) Boot endpoints (localStorage로 오버라이드 가능)
-const DEFAULT_API_BASE = (localStorage.RSK_API_BASE) || 'https://raid-api.leeeeeeeeujin.workers.dev';
-const DEFAULT_WS_URL   = (localStorage.RSK_WS_URL)   || 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
-const API_BASE = DEFAULT_API_BASE;
-const WS_URL   = DEFAULT_WS_URL;
-
-// 1) Essentials
-const roomId = new URLSearchParams(location.search).get('room');
+// ==== State ====
+const roomId   = new URLSearchParams(location.search).get('room');
 if (!roomId) { alert('room 파라미터가 없습니다'); location.href = 'lobby.html'; }
+let clientId   = localStorage.getItem('RSK_CLIENT_ID') || (crypto.randomUUID?.()||String(Math.random())).replace(/[^a-z0-9-]/gi,'');
+localStorage.setItem('RSK_CLIENT_ID', clientId);
+const myName   = localStorage.getItem('RSK_NAME') || 'Player';
 
-let clientId = localStorage.getItem('RSK_CLIENT_ID');
-if (!clientId) {
-  clientId = (self.crypto?.randomUUID?.() || String(Math.random())).replace(/[^a-z0-9-]/gi, '');
-  localStorage.setItem('RSK_CLIENT_ID', clientId);
-}
-const myName = localStorage.getItem('RSK_NAME') || 'Player';
+let ROOM = null;
+let PROMPTS = [];
+let sock = null;
 
-// 2) DOM refs
-const metaBox = document.getElementById('meta');
-const meIdEl  = document.getElementById('meId');
-const ulSlots = document.getElementById('slotList');
-const leaveBtn = document.getElementById('leaveBtn');
+// ==== DOM ====
+const metaBox   = document.getElementById('meta');
+const meIdPill  = document.getElementById('meIdPill');
+const slotInfo  = document.getElementById('slotInfoPill');
+const slotsEl   = document.getElementById('slots');
+
+const genLog    = document.getElementById('genLog');
+const genInput  = document.getElementById('genInput');
+const genSend   = document.getElementById('genSend');
+
+const aiLog     = document.getElementById('aiLog');
+const aiInput   = document.getElementById('aiInput');
+const aiSend    = document.getElementById('aiSend');
+const promptSel = document.getElementById('promptSel');
+const varsBox   = document.getElementById('varsBox');
+const preview   = document.getElementById('preview');
+const allowBtn  = document.getElementById('allowBtn');
+const newPromptBtn = document.getElementById('newPromptBtn');
+const refreshPromptsBtn = document.getElementById('refreshPrompts');
+const aiPermHint= document.getElementById('aiPermHint');
+
+const leaveBtn  = document.getElementById('leaveBtn');
 const deleteBtn = document.getElementById('deleteBtn');
 const hostOnly  = document.getElementById('hostOnly');
 const hostHint  = document.getElementById('hostHint');
 const speakerIn = document.getElementById('speakerIn');
 const speakerBtn= document.getElementById('speakerBtn');
 const startBtn  = document.getElementById('startBtn');
-const chatLog   = document.getElementById('chatLog');
-const chatInput = document.getElementById('chatInput');
-const chatSend  = document.getElementById('chatSend');
 
-meIdEl.textContent = clientId;
-
-// 3) Helpers
-const ensureArr = (v)=> Array.isArray(v) ? v : [];
-function normalizeRoom(r){
-  if (!r) return null;
-  return {
-    id: r.id,
-    title: r.title || '방',
-    desc: r.desc || '',
-    hostId: r.hostId || null,
-    status: r.status || 'lobby',
-    aiMode: r.aiMode || '',
-    speakerSlot: (r.speakerSlot==null||Number.isNaN(+r.speakerSlot))? null : Number(r.speakerSlot),
-    boss: !!r.boss,
-    slots: Array.isArray(r.slots) ? r.slots : [],
-    ready: ensureArr(r.ready),
-    muted: ensureArr(r.muted),
-    banned: ensureArr(r.banned),
-    lockedSlots: ensureArr(r.lockedSlots),
-    promptAllowedSlots: ensureArr(r.promptAllowedSlots),
-    roles: r.roles || {},
-    pairs: r.pairs || {},
-  };
-}
-
+// ==== Utils ====
+const ensureArr = v => Array.isArray(v) ? v : [];
+const normRoom = r => ({
+  id: r.id,
+  title: r.title || '방',
+  desc: r.desc || '',
+  hostId: r.hostId || null,
+  status: r.status || 'lobby',
+  speakerSlot: (r.speakerSlot==null||Number.isNaN(+r.speakerSlot)) ? null : Number(r.speakerSlot),
+  slots: Array.isArray(r.slots) ? r.slots : [],
+  ready: ensureArr(r.ready),
+  muted: ensureArr(r.muted),
+  banned: ensureArr(r.banned),
+  lockedSlots: ensureArr(r.lockedSlots),
+  roles: r.roles || {},
+  pairs: r.pairs || {},
+  promptAllowedSlots: ensureArr(r.promptAllowedSlots),
+});
 function el(tag, attrs={}, ...children){
   const x = document.createElement(tag);
   Object.entries(attrs).forEach(([k,v])=>{
     if (k==='class') x.className = v;
     else if (k==='style') x.setAttribute('style', v);
-    else if (k.startsWith('on') && typeof v === 'function') x.addEventListener(k.slice(2), v);
+    else if (k.startsWith('on') && typeof v==='function') x.addEventListener(k.slice(2), v);
     else x.setAttribute(k, v);
   });
-  children.forEach(c=> x.appendChild(typeof c==='string' ? document.createTextNode(c) : c));
+  children.forEach(c=> x.appendChild(typeof c==='string'? document.createTextNode(c): c));
   return x;
 }
-
-function logChat(name, text){
-  const line = el('div', {class:'chatitem'}, el('strong',{}, name+': '), document.createTextNode(text));
-  chatLog.appendChild(line);
-  chatLog.scrollTop = chatLog.scrollHeight;
+function log(div, name, text){
+  const line = el('div', {class:'chatitem'},
+    el('strong',{}, (name||'') + (name?': ':'') ), document.createTextNode(text||'')
+  );
+  div.appendChild(line);
+  div.scrollTop = div.scrollHeight;
+}
+function renderPreview(){
+  const tpl = aiInput.value || '';
+  const inputs = varsBox.querySelectorAll('[data-k]');
+  const kv = {}; inputs.forEach(i => kv[i.dataset.k] = i.value);
+  const text = tpl.replace(/\{\{\s*([\w\.\[\]0-9-]+)\s*\}\}/g, (_,k)=> (k in kv) ? kv[k] : '{{'+k+'}}' );
+  preview.textContent = text;
+}
+function ownsSlot(room, cid){
+  return (room.slots||[]).find(s=> (s.clientId||s.playerId)===cid) || null;
 }
 
-// 4) REST calls
-async function getRoom(){
+// ==== REST ====
+async function GET_ROOM(){
   const r = await fetch(`${API_BASE}/api/rooms/${roomId}`);
   if (!r.ok) throw new Error('room not found');
-  const j = await r.json();
-  return normalizeRoom(j.room || j);
+  const j = await r.json(); return normRoom(j.room || j);
 }
-async function claim(slotNo){
+async function CLAIM(slotNo, char){
   await fetch(`${API_BASE}/api/rooms/${roomId}/claim`, {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ clientId, name: myName, slotNo })
+    body: JSON.stringify({ clientId, name: myName, slotNo, char })
   });
 }
-async function release(){
+async function RELEASE(){
   await fetch(`${API_BASE}/api/rooms/${roomId}/release`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ clientId })
   });
 }
-async function delRoom(){
-  await fetch(`${API_BASE}/api/rooms/${roomId}/delete`, { method:'POST' });
+async function READY_TOGGLE(){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/ready`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ clientId })
+  });
 }
-async function setSpeaker(slotNo){
+async function DELETE_ROOM(){ await fetch(`${API_BASE}/api/rooms/${roomId}/delete`, { method:'POST' }); }
+async function SPEAKER(slotNo){
   await fetch(`${API_BASE}/api/rooms/${roomId}/speaker`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ clientId, slotNo })
   });
 }
-async function startGame(){
-  await fetch(`${API_BASE}/api/rooms/${roomId}/start`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ clientId })
-  });
-}
+async function START(){ await fetch(`${API_BASE}/api/rooms/${roomId}/start`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ clientId }) }); }
 
-// 5) WS minimal client
-let sock = null;
+// Prompts REST
+const Prompts = {
+  async list(){ const r=await fetch(`${API_BASE}/api/rooms/${roomId}/prompts`); return r.json(); },
+  async upsert(body){ const r=await fetch(`${API_BASE}/api/rooms/${roomId}/prompts`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); return r.json(); },
+  async remove(pid){ const r=await fetch(`${API_BASE}/api/rooms/${roomId}/prompts/${pid}`, { method:'DELETE', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ clientId }) }); return r.json(); },
+  async allow(payload){ const r=await fetch(`${API_BASE}/api/rooms/${roomId}/prompt-allow`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); return r.json(); },
+  async ask(payload){ const r=await fetch(`${API_BASE}/api/rooms/${roomId}/ask`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); return r.json(); },
+};
+
+// ==== WS ====
 function wsConnect(){
-  try {
-    sock = new WebSocket(WS_URL);
-    sock.addEventListener('open', () => {
-      // join → then ready to chat
-      safeSend({ type:'join', roomId, name: myName, clientId });
-    });
-    sock.addEventListener('message', (e) => {
-      let msg; try { msg = JSON.parse(e.data); } catch { return; }
-      if (msg?.type === 'CHAT_PUSH' && msg.message?.roomId === roomId) {
-        const m = msg.message;
-        logChat(m.name || 'Player', m.text || '');
-      }
-      if (msg?.type === 'ROOM_STATE' && msg.room?.id === roomId) {
-        render(normalizeRoom(msg.room));
-      }
-    });
-    sock.addEventListener('close', () => { /* optionally reconnect */ });
-    sock.addEventListener('error', () => { /* noop */ });
-  } catch(e){ console.warn('WS connect error', e); }
+  sock = new WebSocket(WS_URL);
+  sock.addEventListener('open', ()=>{
+    safeSend({ type:'join', roomId, name: myName, clientId });
+  });
+  sock.addEventListener('message', (e)=>{
+    let msg; try{ msg = JSON.parse(e.data); }catch{ return; }
+    if (msg?.type==='CHAT_PUSH'){
+      const m = msg.message || {};
+      if (m.roomId !== roomId) return;
+      if (m.kind==='ai' || m.channel==='ai') log(aiLog, m.name||'AI', m.text||'');
+      else log(genLog, m.name||'Player', m.text||'');
+    }
+    if (msg?.type==='ROOM_STATE' && msg.room?.id===roomId){
+      render(normRoom(msg.room));
+    }
+  });
+  sock.addEventListener('close', ()=>{/* optional reconnect */});
 }
-function safeSend(obj){
-  try{ sock && sock.readyState===1 && sock.send(JSON.stringify(obj)); }catch{}
+function safeSend(obj){ try{ sock && sock.readyState===1 && sock.send(JSON.stringify(obj)); }catch{} }
+
+// ==== Character helper (prompt-based quick form) ====
+async function promptCharacter(existing){
+  // 간단 프롬프트 입력: 이름, 설명, 능력(최대4개)
+  const name = prompt('캐릭터 이름?', existing?.name || '') || '';
+  const desc = prompt('캐릭터 설명?', existing?.desc || '') || '';
+  const a1 = prompt('능력1 (이름:설명 형식, 예: 강타:강하게 내리칩니다)', existing?.abilities?.[1]?.name ? `${existing.abilities[1].name}:${existing.abilities[1].text}` : '') || '';
+  const a2 = prompt('능력2 (없으면 엔터)', existing?.abilities?.[2]?.name ? `${existing.abilities[2].name}:${existing.abilities[2].text}` : '') || '';
+  const a3 = prompt('능력3 (없으면 엔터)', existing?.abilities?.[3]?.name ? `${existing.abilities[3].name}:${existing.abilities[3].text}` : '') || '';
+  const a4 = prompt('능력4 (없으면 엔터)', existing?.abilities?.[4]?.name ? `${existing.abilities[4].name}:${existing.abilities[4].text}` : '') || '';
+  const parseAb = s => {
+    if (!s.trim()) return null;
+    const [n,...rest] = s.split(':'); return { name: (n||'').trim(), text: (rest.join(':')||'').trim() };
+  };
+  const abilities = {};
+  [a1,a2,a3,a4].forEach((s,i)=>{ const p=parseAb(s||''); if(p) abilities[i+1]=p; });
+  return { name, desc, abilities };
 }
 
-// 6) Render
+// ==== Render ====
+function render(room){
+  ROOM = room;
+  meIdPill.textContent = `내 ID: ${clientId}`;
+  const mine = ownsSlot(room, clientId);
+  slotInfo.textContent = `내 슬롯: ${mine?.slotNo ?? '-'}`;
+  const isHost = room.hostId === clientId;
+  deleteBtn.style.display = isHost ? 'inline-block' : 'none';
+  hostOnly.style.display  = isHost ? 'flex' : 'none';
+  hostHint.style.display  = isHost ? 'none' : 'block';
+
+  metaBox.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:flex-start;">
+      <div>
+        <div class="cap">${room.title}</div>
+        <div class="meta">${room.desc||''}</div>
+      </div>
+      <div class="row" style="gap:6px;">
+        <span class="pill">상태: ${room.status}</span>
+        <span class="pill">발화자: ${room.speakerSlot ?? '-'}</span>
+      </div>
+    </div>
+  `;
+
+  // AI 권한 안내
+  const mySlotNo = mine?.slotNo ?? null;
+  const allowed = isHost || (mySlotNo!=null && (room.promptAllowedSlots||[]).includes(mySlotNo));
+  aiSend.disabled = !allowed;
+  aiPermHint.textContent = allowed ? `전송 가능(슬롯 ${mySlotNo ?? '호스트'})` : '호스트/허용 슬롯만 전송 가능';
+  allowBtn.style.display = isHost ? 'inline-block' : 'none';
+  newPromptBtn.style.display = isHost ? 'inline-block' : 'none';
+
+  // 슬롯 12개 고정 렌더링
+  slotsEl.innerHTML = '';
+  for (let i=1;i<=12;i++){
+    const s = (room.slots||[]).find(x=>x.slotNo===i) || { slotNo:i, clientId:null, name:null, char:null, ready:false };
+    const busy = !!(s.clientId||s.playerId);
+    const isMine = (s.clientId===clientId || s.playerId===clientId);
+    const ready = !!s.ready;
+
+    const char = s.char || null;
+    const abilLines = [];
+    if (char?.abilities){
+      for (const k of [1,2,3,4]){
+        if (char.abilities[k]) abilLines.push(`${char.abilities[k].name} — ${char.abilities[k].text}`);
+      }
+    }
+
+    const card = el('div', {class:'slot'},
+      el('div', {class:'row', style:'justify-content:space-between;'},
+        el('div', {}, `#${i}`),
+        el('div', {class:'row', style:'gap:6px;'},
+          ready ? el('span', {class:'pill ready'}, '준비완료') : null
+        )
+      ),
+      el('div', {class:'name'}, busy ? (s.name||'Player') : '비어있음'),
+      char
+        ? el('div', {class:'col'},
+            el('div', {class:'meta'}, char.name || '(이름 없음)'),
+            el('div', {class:'meta'}, char.desc || ''),
+            ...abilLines.slice(0,4).map(t=> el('div', {class:'abil'}, '• ' + t))
+          )
+        : el('div', {class:'muted'}, '등록된 캐릭터 없음'),
+      el('div', {class:'row', style:'justify-content:flex-end; gap:6px; flex-wrap:wrap;'},
+        // 참가/탈퇴
+        (!busy
+          ? el('button', {class:'btn', onclick: async()=>{
+                // 참가 전 캐릭터 등록
+                const ch = await promptCharacter(null);
+                await CLAIM(i, ch);
+                await refresh();
+            }}, '참가+캐릭터 등록')
+          : (isMine
+              ? el('button', {class:'btn', onclick: async()=>{
+                  if (s.ready) { alert('준비완료 상태에서는 이동/변경할 수 없습니다'); return; }
+                  await RELEASE(); await refresh();
+                }}, '탈퇴')
+              : el('button', {class:'btn', disabled:true}, '사용중'))),
+        // 캐릭터 등록/변경(내 슬롯)
+        (isMine
+          ? el('button', {class:'btn', onclick: async()=>{
+                if (s.ready) { alert('준비완료 상태에서는 변경할 수 없습니다'); return; }
+                const ch = await promptCharacter(s.char||null);
+                await CLAIM(i, ch); await refresh();
+            }}, char? '캐릭터 변경':'캐릭터 등록')
+          : null),
+        // 준비 토글(내 슬롯만)
+        (isMine
+          ? el('button', {class:'btn ghost', onclick: async()=>{ await READY_TOGGLE(); await refresh(); }}, ready?'준비 해제':'준비 완료')
+          : null),
+      )
+    );
+    slotsEl.appendChild(card);
+  }
+}
+
+// ==== Prompt UI ====
+function extractVars(tpl){
+  const set = new Set();
+  (tpl.match(/\{\{\s*([\w\.\[\]0-9-]+)\s*\}\}/g)||[]).forEach(m=>{
+    const k = m.replace('{{','').replace('}}','').trim();
+    set.add(k);
+  });
+  return Array.from(set);
+}
+function renderVarsFromTemplate(tpl){
+  const keys = extractVars(tpl);
+  varsBox.innerHTML = '';
+  keys.forEach(k=>{
+    const w = el('div', {class:'row', style:'gap:6px;'},
+      el('label', {style:'min-width:140px'}, k),
+      el('input', {class:'input', 'data-k':k, oninput:renderPreview})
+    );
+    varsBox.appendChild(w);
+  });
+  renderPreview();
+}
+async function loadPrompts(){
+  const { prompts=[] } = await Prompts.list();
+  PROMPTS = prompts;
+  promptSel.innerHTML = '';
+  // 첫 항목: (직접 입력)
+  const opt0 = document.createElement('option'); opt0.value=''; opt0.textContent='(직접 입력)';
+  promptSel.appendChild(opt0);
+  PROMPTS.forEach(p=>{
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.title || p.id;
+    promptSel.appendChild(o);
+  });
+  // 선택 반영
+  if (PROMPTS[0]) { promptSel.value = PROMPTS[0].id; aiInput.value = PROMPTS[0].template || ''; }
+  else { promptSel.value = ''; aiInput.value = ''; }
+  renderVarsFromTemplate(aiInput.value || '');
+}
+promptSel.onchange = ()=>{
+  const pid = promptSel.value;
+  if (!pid){ aiInput.value=''; renderVarsFromTemplate(''); return; }
+  const p = PROMPTS.find(x=>x.id===pid);
+  aiInput.value = p?.template || '';
+  // 프롬프트 개별 allowedSlots가 존재할 수 있으니 힌트만 보정(서버 권한이 최종)
+  renderVarsFromTemplate(aiInput.value || '');
+};
+aiInput.addEventListener('input', renderVarsFromTemplate);
+refreshPromptsBtn.onclick = loadPrompts;
+
+allowBtn.onclick = async ()=>{
+  if (!ROOM || ROOM.hostId !== clientId) return alert('호스트만 가능합니다');
+  const raw = prompt('허용 슬롯 번호들(쉼표로 구분, 예: 2,3)');
+  if (raw==null) return;
+  const add = raw.split(',').map(s=>Number(s.trim())).filter(n=>Number.isFinite(n));
+  const res = await Prompts.allow({ clientId, add, remove: [] });
+  if (res?.ok === false) alert(res.message||res.code||'실패');
+  await refresh();
+};
+newPromptBtn.onclick = async ()=>{
+  if (!ROOM || ROOM.hostId !== clientId) return alert('호스트만 가능합니다');
+  const title = prompt('프롬프트 제목?'); if(!title) return;
+  const template = prompt('템플릿(예: 보스 {{boss}} / 파티 {{slot1.char.name}})'); if(!template) return;
+  const vars = extractVars(template);
+  const res = await Prompts.upsert({ clientId, title, template, vars });
+  if (res?.prompt?.id) { await loadPrompts(); promptSel.value = res.prompt.id; aiInput.value = res.prompt.template||''; renderVarsFromTemplate(aiInput.value); }
+};
+
+// ==== Send ====
+function sendGen(){
+  const text = (genInput.value||'').trim(); if(!text) return;
+  genInput.value='';
+  safeSend({ type:'chat', roomId, name: myName, text, kind:'room' });
+}
+genSend.onclick = sendGen;
+genInput.addEventListener('keydown', e=>{ if(e.key==='Enter') sendGen(); });
+
+async function sendAI(){
+  if (!ROOM) return;
+  const mine = ownsSlot(ROOM, clientId);
+  const mySlotNo = mine?.slotNo ?? null;
+  const isHost = ROOM.hostId === clientId;
+  // 권한은 서버가 최종 판단하지만, 클라에서 1차 가드
+  if (!(isHost || (mySlotNo!=null && (ROOM.promptAllowedSlots||[]).includes(mySlotNo)))) {
+    return alert('호스트 또는 허용 슬롯만 전송할 수 있습니다');
+  }
+  const pid = promptSel.value || null;
+  const tpl = aiInput.value || '';
+  const inputs = varsBox.querySelectorAll('[data-k]');
+  const vars = {}; inputs.forEach(i => vars[i.dataset.k] = i.value);
+  const payload = { clientId, slotNo: mySlotNo, vars };
+  if (pid) payload.promptId = pid; else payload.template = tpl;
+  const res = await Prompts.ask(payload);
+  if (res?.ok === false) alert(res.message||res.code||'실패');
+  else log(aiLog, '→', preview.textContent);
+}
+aiSend.onclick = sendAI;
+
+// ==== Page actions ====
+leaveBtn.onclick = async ()=>{
+  const ok = confirm('이 방에서 나가시겠습니까?'); if(!ok) return;
+  await RELEASE().catch(()=>{});
+  location.href = 'lobby.html';
+};
+deleteBtn.onclick = async ()=>{
+  if (!ROOM || ROOM.hostId !== clientId) return alert('호스트만 가능합니다');
+  const ok = confirm('정말 방을 삭제할까요?'); if(!ok) return;
+  await DELETE_ROOM().catch(()=>{});
+  location.href = 'lobby.html';
+};
+speakerBtn.onclick = async ()=>{
+  const n = parseInt(speakerIn.value,10);
+  if (!Number.isFinite(n)) return alert('숫자를 입력하세요');
+  await SPEAKER(n).catch(e=>alert('실패:'+ (e?.message||e)));
+  await refresh();
+};
+startBtn.onclick = async ()=>{ await START().catch(()=>{}); await refresh(); };
+
+// ==== Boot ====
 async function refresh(){
   try {
-    const room = await getRoom();
-    render(room);
+    const r = await GET_ROOM(); render(r);
   } catch(e){
     console.error('방 로드 실패:', e);
     alert('방을 찾을 수 없습니다.');
     location.href = 'lobby.html';
   }
 }
-
-function render(room){
-  const isHost = (room.hostId === clientId);
-  deleteBtn.style.display = isHost ? 'inline-block' : 'none';
-  hostOnly.style.display = isHost ? 'flex' : 'none';
-  hostHint.style.display = isHost ? 'none' : 'block';
-
-  metaBox.innerHTML = `
-    <div class="row" style="justify-content:space-between;">
-      <strong>${room.title}</strong>
-      <span class="meta">상태: ${room.status} · 발화자: ${room.speakerSlot ?? '-'}</span>
-    </div>
-    <div class="meta">${room.desc || ''}</div>
-  `;
-
-  // slots
-  ulSlots.innerHTML = '';
-  const myOwnedSlot = (room.slots||[]).find(s => s.clientId === clientId) || null;
-
-  (room.slots || []).forEach(s => {
-    const busy = !!(s.clientId || s.playerId);
-    const isMine = !!(s.clientId === clientId);
-    const li = el('li', {},
-      el('div', {class:'row', style:'justify-content:space-between;'},
-        el('div', {}, `#${s.slotNo}`),
-        el('div', {class:'meta'}, room.roles?.[s.slotNo] || '')
-      ),
-      el('div', {class:'col'},
-        el('div', {class: busy ? '' : 'muted'}, busy ? (s.name || 'Player') : '비어있음')
-      ),
-      el('div', {class:'row', style:'justify-content:flex-end;'},
-        (!busy ? el('button', {class:'btn', onclick: async()=>{ await claim(s.slotNo); refresh(); }}, '참가')
-               : (isMine ? el('button', {class:'btn', onclick: async()=>{ await release(); refresh(); }}, '탈퇴')
-                         : el('button', {class:'btn', disabled:true}, '사용중')))
-      )
-    );
-    ulSlots.appendChild(li);
-  });
-
-  // chat input enabled
-  chatInput.disabled = false;
-  chatSend.disabled  = false;
-}
-
-// 7) UI handlers
-leaveBtn.addEventListener('click', async () => {
-  const ok = confirm('이 방에서 나가시겠습니까?');
-  if (!ok) return;
-  await release().catch(()=>{});
-  location.href = 'lobby.html';
-});
-deleteBtn.addEventListener('click', async () => {
-  const ok = confirm('정말 방을 삭제할까요? (되돌릴 수 없음)');
-  if (!ok) return;
-  await delRoom().catch(()=>{});
-  location.href = 'lobby.html';
-});
-speakerBtn.addEventListener('click', async () => {
-  const n = parseInt(speakerIn.value, 10);
-  if (!Number.isFinite(n)) return alert('숫자를 입력하세요');
-  await setSpeaker(n).catch(e=> alert('실패: '+(e?.message||e)));
-  refresh();
-});
-startBtn.addEventListener('click', async () => {
-  await startGame().catch(()=>{});
-  refresh();
-});
-
-function sendChat(){
-  const text = (chatInput.value || '').trim();
-  if (!text) return;
-  chatInput.value = '';
-  safeSend({ type:'chat', roomId, name: myName, text, kind:'room' });
-}
-chatSend.addEventListener('click', sendChat);
-chatInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') sendChat(); });
-
-// boot
 wsConnect();
 refresh();
+loadPrompts();
 </script>
 </body>
 </html>
