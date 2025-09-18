@@ -1,277 +1,313 @@
-<!-- room.html — FULL (교체본) -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>방 - Raid Starter Kit</title>
-  <link rel="stylesheet" href="../styles/base.css"/>
+  <title>Room (Clean)</title>
   <style>
-    #promptPanel { min-width:280px;border-left:1px solid #eee;padding:8px;display:flex;flex-direction:column;gap:8px; }
-    #promptList .row { display:flex; gap:6px; align-items:center; }
-    #promptVars .kv { display:flex; gap:6px; margin:4px 0; }
-    #promptVars .kv label { min-width:84px; }
+    :root { --gap: 12px; --b:#e5e7eb; --fg:#111827; --muted:#6b7280; }
+    * { box-sizing: border-box; }
+    body { margin:0; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--fg); }
+    header { border-bottom:1px solid var(--b); padding:12px 16px; display:flex; align-items:center; gap:10px; }
+    header h1 { margin:0; font-size:18px; }
+    .container { display:grid; grid-template-columns: 1fr 320px; gap:var(--gap); padding:16px; }
+    .card { border:1px solid var(--b); border-radius:10px; padding:12px; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .col { display:flex; flex-direction:column; gap:8px; }
+    .btn { border:1px solid var(--b); padding:6px 10px; border-radius:8px; background:#fff; cursor:pointer; }
+    .btn.primary { background:#111827; color:#fff; border-color:#111827; }
+    .btn.danger { background:#b91c1c; color:#fff; border-color:#b91c1c; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .input { border:1px solid var(--b); border-radius:8px; padding:6px 8px; width:100%; }
+    ul.slots { list-style:none; padding:0; margin:0; display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px; }
+    ul.slots li { border:1px solid var(--b); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+    .muted { color:var(--muted); }
+    .chatlog { height: 240px; overflow:auto; border:1px solid var(--b); border-radius:8px; padding:8px; background:#fff; }
+    .chatitem { margin:4px 0; }
+    .meta { color:var(--muted); font-size:12px; }
+    @media (max-width: 860px){ .container { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <header class="header">
-    <div class="container">
-      <div class="row" style="justify-content:space-between;">
-        <div><h1 style="margin:0;font-size:24px;">🏰 Raid Room</h1></div>
-        <div class="row"><a href="lobby.html" class="btn">로비로</a><button id="leaveRoom" class="btn danger">탈퇴</button></div>
-      </div>
-    </div>
-  </header>
-
-  <div class="container grid" style="grid-template-columns:1fr 420px;">
-    <section>
-      <div id="aiChat"></div>
-      <div style="height:16px"></div>
-      <div id="genChat"></div>
-    </section>
-    <aside>
-      <div id="roomMeta" class="card"></div>
-      <div style="height:16px"></div>
-      <div id="slots"></div>
-      <div style="height:16px"></div>
-      <!-- 호스트 컨트롤(발화자/시작만 유지) -->
-      <div id="hostCtrl" class="card" style="display:none;">
-        <h4>호스트 컨트롤</h4>
-        <div class="row" style="margin-bottom:8px;">
-          <input id="speaker" class="input" placeholder="발화 슬롯 (숫자)" style="max-width:150px" />
-          <button id="setSp" class="btn">발화자 지정</button>
-          <button id="start" class="btn primary" style="margin-left:auto;">게임 시작</button>
-        </div>
-      </div>
-      <div style="height:16px"></div>
-      <!-- 🔹 프롬프트 패널 (목록/실행/생성/삭제) -->
-      <aside id="promptPanel">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <strong>프롬프트</strong>
-          <div class="row" style="gap:6px;">
-            <button id="btnAllow" class="btn">허용 슬롯</button>
-            <button id="btnNewPrompt" class="btn">+ 새로</button>
-          </div>
-        </div>
-        <div id="promptList"></div>
-        <div style="margin-top:8px;border-top:1px solid #eee;padding-top:8px;">
-          <select id="promptSelect"></select>
-          <div id="promptVars"></div>
-          <button id="btnRunPrompt">실행</button>
-        </div>
-      </aside>
-    </aside>
+<header>
+  <h1>🏰 Room</h1>
+  <div class="row" style="margin-left:auto; gap:8px;">
+    <a class="btn" href="lobby.html">로비로</a>
+    <button id="leaveBtn" class="btn">탈퇴</button>
+    <button id="deleteBtn" class="btn danger" style="display:none">방 삭제</button>
   </div>
+</header>
 
-<script type="module">
-  // API/WS 기본값 부트스트랩
-  window.API_BASE = localStorage.RSK_API_BASE || 'https://raid-api.leeeeeeeeujin.workers.dev';
-  window.WS_URL   = localStorage.RSK_WS_URL   || 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
+<div class="container">
+  <section class="col">
+    <div id="meta" class="card"></div>
 
-  import { Store } from '../core/store.js';
-  import { API } from '../core/api.js';
-  import { Prompts } from '../core/api.js';
-  import { WS } from '../core/ws.js';
-  import { mountGeneralChat } from '../components/chat-general.js';
-  import { mountAiChat } from '../components/chat-ai.js';
-  import { mountSlotsGrid } from '../components/slots-grid.js';
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <strong>슬롯</strong>
+        <span class="meta">내 ID: <code id="meId"></code></span>
+      </div>
+      <ul id="slotList" class="slots"></ul>
+    </div>
 
-  const params = new URLSearchParams(location.search);
-  const roomId = params.get('room');
-  if (!roomId){ alert('방 ID가 없습니다'); location.href = 'lobby.html'; }
+    <div class="card col">
+      <div class="row" style="gap:8px;">
+        <input id="chatInput" class="input" placeholder="메시지를 입력하세요 (Enter)"/>
+        <button id="chatSend" class="btn">전송</button>
+      </div>
+      <div id="chatLog" class="chatlog"></div>
+    </div>
+  </section>
 
-  const clientId = Store?.state?.clientId || localStorage.getItem('RSK_CLIENT_ID') || crypto.randomUUID();
-  if (!Store?.state?.clientId) localStorage.setItem('RSK_CLIENT_ID', clientId);
-  const myName = ()=> (Store?.state?.name || localStorage.getItem('RSK_NAME') || 'Player');
+  <aside class="col">
+    <div class="card">
+      <strong>호스트 컨트롤</strong>
+      <div id="hostOnly" class="col" style="margin-top:8px; display:none;">
+        <div class="row">
+          <input id="speakerIn" class="input" placeholder="발화 슬롯 번호"/>
+          <button id="speakerBtn" class="btn">발화자 지정</button>
+        </div>
+        <div class="row" style="justify-content:flex-end;">
+          <button id="startBtn" class="btn primary">게임 시작</button>
+        </div>
+      </div>
+      <div id="hostHint" class="meta">호스트가 아닙니다.</div>
+    </div>
+  </aside>
+</div>
 
-  // WS + 채팅 + 슬롯
-  WS.connect();
-  WS.join(roomId, clientId, myName());
-  const genChat = mountGeneralChat(document.getElementById('genChat'), { roomId, clientId, nameGetter: myName });
-  const aiChat = mountAiChat(document.getElementById('aiChat'), { roomId, clientId, nameGetter: myName });
-  const slotsGrid = mountSlotsGrid(document.getElementById('slots'), {
-    host:false,
-    async onClaim(slotNo){ const char = (Store?.state?.roster||[])[0] || null; if(!char){ alert('로스터에 캐릭터가 없습니다'); return; } try{ await API.claim(roomId,{clientId,name:myName(),slotNo,char}); refresh(); }catch(e){ alert('슬롯 점유 실패:' + (e?.message||e)); } },
-    async onRelease(){ try{ await API.release(roomId,{clientId}); refresh(); }catch(e){ alert('슬롯 해제 실패:' + (e?.message||e)); } },
-    async onReady(){ try{ await API.ready(roomId,{clientId}); refresh(); }catch(e){ alert('준비 상태 변경 실패:' + (e?.message||e)); } },
-    async onKick(slotNo){ if(!confirm('이 플레이어를 추방하시겠습니까?')) return; try{ await API.kick(roomId,{clientId,targetSlot:slotNo}); refresh(); }catch(e){ alert('추방 실패:'+ (e?.message||e)); } }
+<script>
+// ==== Minimal, dependency-free Room client ====
+
+// 0) Boot endpoints (localStorage로 오버라이드 가능)
+const DEFAULT_API_BASE = (localStorage.RSK_API_BASE) || 'https://raid-api.leeeeeeeeujin.workers.dev';
+const DEFAULT_WS_URL   = (localStorage.RSK_WS_URL)   || 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
+const API_BASE = DEFAULT_API_BASE;
+const WS_URL   = DEFAULT_WS_URL;
+
+// 1) Essentials
+const roomId = new URLSearchParams(location.search).get('room');
+if (!roomId) { alert('room 파라미터가 없습니다'); location.href = 'lobby.html'; }
+
+let clientId = localStorage.getItem('RSK_CLIENT_ID');
+if (!clientId) {
+  clientId = (self.crypto?.randomUUID?.() || String(Math.random())).replace(/[^a-z0-9-]/gi, '');
+  localStorage.setItem('RSK_CLIENT_ID', clientId);
+}
+const myName = localStorage.getItem('RSK_NAME') || 'Player';
+
+// 2) DOM refs
+const metaBox = document.getElementById('meta');
+const meIdEl  = document.getElementById('meId');
+const ulSlots = document.getElementById('slotList');
+const leaveBtn = document.getElementById('leaveBtn');
+const deleteBtn = document.getElementById('deleteBtn');
+const hostOnly  = document.getElementById('hostOnly');
+const hostHint  = document.getElementById('hostHint');
+const speakerIn = document.getElementById('speakerIn');
+const speakerBtn= document.getElementById('speakerBtn');
+const startBtn  = document.getElementById('startBtn');
+const chatLog   = document.getElementById('chatLog');
+const chatInput = document.getElementById('chatInput');
+const chatSend  = document.getElementById('chatSend');
+
+meIdEl.textContent = clientId;
+
+// 3) Helpers
+const ensureArr = (v)=> Array.isArray(v) ? v : [];
+function normalizeRoom(r){
+  if (!r) return null;
+  return {
+    id: r.id,
+    title: r.title || '방',
+    desc: r.desc || '',
+    hostId: r.hostId || null,
+    status: r.status || 'lobby',
+    aiMode: r.aiMode || '',
+    speakerSlot: (r.speakerSlot==null||Number.isNaN(+r.speakerSlot))? null : Number(r.speakerSlot),
+    boss: !!r.boss,
+    slots: Array.isArray(r.slots) ? r.slots : [],
+    ready: ensureArr(r.ready),
+    muted: ensureArr(r.muted),
+    banned: ensureArr(r.banned),
+    lockedSlots: ensureArr(r.lockedSlots),
+    promptAllowedSlots: ensureArr(r.promptAllowedSlots),
+    roles: r.roles || {},
+    pairs: r.pairs || {},
+  };
+}
+
+function el(tag, attrs={}, ...children){
+  const x = document.createElement(tag);
+  Object.entries(attrs).forEach(([k,v])=>{
+    if (k==='class') x.className = v;
+    else if (k==='style') x.setAttribute('style', v);
+    else if (k.startsWith('on') && typeof v === 'function') x.addEventListener(k.slice(2), v);
+    else x.setAttribute(k, v);
   });
+  children.forEach(c=> x.appendChild(typeof c==='string' ? document.createTextNode(c) : c));
+  return x;
+}
 
-  const metaBox = document.getElementById('roomMeta');
-  const hostBox = document.getElementById('hostCtrl');
+function logChat(name, text){
+  const line = el('div', {class:'chatitem'}, el('strong',{}, name+': '), document.createTextNode(text));
+  chatLog.appendChild(line);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
 
-  // Prompt panel refs
-  const panel  = document.getElementById('promptPanel');
-  const listEl = document.getElementById('promptList');
-  const selEl  = document.getElementById('promptSelect');
-  const varsEl = document.getElementById('promptVars');
-  const btnNew = document.getElementById('btnNewPrompt');
-  const btnRun = document.getElementById('btnRunPrompt');
-  const btnAllow = document.getElementById('btnAllow');
+// 4) REST calls
+async function getRoom(){
+  const r = await fetch(`${API_BASE}/api/rooms/${roomId}`);
+  if (!r.ok) throw new Error('room not found');
+  const j = await r.json();
+  return normalizeRoom(j.room || j);
+}
+async function claim(slotNo){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/claim`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ clientId, name: myName, slotNo })
+  });
+}
+async function release(){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/release`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ clientId })
+  });
+}
+async function delRoom(){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/delete`, { method:'POST' });
+}
+async function setSpeaker(slotNo){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/speaker`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ clientId, slotNo })
+  });
+}
+async function startGame(){
+  await fetch(`${API_BASE}/api/rooms/${roomId}/start`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ clientId })
+  });
+}
 
-  let ROOM = null;
-  let PROMPTS = [];
-  let __AI_BUSY = false;
-
-  function normalizeRoom(room){
-    const arr = v => Array.isArray(v) ? v : [];
-    return {
-      ...room,
-      slots: Array.isArray(room.slots) ? room.slots : [],
-      ready: arr(room.ready),
-      muted: arr(room.muted),
-      banned: arr(room.banned),
-      lockedSlots: arr(room.lockedSlots),
-      moderators: arr(room.moderators),
-      hosts: arr(room.hosts),
-      promptAllowedSlots: arr(room.promptAllowedSlots),
-      roles: room.roles || {},
-      pairs: room.pairs || {},
-      speakerSlot: (room.speakerSlot==null || Number.isNaN(+room.speakerSlot)) ? null : Number(room.speakerSlot),
-      boss: !!room.boss,
-    };
-  }
-
-  async function refresh(){
-    try{
-      const data = await API.getRoom(roomId);
-      const room = normalizeRoom(data.room || data);
-      render(room);
-    }catch(e){
-      localStorage.removeItem('RSK_ACTIVE_ROOM');
-      console.error('방이 없는 것 같습니다:', e);
-    }
-  }
-
-  function render(room){
-    ROOM = room;
-    const isHost = (room.hostId === clientId);
-
-    metaBox.innerHTML = `<h4>${room.title}</h4>
-      <div class="meta">${room.desc||''}</div>
-      <div class="meta">상태: ${room.status||''} · 모드: ${room.aiMode||''} · 발화자: ${room.speakerSlot??'-'}</div>`;
-
-    const leaveBtn = document.getElementById('leaveRoom');
-    if (leaveBtn) leaveBtn.textContent = isHost ? '방 종료(삭제)' : '탈퇴';
-
-    slotsGrid.render(room, clientId);
-    slotsGrid.setHost(isHost);
-    hostBox.style.display = isHost ? 'block' : 'none';
-
-    // 프롬프트 UI 권한
-    const mySlot = (room.slots||[]).find(s=> (s.playerId||s.clientId) === clientId)?.slotNo ?? null;
-    const allowed = isHost || (mySlot!=null && (room.promptAllowedSlots||[]).includes(mySlot));
-    btnNew.style.display = isHost ? 'inline-block' : 'none';
-    btnAllow.style.display = isHost ? 'inline-block' : 'none';
-    btnRun.disabled = !allowed;
-  }
-
-  async function loadPrompts(){
-    const { prompts=[] } = await Prompts.list(roomId);
-    PROMPTS = prompts;
-    listEl.innerHTML = '';
-    selEl.innerHTML = '';
-    PROMPTS.forEach(p=>{
-      const row = document.createElement('div');
-      row.className = 'row';
-      row.innerHTML = `<span style="flex:1">${p.title}</span>`;
-      if (ROOM?.hostId === clientId) {
-        const del = document.createElement('button');
-        del.textContent = '삭제';
-        del.onclick = async ()=>{ await Prompts.remove(roomId, p.id, clientId); await loadPrompts(); };
-        row.appendChild(del);
+// 5) WS minimal client
+let sock = null;
+function wsConnect(){
+  try {
+    sock = new WebSocket(WS_URL);
+    sock.addEventListener('open', () => {
+      // join → then ready to chat
+      safeSend({ type:'join', roomId, name: myName, clientId });
+    });
+    sock.addEventListener('message', (e) => {
+      let msg; try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg?.type === 'CHAT_PUSH' && msg.message?.roomId === roomId) {
+        const m = msg.message;
+        logChat(m.name || 'Player', m.text || '');
       }
-      listEl.appendChild(row);
-
-      const opt = document.createElement('option');
-      opt.value = p.id; opt.textContent = p.title;
-      selEl.appendChild(opt);
+      if (msg?.type === 'ROOM_STATE' && msg.room?.id === roomId) {
+        render(normalizeRoom(msg.room));
+      }
     });
-    renderVars();
-  }
+    sock.addEventListener('close', () => { /* optionally reconnect */ });
+    sock.addEventListener('error', () => { /* noop */ });
+  } catch(e){ console.warn('WS connect error', e); }
+}
+function safeSend(obj){
+  try{ sock && sock.readyState===1 && sock.send(JSON.stringify(obj)); }catch{}
+}
 
-  function renderVars(){
-    varsEl.innerHTML = '';
-    const pid = selEl.value;
-    const p = PROMPTS.find(x=>x.id===pid);
-    (p?.vars||[]).forEach(k=>{
-      const wrap = document.createElement('div');
-      wrap.className = 'kv';
-      wrap.innerHTML = `<label>${k}</label><input data-k="${k}" />`;
-      varsEl.appendChild(wrap);
-    });
-  }
-  selEl.onchange = renderVars;
-
-  btnNew.onclick = async ()=>{
-    if (ROOM?.hostId !== clientId) return alert('호스트만 가능합니다');
-    const title = prompt('제목?'); if(!title) return;
-    const template = prompt('템플릿? (예: 보스: {{boss}} 파티: {{party}})'); if(!template) return;
-    const vars = (template.match(/{{\s*([\w-]+)\s*}}/g)||[]).map(x=>x.replace(/[{}]/g,'').trim());
-    await Prompts.upsert(roomId, { clientId, title, template, vars });
-    await loadPrompts();
-  };
-
-  btnAllow.onclick = async ()=>{
-    if (ROOM?.hostId !== clientId) return alert('호스트만 가능합니다');
-    const text = prompt('허용 슬롯 번호들(쉼표로 구분, 예: 2,3)');
-    if (text==null) return;
-    const add = text.split(',').map(s=>Number(s.trim())).filter(n=>Number.isFinite(n));
-    const res = await Prompts.allow(roomId, { clientId, add, remove: [] });
-    if (!res.ok && res.code) return alert(res.code);
-    await refresh(); // 허용 슬롯 반영
-  };
-
-  btnRun.onclick = async ()=>{
-    const pid = selEl.value;
-    const p = PROMPTS.find(x=>x.id===pid);
-    if (!p) return alert('프롬프트를 선택하세요');
-    const inputs = [...varsEl.querySelectorAll('input[data-k]')];
-    const vars = {}; inputs.forEach(i => vars[i.dataset.k] = i.value);
-    const mySlot = (ROOM.slots||[]).find(s=> (s.playerId||s.clientId) === clientId)?.slotNo ?? null;
-    const res = await Prompts.ask(roomId, { clientId, slotNo: mySlot, promptId: pid, vars });
-    if (!res.ok) return alert(res.message||'실행 실패');
-  };
-
-  // WS 이벤트들
-  WS.on('CHAT_PUSH', (message) => {
-    const msg = message.message;
-    if (!msg || msg.roomId !== roomId) return;
-    if (msg.kind === 'ai' || msg.channel === 'ai') aiChat.log.push(msg.name, msg.text);
-    else genChat.push(msg.name, msg.text);
-  });
-  WS.on('ROOM_STATE', (message) => { if(message.room?.id === roomId) render(normalizeRoom(message.room)); });
-
-  // leave / delete
-  document.getElementById('leaveRoom')?.addEventListener('click', async ()=>{
-    const isHost = ROOM?.hostId === clientId;
-    if (isHost) {
-      if(!confirm('정말 이 방을 종료(삭제)할까요?')) return;
-      try{
-        try { await API.chat(roomId, { name:'[SYSTEM]', text:'방이 종료됩니다.' }); } catch {}
-        await API.delete(roomId);
-      }catch(e){ alert('방 삭제 중 오류: ' + (e?.message||e)); return; }
-    } else {
-      if(!confirm('이 방에서 탈퇴하시겠습니까?')) return;
-      try{ await API.release(roomId, { clientId }); } catch(e){ alert('탈퇴 처리 중 오류: ' + (e?.message||e)); return; }
-    }
-    localStorage.removeItem('RSK_ACTIVE_ROOM');
+// 6) Render
+async function refresh(){
+  try {
+    const room = await getRoom();
+    render(room);
+  } catch(e){
+    console.error('방 로드 실패:', e);
+    alert('방을 찾을 수 없습니다.');
     location.href = 'lobby.html';
+  }
+}
+
+function render(room){
+  const isHost = (room.hostId === clientId);
+  deleteBtn.style.display = isHost ? 'inline-block' : 'none';
+  hostOnly.style.display = isHost ? 'flex' : 'none';
+  hostHint.style.display = isHost ? 'none' : 'block';
+
+  metaBox.innerHTML = `
+    <div class="row" style="justify-content:space-between;">
+      <strong>${room.title}</strong>
+      <span class="meta">상태: ${room.status} · 발화자: ${room.speakerSlot ?? '-'}</span>
+    </div>
+    <div class="meta">${room.desc || ''}</div>
+  `;
+
+  // slots
+  ulSlots.innerHTML = '';
+  const myOwnedSlot = (room.slots||[]).find(s => s.clientId === clientId) || null;
+
+  (room.slots || []).forEach(s => {
+    const busy = !!(s.clientId || s.playerId);
+    const isMine = !!(s.clientId === clientId);
+    const li = el('li', {},
+      el('div', {class:'row', style:'justify-content:space-between;'},
+        el('div', {}, `#${s.slotNo}`),
+        el('div', {class:'meta'}, room.roles?.[s.slotNo] || '')
+      ),
+      el('div', {class:'col'},
+        el('div', {class: busy ? '' : 'muted'}, busy ? (s.name || 'Player') : '비어있음')
+      ),
+      el('div', {class:'row', style:'justify-content:flex-end;'},
+        (!busy ? el('button', {class:'btn', onclick: async()=>{ await claim(s.slotNo); refresh(); }}, '참가')
+               : (isMine ? el('button', {class:'btn', onclick: async()=>{ await release(); refresh(); }}, '탈퇴')
+                         : el('button', {class:'btn', disabled:true}, '사용중')))
+      )
+    );
+    ulSlots.appendChild(li);
   });
 
-  // 발화자/시작
-  document.getElementById('setSp')?.addEventListener('click', async ()=>{
-    const slotNo = parseInt(document.getElementById('speaker').value,10);
-    if(!slotNo) return;
-    try{ await API.speaker(roomId,{clientId,slotNo}); refresh(); } catch(e){ alert('발화자 지정 실패:'+ (e?.message||e)); }
-  });
-  document.getElementById('start')?.addEventListener('click', async ()=>{
-    try{ await API.start(roomId,{clientId}); } catch(e){ alert('게임 시작 실패: ' + (e?.message||e)); }
-  });
+  // chat input enabled
+  chatInput.disabled = false;
+  chatSend.disabled  = false;
+}
 
-  // boot
-  await refresh();
-  await loadPrompts();
+// 7) UI handlers
+leaveBtn.addEventListener('click', async () => {
+  const ok = confirm('이 방에서 나가시겠습니까?');
+  if (!ok) return;
+  await release().catch(()=>{});
+  location.href = 'lobby.html';
+});
+deleteBtn.addEventListener('click', async () => {
+  const ok = confirm('정말 방을 삭제할까요? (되돌릴 수 없음)');
+  if (!ok) return;
+  await delRoom().catch(()=>{});
+  location.href = 'lobby.html';
+});
+speakerBtn.addEventListener('click', async () => {
+  const n = parseInt(speakerIn.value, 10);
+  if (!Number.isFinite(n)) return alert('숫자를 입력하세요');
+  await setSpeaker(n).catch(e=> alert('실패: '+(e?.message||e)));
+  refresh();
+});
+startBtn.addEventListener('click', async () => {
+  await startGame().catch(()=>{});
+  refresh();
+});
+
+function sendChat(){
+  const text = (chatInput.value || '').trim();
+  if (!text) return;
+  chatInput.value = '';
+  safeSend({ type:'chat', roomId, name: myName, text, kind:'room' });
+}
+chatSend.addEventListener('click', sendChat);
+chatInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') sendChat(); });
+
+// boot
+wsConnect();
+refresh();
 </script>
 </body>
 </html>
