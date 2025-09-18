@@ -56,6 +56,11 @@
   </div>
 
 <script type="module">
+
+  // --- bootstrap API/WS endpoints from localStorage or defaults ---
+  window.API_BASE = (typeof localStorage !== 'undefined' && localStorage.RSK_API_BASE) || 'https://raid-api.leeeeeeeeujin.workers.dev';
+  window.WS_URL   = (typeof localStorage !== 'undefined' && localStorage.RSK_WS_URL)   || 'wss://raid-api.leeeeeeeeujin.workers.dev/ws';
+
   import { Store } from '../core/store.js';
   import { API } from '../core/api.js';
   import { WS } from '../core/ws.js';
@@ -92,13 +97,18 @@
     // refresh/render functions (get room, render UI, set host flag, slots render, aiChat.updateSpeak 등.)
     async function refresh(){ try{ const {room} = await API.getRoom(roomId); render(room); }catch(e){ localStorage.removeItem('RSK_ACTIVE_ROOM'); console.error('방이 없는 것 같습니다:', e); } }
     function render(room){
-  // --- normalize to avoid .includes on undefined ---
+
+  // --- normalize: prevent .includes crashes when fields are missing ---
   try {
     room.slots = Array.isArray(room.slots) ? room.slots : [];
-    ['ready','muted','banned','lockedSlots','moderators','hosts'].forEach(k=>{
-      if (!Array.isArray(room[k])) room[k] = [];
-    });
-    if (room.speakerSlot == null || Number.isNaN(Number(room.speakerSlot))) room.speakerSlot = null;
+    const ensureArr = v => Array.isArray(v) ? v : [];
+    room.ready       = ensureArr(room.ready);
+    room.muted       = ensureArr(room.muted);
+    room.banned      = ensureArr(room.banned);
+    room.lockedSlots = ensureArr(room.lockedSlots);
+    room.moderators  = ensureArr(room.moderators);
+    room.hosts       = ensureArr(room.hosts);
+    if (room.speakerSlot == null || Number.isNaN(+room.speakerSlot)) room.speakerSlot = null;
     if (typeof room.boss !== 'boolean') room.boss = !!room.boss;
   } catch(_) {}
 
