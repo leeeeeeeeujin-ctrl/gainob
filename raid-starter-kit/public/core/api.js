@@ -1,7 +1,5 @@
-// C:\Users\yujin\Videos\gf\frontend\public\core\api.js
-
-// 로컬/배포 전환 편하게: localStorage.RSK_API_BASE 로 덮어쓸 수 있게 함
-const DEFAULT_API_BASE = 'https://raid-api.leeeeeeeeujin.workers.dev'; // ← Workers 배포 주소로 바꿔넣기
+// api.js — REPLACE or MERGE (하단 Prompts 추가)
+const DEFAULT_API_BASE = 'https://raid-api.leeeeeeeeujin.workers.dev';
 const API_BASE = localStorage.getItem('RSK_API_BASE') || DEFAULT_API_BASE;
 
 export const API = {
@@ -19,4 +17,35 @@ export const API = {
 
   runPrompt: (id, body) => fetch(`${API_BASE}/api/rooms/${id}/runPrompt`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}),
   chat:      (id, body) => fetch(`${API_BASE}/api/rooms/${id}/chat`,    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}),
+};
+
+// 🔹 프롬프트 전용 래퍼
+export const Prompts = {
+  list(roomId) {
+    return fetch(`${API_BASE}/api/rooms/${roomId}/prompts`).then(r=>r.json());
+  },
+  upsert(roomId, body) { // {id?, title, template, vars?, allowedSlots?, clientId?}
+    return fetch(`${API_BASE}/api/rooms/${roomId}/prompts`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    }).then(r=>r.json());
+  },
+  remove(roomId, pid, clientId) {
+    return fetch(`${API_BASE}/api/rooms/${roomId}/prompts/${pid}`, {
+      method:'DELETE', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ clientId })
+    }).then(r=>r.json());
+  },
+  allow(roomId, payload) { // { add?:number[], remove?:number[], clientId }
+    return fetch(`${API_BASE}/api/rooms/${roomId}/prompt-allow`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    }).then(r=>r.json());
+  },
+  ask(roomId, payload) { // { clientId, slotNo, promptId? | template?, vars? }
+    return fetch(`${API_BASE}/api/rooms/${roomId}/ask`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    }).then(r=>r.json());
+  }
 };
