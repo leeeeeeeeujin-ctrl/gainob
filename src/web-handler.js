@@ -21,6 +21,25 @@ const modules = require("./modules");
 const moduleContext = createModuleContext(modules);
 const app = express();
 
+// Enable CORS for public API endpoints so external tools (browsers, parsers) can fetch them
+app.use((req, res, next) => {
+  try {
+    if (String(req.path || "").startsWith("/api/public/")) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      if (req.method === "OPTIONS") {
+        res.status(204).end();
+        return;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  next();
+});
+
 // simple in-memory cache for intelligence (macro) to reduce latency on /api/public/market
 const macroCache = new Map();
 const MACRO_CACHE_TTL_MS = 15_000; // keep macro stats for 15s
@@ -559,6 +578,14 @@ app.get("/api/public/market", async (request, response) => {
       }
     }
 
+    const readmePath = path.join(__dirname, "..", "README.md");
+    let readmeContent = null;
+    try {
+      readmeContent = fs.readFileSync(readmePath, "utf8");
+    } catch (_e) {
+      readmeContent = null;
+    }
+
     const macroFields = intelligence
       ? {
           btc_dominance: intelligence.macroStats.btcDominancePct,
@@ -569,6 +596,7 @@ app.get("/api/public/market", async (request, response) => {
 
     if (!conciseFlag) {
       Object.assign(snapshot, macroFields);
+      snapshot.readme = readmeContent;
       response.json(snapshot);
       return;
     }
@@ -580,6 +608,7 @@ app.get("/api/public/market", async (request, response) => {
     const end = request.query.end;
     const payload = await buildConciseMarketSnapshot(snapshot, { candles, trades, orderbookDepth, start, end });
     Object.assign(payload, macroFields);
+    payload.readme = readmeContent;
     response.json(payload);
   } catch (error) {
     response.status(400).json({ error: error.message });
@@ -641,6 +670,94 @@ app.get("/api/public/structure", async (request, response) => {
     });
   } catch (error) {
     response.status(400).json({ error: error.message });
+  }
+});
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// SEO-friendly public pages (server-side rendered) so search engines can index snapshots
+app.get("/public/market", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || request.query.s || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const briefing = await buildPublicBriefing(symbol, timeframe);
+
+    const title = `Market snapshot — ${briefing.symbol} ${briefing.label}`;
+    const description = `Market snapshot for ${briefing.symbol} (${briefing.label}) — price ${briefing.price} USDT — timeframe ${briefing.timeframe}`;
+
+    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
+      title
+    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;line-height:1.4;padding:18px;max-width:980px;margin:auto;color:#0b0b0b}pre{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px;overflow:auto}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Summary</h2><ul><li>Price: ${escapeHtml(String(briefing.price))} USDT</li><li>Timeframe: ${escapeHtml(String(briefing.timeframe))}</li><li>Fetched: ${escapeHtml(String(briefing.fetchedAt))}</li><li>BTC Dominance: ${escapeHtml(String(briefing.btc_dominance))}%</li><li>ETH Dominance: ${escapeHtml(String(briefing.eth_dominance))}%</li></ul><h2>Market & Orderbook</h2><pre>${escapeHtml(JSON.stringify(briefing.market, null, 2))}</pre><h2>Intelligence</h2><pre>${escapeHtml(JSON.stringify(briefing.intelligence, null, 2))}</pre><h2>Notes</h2><pre>${escapeHtml(briefing.usage?.note || "")}</pre></body></html>`;
+
+    response.type("text/html; charset=utf-8").send(html);
+  } catch (err) {
+    response.status(500).send("Error rendering market page: " + escapeHtml(err.message));
+  }
+});
+
+app.get("/public/liquidity", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || request.query.s || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const snapshot = await getMarketSnapshot(symbol, { timeframe });
+    const ob = snapshot.orderbook || {};
+
+    const title = `Liquidity — ${symbol}`;
+    const description = `Liquidity snapshot for ${symbol} — spread ${ob.spreadUsdt} USDT`;
+
+    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
+      title
+    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Orderbook</h2><pre>${escapeHtml(JSON.stringify(ob, null, 2))}</pre></body></html>`;
+
+    response.type("text/html; charset=utf-8").send(html);
+  } catch (err) {
+    response.status(500).send("Error rendering liquidity page: " + escapeHtml(err.message));
+  }
+});
+
+app.get("/public/structure", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || request.query.s || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const packet = await getMultiTimeframeMarketPacket(symbol, { timeframe });
+
+    const title = `Structure — ${symbol}`;
+    const description = `Multi-timeframe structure for ${symbol}`;
+
+    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
+      title
+    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Multi Timeframes</h2><pre>${escapeHtml(JSON.stringify(packet.multiTimeframes || packet, null, 2))}</pre></body></html>`;
+
+    response.type("text/html; charset=utf-8").send(html);
+  } catch (err) {
+    response.status(500).send("Error rendering structure page: " + escapeHtml(err.message));
+  }
+});
+
+// HTML-readable README for search engines (renders markdown as preformatted text)
+app.get("/public/readme", (request, response) => {
+  const readmePath = path.join(__dirname, "..", "README.md");
+
+  try {
+    const data = fs.readFileSync(readmePath, "utf8");
+    const title = "Gainob — README";
+    const description = "Project README and public API documentation.";
+
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
+      title
+    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#fff;padding:12px;border-radius:6px;border:1px solid #eee}</style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(data)}</pre></body></html>`;
+
+    response.type("text/html; charset=utf-8").send(html);
+  } catch (err) {
+    response.status(500).send("README not available");
   }
 });
 
