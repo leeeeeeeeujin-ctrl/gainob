@@ -447,6 +447,27 @@ app.get("/api/public/readme", (request, response) => {
   });
 });
 
+// Alias endpoint: /api/public/info (same content as /api/public/readme)
+app.get("/api/public/info", (request, response) => {
+  const readmePath = path.join(__dirname, "..", "README.md");
+
+  fs.readFile(readmePath, "utf8", (err, data) => {
+    if (err) {
+      response.status(500).json({ error: "README not available" });
+      return;
+    }
+
+    const wantJson = String(request.query.format || "").toLowerCase() === "json";
+
+    if (wantJson) {
+      response.type("application/json; charset=utf-8").json({ content: data });
+      return;
+    }
+
+    response.type("text/markdown; charset=utf-8").send(data);
+  });
+});
+
 async function buildConciseMarketSnapshot(snapshot, options = {}) {
   function parseTime(val) {
     if (val === undefined || val === null || val === "") return null;
