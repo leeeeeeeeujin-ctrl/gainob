@@ -76,6 +76,27 @@ async function getCoinLabel(symbol) {
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
 }
 
+async function inferSymbolFromText(text, fallbackSymbol = "") {
+  const raw = String(text || "").toUpperCase();
+  if (!raw) {
+    return fallbackSymbol;
+  }
+
+  const coins = await getSupportedCoins();
+  const matched = coins.find((coin) => raw.includes(String(coin.symbol || "").toUpperCase()));
+  return matched?.symbol || fallbackSymbol;
+}
+
+function inferTimeframeFromText(text, fallbackTimeframe = "1h") {
+  const raw = String(text || "").toLowerCase();
+  if (raw.includes("15m") || raw.includes("15분")) return "15m";
+  if (raw.includes("4h") || raw.includes("4시간")) return "4h";
+  if (raw.includes("1d") || raw.includes("일봉") || raw.includes("하루")) return "1d";
+  if (raw.includes("1w") || raw.includes("주봉") || raw.includes("주간")) return "1w";
+  if (raw.includes("1h") || raw.includes("1시간")) return "1h";
+  return fallbackTimeframe;
+}
+
 function formatPublicBriefingText(briefing) {
   const lines = [
     `공개 브리핑`,
@@ -1166,8 +1187,8 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
 
     if (askAi) {
       // build context and call analyze flow similar to /api/analyze
-      const symbol = conv.rows[0].symbol || request.body.symbol || '';
-      const timeframe = conv.rows[0].timeframe || request.body.timeframe || '1h';
+      const symbol = await inferSymbolFromText(content, conv.rows[0].symbol || request.body.symbol || '');
+      const timeframe = inferTimeframeFromText(content, conv.rows[0].timeframe || request.body.timeframe || '1h');
       const profile = await getUserProfile(user.id);
       const recentMessages = await query(
         `select sender, content, created_at from conversation_messages where conversation_id = $1 order by created_at desc limit 12`,

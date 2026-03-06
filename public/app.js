@@ -2098,13 +2098,13 @@ elements.conversationList?.addEventListener("click", async (event) => {
 });
 elements.deleteConversationButton?.addEventListener("click", deleteCurrentConversation);
 elements.chatPromptInput?.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+  if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendChatMessage();
   }
 });
 elements.floatingChatPromptInput?.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+  if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendChatMessage("floating");
   }

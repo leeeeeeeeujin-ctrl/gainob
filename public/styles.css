@@ -173,8 +173,11 @@ body::before {
   right: 28px;
   bottom: 24px;
   z-index: 30;
-  width: min(420px, calc(100vw - 40px));
-  max-height: min(62vh, 720px);
+  width: clamp(360px, 34vw, 720px);
+  min-width: 340px;
+  max-width: calc(100vw - 28px);
+  min-height: 280px;
+  max-height: min(78vh, 820px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   border: 1px solid rgba(111, 227, 215, 0.2);
@@ -183,6 +186,7 @@ body::before {
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(16px);
   overflow: hidden;
+  resize: both;
 }
 
 .floating-briefing.is-minimized {
@@ -264,7 +268,7 @@ body::before {
 
 .floating-chat-messages {
   min-height: 180px;
-  max-height: min(34vh, 360px);
+  max-height: none;
   overflow: auto;
   display: grid;
   gap: 8px;
@@ -278,7 +282,9 @@ body::before {
 
 .floating-chat-input-bar textarea {
   min-height: 88px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(248, 250, 252, 0.98);
+  color: #101418;
+  border: 1px solid rgba(148, 163, 184, 0.4);
 }
 
 .floating-chat-actions-row {
@@ -317,6 +323,27 @@ body::before {
 .floating-conversation-item span {
   color: rgba(233, 237, 240, 0.72);
   font-size: 0.76rem;
+}
+
+.floating-chat-messages .chat-message {
+  background: rgba(18, 24, 29, 0.96);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #f4f7fa;
+}
+
+.floating-chat-messages .chat-message.is-ai {
+  background: linear-gradient(135deg, rgba(13, 70, 64, 0.95) 0%, rgba(16, 32, 38, 0.98) 100%);
+  border-color: rgba(94, 234, 212, 0.28);
+}
+
+.floating-chat-messages .chat-message.is-user {
+  background: linear-gradient(135deg, rgba(38, 44, 54, 0.96) 0%, rgba(24, 28, 34, 0.98) 100%);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.floating-chat-messages .chat-message header,
+.floating-chat-messages .chat-message-body {
+  color: #f4f7fa;
 }
 
 .panel-card,
