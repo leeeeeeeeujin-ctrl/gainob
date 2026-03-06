@@ -169,6 +169,9 @@ const viewTitles = {
   accountView: "계정"
 };
 
+const CHART_DRAWING_ENABLED = false;
+const CHART_AI_OVERLAY_ENABLED = false;
+
 const OVERLAY_INDICATOR_DEFS = [
   { id: "range", label: "고저 범위" },
   { id: "midpoint", label: "중앙선" },
@@ -326,8 +329,51 @@ function setOverlayAnalysisStatus(message) {
   }
 }
 
+function syncChartFeatureAvailability() {
+  const drawingControl = elements.drawingToolList?.closest(".quick-control");
+  const overlayToggleControl = elements.overlayToggle?.closest(".overlay-toggle");
+  const overlayPanel = elements.overlayAnalysisStatus?.closest(".overlay-analysis-panel");
+  const annotationPanel = elements.annotationList?.closest(".panel-card");
+
+  if (drawingControl) {
+    drawingControl.hidden = !CHART_DRAWING_ENABLED;
+  }
+
+  if (overlayToggleControl) {
+    overlayToggleControl.hidden = !CHART_AI_OVERLAY_ENABLED;
+  }
+
+  if (overlayPanel) {
+    overlayPanel.hidden = !CHART_AI_OVERLAY_ENABLED;
+  }
+
+  if (annotationPanel) {
+    annotationPanel.hidden = !CHART_DRAWING_ENABLED && !CHART_AI_OVERLAY_ENABLED;
+  }
+
+  if (elements.overlayToggle) {
+    elements.overlayToggle.checked = CHART_AI_OVERLAY_ENABLED;
+    elements.overlayToggle.disabled = !CHART_AI_OVERLAY_ENABLED;
+  }
+
+  if (!CHART_DRAWING_ENABLED) {
+    state.drawingTool = "move";
+    state.pendingDrawing = null;
+    state.manualAnnotations = [];
+    state.focusRegion = null;
+  }
+
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    state.aiAnnotations = [];
+    state.overlayIndicatorAnnotations = [];
+    state.overlaySignals = [];
+    state.overlayBias = null;
+    state.selectedAnnotationSource = null;
+  }
+}
+
 function isOverlaySelectionMode() {
-  return Boolean(elements.overlayToggle?.checked && state.drawingTool === "move");
+  return Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked && state.drawingTool === "move");
 }
 
 function updateChartOverlayMode() {
@@ -335,7 +381,7 @@ function updateChartOverlayMode() {
     return;
   }
 
-  elements.chartHost.classList.toggle("is-overlay-mode", Boolean(elements.overlayToggle?.checked));
+  elements.chartHost.classList.toggle("is-overlay-mode", Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked));
   elements.chartHost.classList.toggle("is-selecting", isOverlaySelectionMode() || state.overlaySelection.active);
 }
 
@@ -1560,6 +1606,12 @@ function getActiveAnnotations() {
 }
 
 function renderAnnotationList() {
+  if (!CHART_DRAWING_ENABLED && !CHART_AI_OVERLAY_ENABLED) {
+    elements.annotationSummary.textContent = "차트는 현재 읽기 전용입니다.";
+    elements.annotationList.innerHTML = "드로잉과 AI 오버레이는 임시 비활성화 상태입니다.";
+    return;
+  }
+
   const annotations = getActiveAnnotations();
   const manualCount = state.manualAnnotations.length;
   const focusCount = state.focusRegion ? 1 : 0;
@@ -2164,14 +2216,24 @@ function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {})
 }
 
 function renderChartOverlay() {
+  if (!CHART_DRAWING_ENABLED && !CHART_AI_OVERLAY_ENABLED) {
+    if (elements.chartAiOverlay) {
+      elements.chartAiOverlay.innerHTML = "";
+    }
+    if (elements.chartDrawingOverlay) {
+      elements.chartDrawingOverlay.innerHTML = "";
+    }
+    return;
+  }
+
   const drawingAnnotations = [...state.manualAnnotations, ...(state.focusRegion ? [state.focusRegion] : [])];
   const automatedAnnotations = [
-    ...(elements.overlayToggle.checked
+    ...(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked
       ? state.aiAnnotations.length
         ? state.aiAnnotations
         : state.snapshot?.annotations || []
       : []),
-    ...(elements.overlayToggle.checked ? state.overlayIndicatorAnnotations : [])
+    ...(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked ? state.overlayIndicatorAnnotations : [])
   ];
   const sourceMap = state.annotationSourceMap || {};
 
@@ -2392,6 +2454,8 @@ function renderMarketWorkspace(snapshot) {
   const timeframeLabel =
     state.timeframes.find((timeframe) => timeframe.id === snapshot.timeframe)?.label || snapshot.timeframe;
 
+  syncChartFeatureAvailability();
+
   elements.marketHeadline.textContent = `${snapshot.symbol} / ${snapshot.pair}`;
   elements.chartMeta.textContent = `Binance Spot · ${timeframeLabel}`;
   elements.selectedMarketMeta.textContent = `${snapshot.primary.market} · ${formatUsdt(snapshot.primary.priceUsdt)}`;
@@ -2415,11 +2479,11 @@ function renderMarketWorkspace(snapshot) {
   renderOverlayAnnotationSource();
   updateChartOverlayMode();
   setOverlayAnalysisStatus(
-    elements.overlayToggle.checked
+    CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked
       ? state.focusRegion
         ? "선택 구간이 활성화되어 있습니다. 지표 토글을 바꾸면 즉시 반영됩니다."
         : "드래그해서 분석할 구간을 지정하세요."
-      : "AI 오버레이를 켜면 차트를 드래그해서 영역 분석을 시작할 수 있습니다."
+      : "차트는 현재 읽기 전용입니다."
   );
   renderAnnotationList();
   renderTimeframeButtons();
@@ -2944,6 +3008,10 @@ elements.floatingBriefingMinimizeButton.addEventListener("click", () => {
   savePersonalSettings();
 });
 elements.chartHost.addEventListener("click", (event) => {
+  if (!CHART_DRAWING_ENABLED) {
+    return;
+  }
+
   if (state.drawingTool === "move") {
     return;
   }
@@ -2956,6 +3024,10 @@ elements.chartHost.addEventListener("click", (event) => {
   handleDrawingClick(event);
 });
 elements.chartHost.addEventListener("contextmenu", (event) => {
+  if (!CHART_DRAWING_ENABLED && !CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   const annotationElement = event.target.closest?.("[data-annotation-id]");
 
   if (!annotationElement) {
@@ -3004,6 +3076,10 @@ elements.timeframeShortcutList.addEventListener("click", (event) => {
   refreshMarket();
 });
 elements.drawingToolList.addEventListener("click", (event) => {
+  if (!CHART_DRAWING_ENABLED) {
+    return;
+  }
+
   const button = event.target.closest("[data-drawing-tool]");
 
   if (!button) {
@@ -3031,6 +3107,10 @@ elements.undoDrawingButton.addEventListener("click", () => {
 });
 elements.clearDrawingsButton.addEventListener("click", clearManualAnnotations);
 elements.overlayToggle.addEventListener("change", () => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   savePersonalSettings();
   updateChartOverlayMode();
   renderOverlayIndicatorControls();
@@ -3049,6 +3129,10 @@ elements.overlayToggle.addEventListener("change", () => {
   }
 });
 elements.overlayIndicatorList?.addEventListener("click", (event) => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   const button = event.target.closest("[data-overlay-indicator]");
   if (!button) {
     return;
@@ -3066,13 +3150,25 @@ elements.overlayIndicatorList?.addEventListener("click", (event) => {
   );
 });
 elements.overlayAnalyzeButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   requestOverlayAnalysis();
 });
 elements.overlayIndicatorsOnlyButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   refreshOverlayIndicators();
   setOverlayAnalysisStatus("선택 구간 지표만 다시 계산했습니다.");
 });
 elements.overlayChatButton?.addEventListener("click", async () => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   if (!state.focusRegion) {
     setOverlayAnalysisStatus("먼저 구간을 선택하세요.");
     return;
@@ -3088,6 +3184,10 @@ elements.overlayChatButton?.addEventListener("click", async () => {
   }
 });
 elements.chartAiOverlay?.addEventListener("click", (event) => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   const target = event.target.closest("[data-chat-message-id]");
   if (!target) {
     return;
@@ -3100,6 +3200,10 @@ elements.chartAiOverlay?.addEventListener("click", (event) => {
   focusLinkedChatMessage(messageId);
 });
 elements.overlayAnnotationSource?.addEventListener("click", (event) => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
   const button = event.target.closest("[data-jump-chat-message-id]");
   if (!button) {
     return;
