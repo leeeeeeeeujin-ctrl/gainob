@@ -5,10 +5,9 @@ const state = {
   activeViewId: "overviewView",
   account: null,
   timeframes: [],
-  chart: null,
-  candleSeries: null,
   resizeObserver: null,
-  aiAnnotations: []
+  aiAnnotations: [],
+  chartGeometry: null
 };
 
 const elements = {
@@ -121,6 +120,10 @@ function formatShortTime(value) {
 
 function toChartTime(timestamp) {
   return Math.floor(Number(timestamp) / 1000);
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function loadPersonalSettings() {
@@ -343,70 +346,20 @@ function renderAnnotationList() {
 }
 
 function ensureChart() {
-  if (state.chart || !window.LightweightCharts || !elements.chartCanvas) {
+  if (state.resizeObserver || !elements.chartHost) {
     return;
   }
-
-  const hostWidth = elements.chartHost?.clientWidth || 0;
-  const hostHeight = elements.chartHost?.clientHeight || 0;
-
-  if (hostWidth < 80 || hostHeight < 160) {
-    return;
-  }
-
-  state.chart = window.LightweightCharts.createChart(elements.chartCanvas, {
-    width: hostWidth,
-    height: hostHeight,
-    layout: {
-      background: { color: "transparent" },
-      textColor: "#d7e2eb"
-    },
-    grid: {
-      vertLines: { color: "rgba(255,255,255,0.05)" },
-      horzLines: { color: "rgba(255,255,255,0.05)" }
-    },
-    rightPriceScale: {
-      borderColor: "rgba(255,255,255,0.08)"
-    },
-    timeScale: {
-      borderColor: "rgba(255,255,255,0.08)",
-      timeVisible: true
-    },
-    crosshair: {
-      vertLine: { color: "rgba(14, 165, 160, 0.4)" },
-      horzLine: { color: "rgba(14, 165, 160, 0.4)" }
-    }
-  });
-
-  state.candleSeries = state.chart.addCandlestickSeries({
-    upColor: "#0ea5a0",
-    downColor: "#d2483f",
-    borderVisible: false,
-    wickUpColor: "#0ea5a0",
-    wickDownColor: "#d2483f"
-  });
 
   if (typeof ResizeObserver === "function") {
     state.resizeObserver = new ResizeObserver(() => {
-      if (!state.chart) {
+      if (!state.snapshot || state.activeViewId !== "marketView") {
         return;
       }
 
-      state.chart.applyOptions({
-        width: elements.chartHost.clientWidth,
-        height: elements.chartHost.clientHeight || 420
-      });
+      renderChart(state.snapshot);
       renderChartOverlay();
     });
     state.resizeObserver.observe(elements.chartHost);
-  }
-
-  const timeScale = state.chart.timeScale();
-
-  if (typeof timeScale.subscribeVisibleLogicalRangeChange === "function") {
-    timeScale.subscribeVisibleLogicalRangeChange(() => {
-      window.requestAnimationFrame(renderChartOverlay);
-    });
   }
 }
 
@@ -415,21 +368,34 @@ function renderChartOverlay() {
 
   if (
     state.activeViewId !== "marketView" ||
-    !state.chart ||
-    !state.candleSeries ||
     !state.snapshot ||
+    !state.chartGeometry ||
     !annotations.length
   ) {
     elements.chartOverlay.innerHTML = "";
     return;
   }
 
-  const width = elements.chartCanvas.clientWidth;
-  const height = elements.chartCanvas.clientHeight;
+  const width = elements.chartHost.clientWidth;
+  const height = elements.chartHost.clientHeight;
   elements.chartOverlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-  const priceToY = (price) => state.candleSeries.priceToCoordinate(Number(price));
-  const timeToX = (time) => state.chart.timeScale().timeToCoordinate(toChartTime(time));
+  const priceToY = (price) => {
+    const { minPrice, maxPrice, top, plotHeight } = state.chartGeometry;
+    const ratio = (Number(price) - minPrice) / Math.max(maxPrice - minPrice, 1);
+    return top + plotHeight - ratio * plotHeight;
+  };
+  const timeToX = (time) => {
+    const { candles, left, plotWidth } = state.chartGeometry;
+    if (!candles.length) {
+      return null;
+    }
+
+    const firstTime = candles[0].timestamp;
+    const lastTime = candles.at(-1).timestamp;
+    const ratio = (Number(time) - firstTime) / Math.max(lastTime - firstTime, 1);
+    return left + clamp(ratio, 0, 1) * plotWidth;
+  };
 
   const shapes = annotations
     .map((annotation) => {
@@ -492,11 +458,6 @@ function renderChartOverlay() {
 }
 
 function renderChart(snapshot) {
-  if (!window.LightweightCharts) {
-    elements.annotationSummary.textContent = "차트 라이브러리를 불러오지 못했습니다.";
-    return;
-  }
-
   if (state.activeViewId !== "marketView") {
     return;
   }
@@ -513,25 +474,95 @@ function renderChart(snapshot) {
 
   ensureChart();
 
-  if (!state.candleSeries) {
-    return;
-  }
-
   if (!snapshot.candles.length) {
+    state.chartGeometry = null;
+    elements.chartCanvas.innerHTML = "";
     elements.chartOverlay.innerHTML = "";
     return;
   }
 
-  const candleData = snapshot.candles.map((candle) => ({
-    time: toChartTime(candle.timestamp),
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close
-  }));
+  const padding = { top: 16, right: 74, bottom: 28, left: 14 };
+  const plotWidth = Math.max(hostWidth - padding.left - padding.right, 40);
+  const plotHeight = Math.max(hostHeight - padding.top - padding.bottom, 40);
+  const lows = snapshot.candles.map((candle) => candle.low);
+  const highs = snapshot.candles.map((candle) => candle.high);
+  const minLow = Math.min(...lows);
+  const maxHigh = Math.max(...highs);
+  const pricePadding = (maxHigh - minLow || snapshot.bithumb.priceKrw * 0.02 || 1) * 0.12;
+  const minPrice = Math.max(minLow - pricePadding, 0);
+  const maxPrice = maxHigh + pricePadding;
+  const candleGap = plotWidth / Math.max(snapshot.candles.length, 1);
+  const candleWidth = Math.max(Math.min(candleGap * 0.56, 12), 3);
+  const yForPrice = (price) => {
+    const ratio = (price - minPrice) / Math.max(maxPrice - minPrice, 1);
+    return padding.top + plotHeight - ratio * plotHeight;
+  };
+  const xForIndex = (index) => padding.left + candleGap * index + candleGap / 2;
 
-  state.candleSeries.setData(candleData);
-  state.chart.timeScale().fitContent();
+  const gridLines = Array.from({ length: 5 }, (_, index) => {
+    const ratio = index / 4;
+    const y = padding.top + plotHeight * ratio;
+    const price = maxPrice - (maxPrice - minPrice) * ratio;
+    return `
+      <line x1="${padding.left}" y1="${y}" x2="${padding.left + plotWidth}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+      <text x="${padding.left + plotWidth + 10}" y="${y + 4}" fill="#96a7b5" font-size="11">${escapeHtml(formatNumber(price, 0))}</text>
+    `;
+  }).join("");
+
+  const timeLabels = snapshot.candles
+    .filter((_, index) => index === 0 || index === snapshot.candles.length - 1 || index % Math.max(Math.floor(snapshot.candles.length / 4), 1) === 0)
+    .map((candle, index, collection) => {
+      const candleIndex = snapshot.candles.findIndex((entry) => entry.timestamp === candle.timestamp);
+      const x = xForIndex(candleIndex);
+      const anchor = index === 0 ? "start" : index === collection.length - 1 ? "end" : "middle";
+      return `<text x="${x}" y="${padding.top + plotHeight + 18}" text-anchor="${anchor}" fill="#96a7b5" font-size="11">${escapeHtml(formatShortTime(candle.timestamp))}</text>`;
+    })
+    .join("");
+
+  const candleSvg = snapshot.candles
+    .map((candle, index) => {
+      const x = xForIndex(index);
+      const openY = yForPrice(candle.open);
+      const closeY = yForPrice(candle.close);
+      const highY = yForPrice(candle.high);
+      const lowY = yForPrice(candle.low);
+      const isUp = candle.close >= candle.open;
+      const color = isUp ? "#0ea5a0" : "#d2483f";
+      const bodyY = Math.min(openY, closeY);
+      const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5);
+
+      return `
+        <line x1="${x}" y1="${highY}" x2="${x}" y2="${lowY}" stroke="${color}" stroke-width="1.5" />
+        <rect x="${x - candleWidth / 2}" y="${bodyY}" width="${candleWidth}" height="${bodyHeight}" fill="${color}" rx="1.5" ry="1.5" />
+      `;
+    })
+    .join("");
+
+  const currentLineY = yForPrice(snapshot.bithumb.priceKrw);
+  const currentLine = `
+    <line x1="${padding.left}" y1="${currentLineY}" x2="${padding.left + plotWidth}" y2="${currentLineY}" stroke="rgba(111, 227, 215, 0.5)" stroke-width="1" stroke-dasharray="5 4" />
+    <text x="${padding.left + plotWidth + 10}" y="${currentLineY - 6}" fill="#6fe3d7" font-size="11">NOW ${escapeHtml(formatNumber(snapshot.bithumb.priceKrw, 0))}</text>
+  `;
+
+  elements.chartCanvas.innerHTML = `
+    <svg viewBox="0 0 ${hostWidth} ${hostHeight}" width="100%" height="100%" role="img" aria-label="${escapeHtml(snapshot.symbol)} candle chart">
+      <rect x="0" y="0" width="${hostWidth}" height="${hostHeight}" fill="transparent" />
+      ${gridLines}
+      ${currentLine}
+      ${candleSvg}
+      ${timeLabels}
+    </svg>
+  `;
+
+  state.chartGeometry = {
+    candles: snapshot.candles,
+    left: padding.left,
+    top: padding.top,
+    plotWidth,
+    plotHeight,
+    minPrice,
+    maxPrice
+  };
   window.requestAnimationFrame(renderChartOverlay);
 }
 
