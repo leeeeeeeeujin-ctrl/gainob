@@ -43,6 +43,7 @@ const elements = {
   tradesOutput: document.querySelector("#tradesOutput"),
   annotationList: document.querySelector("#annotationList"),
   annotationSummary: document.querySelector("#annotationSummary"),
+  chartHost: document.querySelector(".chart-host"),
   chartCanvas: document.querySelector("#chartCanvas"),
   chartOverlay: document.querySelector("#chartOverlay"),
   chartMeta: document.querySelector("#chartMeta"),
@@ -346,9 +347,16 @@ function ensureChart() {
     return;
   }
 
+  const hostWidth = elements.chartHost?.clientWidth || 0;
+  const hostHeight = elements.chartHost?.clientHeight || 0;
+
+  if (hostWidth < 80 || hostHeight < 160) {
+    return;
+  }
+
   state.chart = window.LightweightCharts.createChart(elements.chartCanvas, {
-    width: elements.chartCanvas.clientWidth,
-    height: elements.chartCanvas.clientHeight || 420,
+    width: hostWidth,
+    height: hostHeight,
     layout: {
       background: { color: "transparent" },
       textColor: "#d7e2eb"
@@ -385,12 +393,12 @@ function ensureChart() {
       }
 
       state.chart.applyOptions({
-        width: elements.chartCanvas.clientWidth,
-        height: elements.chartCanvas.clientHeight || 420
+        width: elements.chartHost.clientWidth,
+        height: elements.chartHost.clientHeight || 420
       });
       renderChartOverlay();
     });
-    state.resizeObserver.observe(elements.chartCanvas);
+    state.resizeObserver.observe(elements.chartHost);
   }
 
   const timeScale = state.chart.timeScale();
@@ -493,7 +501,21 @@ function renderChart(snapshot) {
     return;
   }
 
+  const hostWidth = elements.chartHost?.clientWidth || 0;
+  const hostHeight = elements.chartHost?.clientHeight || 0;
+
+  if (hostWidth < 80 || hostHeight < 160) {
+    window.requestAnimationFrame(() => {
+      renderChart(snapshot);
+    });
+    return;
+  }
+
   ensureChart();
+
+  if (!state.candleSeries) {
+    return;
+  }
 
   if (!snapshot.candles.length) {
     elements.chartOverlay.innerHTML = "";
@@ -613,8 +635,10 @@ function setActiveView(viewId) {
   savePersonalSettings();
 
   if (viewId === "marketView" && state.snapshot) {
-    renderMarketWorkspace(state.snapshot);
-    window.requestAnimationFrame(renderChartOverlay);
+    window.requestAnimationFrame(() => {
+      renderMarketWorkspace(state.snapshot);
+      renderChartOverlay();
+    });
   }
 }
 

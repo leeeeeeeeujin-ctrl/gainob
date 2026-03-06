@@ -66,6 +66,10 @@ async function createUserSession(userId, request, response) {
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(
+  "/vendor/lightweight-charts",
+  express.static(path.join(__dirname, "..", "node_modules", "lightweight-charts", "dist"))
+);
 
 app.get("/api/health", (_request, response) => {
   response.json({
