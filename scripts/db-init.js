@@ -22,8 +22,33 @@ const statements = [
       style text,
       risk_rule text,
       watch_items text,
+      ai_provider text,
+      openai_api_key text,
+      openai_model text,
+      gemini_api_key text,
+      gemini_model text,
       updated_at timestamptz not null default now()
     );
+  `,
+  `
+    alter table user_profiles
+    add column if not exists ai_provider text;
+  `,
+  `
+    alter table user_profiles
+    add column if not exists openai_api_key text;
+  `,
+  `
+    alter table user_profiles
+    add column if not exists openai_model text;
+  `,
+  `
+    alter table user_profiles
+    add column if not exists gemini_api_key text;
+  `,
+  `
+    alter table user_profiles
+    add column if not exists gemini_model text;
   `,
   `
     create table if not exists journal_entries (

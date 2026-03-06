@@ -18,6 +18,7 @@ const elements = {
   timeframeSelect: document.querySelector("#timeframeSelect"),
   refreshButton: document.querySelector("#refreshButton"),
   analyzeButton: document.querySelector("#analyzeButton"),
+  aiProviderSelect: document.querySelector("#aiProviderSelect"),
   aliasInput: document.querySelector("#aliasInput"),
   styleInput: document.querySelector("#styleInput"),
   riskRuleInput: document.querySelector("#riskRuleInput"),
@@ -67,6 +68,13 @@ const elements = {
   chartPriceChip: document.querySelector("#chartPriceChip"),
   chartComparisonChip: document.querySelector("#chartComparisonChip"),
   accountStatus: document.querySelector("#accountStatus"),
+  accountAiProviderSelect: document.querySelector("#accountAiProviderSelect"),
+  accountOpenAiModelInput: document.querySelector("#accountOpenAiModelInput"),
+  accountOpenAiKeyInput: document.querySelector("#accountOpenAiKeyInput"),
+  accountGeminiModelInput: document.querySelector("#accountGeminiModelInput"),
+  accountGeminiKeyInput: document.querySelector("#accountGeminiKeyInput"),
+  saveAiSettingsButton: document.querySelector("#saveAiSettingsButton"),
+  aiSettingsStatus: document.querySelector("#aiSettingsStatus"),
   authUsernameInput: document.querySelector("#authUsernameInput"),
   authDisplayNameInput: document.querySelector("#authDisplayNameInput"),
   authPasswordInput: document.querySelector("#authPasswordInput"),
@@ -161,6 +169,7 @@ function loadPersonalSettings() {
 
     const saved = JSON.parse(raw);
     elements.aliasInput.value = saved.alias || "";
+    elements.aiProviderSelect.value = saved.aiProvider || "auto";
     elements.styleInput.value = saved.style || "";
     elements.riskRuleInput.value = saved.riskRule || "";
     elements.watchItemsInput.value = saved.watchItems || "";
@@ -188,6 +197,7 @@ function savePersonalSettings() {
     "coin-ai-briefing:personal-settings",
     JSON.stringify({
       alias: elements.aliasInput.value,
+      aiProvider: elements.aiProviderSelect.value || "auto",
       style: elements.styleInput.value,
       riskRule: elements.riskRuleInput.value,
       watchItems: elements.watchItemsInput.value,
@@ -205,6 +215,10 @@ function savePersonalSettings() {
 function setAnalysisMessage(message) {
   elements.analysisOutput.textContent = message;
   elements.analysisOutputMirror.textContent = message;
+}
+
+function setAiSettingsStatus(message) {
+  elements.aiSettingsStatus.textContent = message;
 }
 
 function renderFactsHtml(snapshot) {
@@ -922,6 +936,30 @@ function renderAccount(account) {
     elements.authUsernameInput.value = account.user.username;
     elements.authDisplayNameInput.value = account.user.display_name || "";
   }
+
+  const aiSettings = account.aiSettings || {
+    provider: "auto",
+    openAiModel: "gpt-4.1-mini",
+    geminiModel: "gemini-2.5-flash",
+    hasOpenAiKey: false,
+    hasGeminiKey: false
+  };
+
+  elements.accountAiProviderSelect.value = aiSettings.provider || "auto";
+  elements.accountOpenAiModelInput.value = aiSettings.openAiModel || "gpt-4.1-mini";
+  elements.accountGeminiModelInput.value = aiSettings.geminiModel || "gemini-2.5-flash";
+  elements.accountOpenAiKeyInput.value = "";
+  elements.accountGeminiKeyInput.value = "";
+  if (account.authenticated) {
+    elements.aiProviderSelect.value = aiSettings.provider || "auto";
+  }
+  setAiSettingsStatus(
+    account.authenticated
+      ? `저장 상태 · GPT 키 ${aiSettings.hasOpenAiKey ? "있음" : "없음"} / Gemini 키 ${
+          aiSettings.hasGeminiKey ? "있음" : "없음"
+        }`
+      : "로그인 후 계정별 AI 설정을 저장할 수 있습니다."
+  );
 }
 
 function setActiveView(viewId) {
@@ -955,6 +993,7 @@ function buildAnalysisPayload() {
   return {
     symbol: elements.coinSelect.value,
     timeframe: elements.timeframeSelect.value,
+    provider: elements.aiProviderSelect.value || "auto",
     modules: getEnabledModules(),
     profile: {
       alias: elements.aliasInput.value,
@@ -967,6 +1006,17 @@ function buildAnalysisPayload() {
       focusQuestion: elements.focusQuestionInput.value
     }
   };
+}
+
+function formatAiHeading(provider, model) {
+  if (!provider) {
+    return "[AI]";
+  }
+
+  const providerLabel =
+    provider === "openai" ? "GPT" : provider === "gemini" ? "Gemini" : provider === "auto" ? "Auto" : "AI";
+
+  return model ? `[${providerLabel} · ${model}]` : `[${providerLabel}]`;
 }
 
 async function fetchJson(url, options) {
@@ -1028,6 +1078,45 @@ async function loadAccount() {
     renderAccount(payload);
   } catch (_error) {
     renderAccount(null);
+  }
+}
+
+async function saveAiSettings() {
+  if (!state.account?.authenticated) {
+    setAiSettingsStatus("먼저 로그인해야 계정별 AI 설정을 저장할 수 있습니다.");
+    return;
+  }
+
+  try {
+    const payload = await fetchJson("/api/account/ai-settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        provider: elements.accountAiProviderSelect.value || "auto",
+        openAiModel: elements.accountOpenAiModelInput.value,
+        openAiKey: elements.accountOpenAiKeyInput.value,
+        geminiModel: elements.accountGeminiModelInput.value,
+        geminiKey: elements.accountGeminiKeyInput.value
+      })
+    });
+
+    const mergedAccount = {
+      ...(state.account || {}),
+      aiSettings: payload.aiSettings
+    };
+    state.account = mergedAccount;
+    renderAccount(mergedAccount);
+    elements.aiProviderSelect.value = payload.aiSettings.provider || "auto";
+    savePersonalSettings();
+    setAiSettingsStatus(
+      `저장 완료 · GPT 키 ${payload.aiSettings.hasOpenAiKey ? "있음" : "없음"} / Gemini 키 ${
+        payload.aiSettings.hasGeminiKey ? "있음" : "없음"
+      }`
+    );
+  } catch (error) {
+    setAiSettingsStatus(error.message);
   }
 }
 
@@ -1205,7 +1294,7 @@ async function analyze() {
     renderAnnotationList();
     renderChartOverlay();
     renderModuleStatus(payload.context);
-    setAnalysisMessage(payload.analysis);
+    setAnalysisMessage(`${formatAiHeading(payload.provider, payload.model)}\n\n${payload.analysis}`);
     setActiveView("briefingView");
   } catch (error) {
     setAnalysisMessage(error.message);
@@ -1260,6 +1349,7 @@ elements.registerButton.addEventListener("click", registerAccount);
 elements.loginButton.addEventListener("click", loginAccount);
 elements.logoutButton.addEventListener("click", logoutAccount);
 elements.deleteAccountButton.addEventListener("click", deleteAccount);
+elements.saveAiSettingsButton.addEventListener("click", saveAiSettings);
 elements.navButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveView(button.dataset.viewTarget);
@@ -1267,6 +1357,7 @@ elements.navButtons.forEach((button) => {
 });
 
 [
+  elements.aiProviderSelect,
   elements.aliasInput,
   elements.styleInput,
   elements.riskRuleInput,

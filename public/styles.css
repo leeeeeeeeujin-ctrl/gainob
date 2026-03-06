@@ -194,7 +194,7 @@ body::before {
 
 .topbar-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 220px) 112px 112px;
+  grid-template-columns: 132px minmax(180px, 220px) 112px 112px;
   gap: 8px;
   justify-content: end;
 }

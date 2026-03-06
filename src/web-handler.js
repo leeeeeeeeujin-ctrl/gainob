@@ -25,6 +25,16 @@ async function getCoinLabel(symbol) {
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
 }
 
+function summarizeAiSettings(profile) {
+  return {
+    provider: profile?.ai_provider || "auto",
+    openAiModel: profile?.openai_model || "gpt-4.1-mini",
+    geminiModel: profile?.gemini_model || "gemini-2.5-flash",
+    hasOpenAiKey: Boolean(profile?.openai_api_key),
+    hasGeminiKey: Boolean(profile?.gemini_api_key)
+  };
+}
+
 async function getAuthenticatedUser(request) {
   const sessionToken = getSessionTokenFromRequest(request);
 
@@ -45,6 +55,30 @@ async function getAuthenticatedUser(request) {
       limit 1
     `,
     [hashToken(sessionToken)]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function getUserProfile(userId) {
+  const result = await query(
+    `
+      select
+        user_id,
+        style,
+        risk_rule,
+        watch_items,
+        ai_provider,
+        openai_api_key,
+        openai_model,
+        gemini_api_key,
+        gemini_model,
+        updated_at
+      from user_profiles
+      where user_id = $1
+      limit 1
+    `,
+    [userId]
   );
 
   return result.rows[0] || null;
@@ -95,11 +129,13 @@ app.get("/api/modules", (_request, response) => {
 app.get("/api/session", async (request, response) => {
   const database = await getDatabaseStatus();
   const user = database.connected ? await getAuthenticatedUser(request) : null;
+  const profile = database.connected && user ? await getUserProfile(user.id) : null;
 
   response.json({
     authenticated: Boolean(user),
     provider: "internal",
     user,
+    aiSettings: summarizeAiSettings(profile),
     serverReady: database.connected,
     database,
     message: database.connected
@@ -155,6 +191,75 @@ app.post("/api/auth/register", async (request, response) => {
 
     response.status(isConflict ? 409 : 400).json({
       error: isConflict ? "이미 존재하는 아이디입니다." : error.message
+    });
+  }
+});
+
+app.get("/api/account/ai-settings", async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+
+    if (!user) {
+      throw new Error("로그인된 계정이 없습니다.");
+    }
+
+    const profile = await getUserProfile(user.id);
+    response.json({
+      ok: true,
+      aiSettings: summarizeAiSettings(profile)
+    });
+  } catch (error) {
+    response.status(400).json({
+      error: error.message
+    });
+  }
+});
+
+app.post("/api/account/ai-settings", async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+
+    if (!user) {
+      throw new Error("로그인된 계정이 없습니다.");
+    }
+
+    const provider = String(request.body.provider || "auto").trim().toLowerCase();
+    const openAiModel = String(request.body.openAiModel || "").trim();
+    const geminiModel = String(request.body.geminiModel || "").trim();
+    const openAiKey = String(request.body.openAiKey || "").trim();
+    const geminiKey = String(request.body.geminiKey || "").trim();
+
+    await query(
+      `
+        insert into user_profiles (
+          user_id,
+          ai_provider,
+          openai_api_key,
+          openai_model,
+          gemini_api_key,
+          gemini_model,
+          updated_at
+        )
+        values ($1, $2, nullif($3, ''), nullif($4, ''), nullif($5, ''), nullif($6, ''), now())
+        on conflict (user_id) do update set
+          ai_provider = excluded.ai_provider,
+          openai_api_key = case when excluded.openai_api_key is not null then excluded.openai_api_key else user_profiles.openai_api_key end,
+          openai_model = case when excluded.openai_model is not null then excluded.openai_model else user_profiles.openai_model end,
+          gemini_api_key = case when excluded.gemini_api_key is not null then excluded.gemini_api_key else user_profiles.gemini_api_key end,
+          gemini_model = case when excluded.gemini_model is not null then excluded.gemini_model else user_profiles.gemini_model end,
+          updated_at = now()
+      `,
+      [user.id, provider || "auto", openAiKey, openAiModel, geminiKey, geminiModel]
+    );
+
+    const profile = await getUserProfile(user.id);
+    response.json({
+      ok: true,
+      aiSettings: summarizeAiSettings(profile)
+    });
+  } catch (error) {
+    response.status(400).json({
+      error: error.message
     });
   }
 });
@@ -315,6 +420,20 @@ app.post("/api/context", async (request, response) => {
 app.post("/api/analyze", async (request, response) => {
   try {
     const symbol = String(request.body.symbol || "").toUpperCase();
+    const user = await getAuthenticatedUser(request);
+
+    if (!user) {
+      response.json({
+        ok: false,
+        provider: null,
+        model: null,
+        annotations: [],
+        analysis: "AI 분석은 로그인 후 계정에 저장한 GPT 또는 Gemini 키가 있을 때만 사용할 수 있습니다."
+      });
+      return;
+    }
+
+    const profile = await getUserProfile(user.id);
     const context = await moduleContext.collect({
       symbol,
       label: await getCoinLabel(symbol),
@@ -324,7 +443,17 @@ app.post("/api/analyze", async (request, response) => {
       journal: request.body.journal
     });
     const promptSections = moduleContext.buildPromptSections(context);
-    const result = await analyzeContext(context, promptSections);
+    const result = await analyzeContext(context, promptSections, {
+      provider: request.body.provider,
+      credentials: {
+        provider: profile?.ai_provider,
+        openAiKey: profile?.openai_api_key,
+        openAiModel: profile?.openai_model,
+        geminiKey: profile?.gemini_api_key,
+        geminiModel: profile?.gemini_model
+      },
+      useEnvFallback: false
+    });
     const marketModule = context.modules.find((module) => module.id === "market" && module.status === "ok");
 
     response.json({

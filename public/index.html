@@ -59,6 +59,14 @@
             </div>
             <div class="topbar-controls">
               <label class="compact-field">
+                <span>AI 제공자</span>
+                <select id="aiProviderSelect">
+                  <option value="auto">Auto</option>
+                  <option value="openai">GPT</option>
+                  <option value="gemini">Gemini</option>
+                </select>
+              </label>
+              <label class="compact-field">
                 <span>내 AI</span>
                 <input id="aliasInput" type="text" placeholder="swing-helper" />
               </label>
@@ -376,6 +384,45 @@
                   <button id="deleteAccountButton" class="button danger" type="button">
                     계정 삭제
                   </button>
+                </div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>AI 키 저장</h2>
+                  <span>Account Scope</span>
+                </div>
+                <div class="form-grid single-column">
+                  <label class="field">
+                    <span>기본 제공자</span>
+                    <select id="accountAiProviderSelect">
+                      <option value="auto">Auto</option>
+                      <option value="openai">GPT</option>
+                      <option value="gemini">Gemini</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>GPT 모델</span>
+                    <input id="accountOpenAiModelInput" type="text" placeholder="gpt-4.1-mini" />
+                  </label>
+                  <label class="field">
+                    <span>GPT API Key</span>
+                    <input id="accountOpenAiKeyInput" type="password" placeholder="입력 시 서버 계정에 저장" />
+                  </label>
+                  <label class="field">
+                    <span>Gemini 모델</span>
+                    <input id="accountGeminiModelInput" type="text" placeholder="gemini-2.5-flash" />
+                  </label>
+                  <label class="field">
+                    <span>Gemini API Key</span>
+                    <input id="accountGeminiKeyInput" type="password" placeholder="입력 시 서버 계정에 저장" />
+                  </label>
+                  <div class="button-stack">
+                    <button id="saveAiSettingsButton" class="button accent" type="button">AI 설정 저장</button>
+                  </div>
+                  <div id="aiSettingsStatus" class="settings-summary">
+                    로그인 후 계정별 AI 설정을 저장할 수 있습니다.
+                  </div>
                 </div>
               </article>
             </section>

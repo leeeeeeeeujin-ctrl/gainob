@@ -98,6 +98,11 @@ async function main() {
       displayName: "Smoke User",
       password: "smoke123"
     });
+    const savedAiSettings = await postJson("/api/account/ai-settings", {
+      provider: "gemini",
+      openAiModel: "gpt-4.1-mini",
+      geminiModel: "gemini-2.5-flash"
+    });
     const session = await fetchJson("/api/session");
     const market = await fetchJson("/api/market?symbol=BTC&timeframe=1h");
     const intelligence = await fetchJson("/api/intelligence?symbol=BTC");
@@ -130,7 +135,8 @@ async function main() {
           session: {
             authenticated: session.authenticated,
             serverReady: session.serverReady,
-            username: session.user?.username || null
+            username: session.user?.username || null,
+            aiProvider: session.aiSettings?.provider || null
           },
           sessionAfterDelete: {
             authenticated: sessionAfterDelete.authenticated,
@@ -156,6 +162,12 @@ async function main() {
             status: module.status
           })),
           analyzePreview: analyze.analysis.slice(0, 80)
+          ,
+          savedAiSettings: {
+            provider: savedAiSettings.aiSettings.provider,
+            hasOpenAiKey: savedAiSettings.aiSettings.hasOpenAiKey,
+            hasGeminiKey: savedAiSettings.aiSettings.hasGeminiKey
+          }
         },
         null,
         2

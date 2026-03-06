@@ -15,7 +15,7 @@ function buildPrompt(context, promptSections) {
 4. 주의할 리스크 2개
 5. 다음 행동 후보 2개
 
-답변 마지막에는 반드시 `[CHART_ANNOTATIONS_JSON]` 헤더를 쓰고, 그 아래 한 줄 JSON 객체를 넣어라.
+답변 마지막에는 반드시 [CHART_ANNOTATIONS_JSON] 헤더를 쓰고, 그 아래 한 줄 JSON 객체를 넣어라.
 JSON 형식:
 {"annotations":[{"type":"line|zone|marker","label":"문구","reason":"근거","color":"#hex 또는 rgba","from":{"time":1710000000000,"price":1},"to":{"time":1710003600000,"price":1},"startTime":1710000000000,"endTime":1710003600000,"minPrice":1,"maxPrice":2,"time":1710000000000,"price":1}]}
 불확실하면 annotations는 빈 배열로 반환하라.
@@ -29,6 +29,24 @@ ${moduleSummary}
 [수집 컨텍스트]
 ${promptSections}
 `.trim();
+}
+
+function normalizeProvider(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (normalized === "openai" || normalized === "gpt") {
+    return "openai";
+  }
+
+  if (normalized === "gemini" || normalized === "google") {
+    return "gemini";
+  }
+
+  return "auto";
+}
+
+function getCredentialValue(primary, fallback) {
+  return primary === undefined || primary === null || primary === "" ? fallback : primary;
 }
 
 function extractChartAnnotations(analysisText) {
@@ -60,18 +78,73 @@ function extractChartAnnotations(analysisText) {
   }
 }
 
-async function analyzeContext(context, promptSections) {
-  const apiKey = process.env.OPENAI_API_KEY;
+function resolveProviderConfig(requestedProvider, credentials = {}, options = {}) {
+  const provider = normalizeProvider(requestedProvider || credentials.provider || process.env.AI_PROVIDER);
+  const useEnvFallback = options.useEnvFallback !== false;
+  const openAiKey = useEnvFallback
+    ? getCredentialValue(credentials.openAiKey, process.env.OPENAI_API_KEY)
+    : credentials.openAiKey || "";
+  const openAiModel = useEnvFallback
+    ? getCredentialValue(credentials.openAiModel, process.env.OPENAI_MODEL) || "gpt-4.1-mini"
+    : credentials.openAiModel || "gpt-4.1-mini";
+  const geminiKey = useEnvFallback
+    ? getCredentialValue(credentials.geminiKey, process.env.GEMINI_API_KEY)
+    : credentials.geminiKey || "";
+  const geminiModel = useEnvFallback
+    ? getCredentialValue(credentials.geminiModel, process.env.GEMINI_MODEL) || "gemini-2.5-flash"
+    : credentials.geminiModel || "gemini-2.5-flash";
+  const hasOpenAi = Boolean(openAiKey);
+  const hasGemini = Boolean(geminiKey);
 
-  if (!apiKey) {
+  if (provider === "openai") {
+    return hasOpenAi
+      ? {
+          provider: "openai",
+          apiKey: openAiKey,
+          model: openAiModel
+        }
+      : {
+          provider: "openai",
+          missing: "OPENAI_API_KEY"
+        };
+  }
+
+  if (provider === "gemini") {
+    return hasGemini
+      ? {
+          provider: "gemini",
+          apiKey: geminiKey,
+          model: geminiModel
+        }
+      : {
+          provider: "gemini",
+          missing: "GEMINI_API_KEY"
+        };
+  }
+
+  if (hasOpenAi) {
     return {
-      ok: false,
-      analysis:
-        "OPENAI_API_KEY가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다.",
-      annotations: []
+      provider: "openai",
+      apiKey: openAiKey,
+      model: openAiModel
     };
   }
 
+  if (hasGemini) {
+    return {
+      provider: "gemini",
+      apiKey: geminiKey,
+      model: geminiModel
+    };
+  }
+
+  return {
+    provider: "auto",
+    missing: "OPENAI_API_KEY 또는 GEMINI_API_KEY"
+  };
+}
+
+async function requestOpenAi(prompt, apiKey, model) {
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -79,14 +152,14 @@ async function analyzeContext(context, promptSections) {
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model,
       input: [
         {
           role: "user",
           content: [
             {
               type: "input_text",
-              text: buildPrompt(context, promptSections)
+              text: prompt
             }
           ]
         }
@@ -100,10 +173,75 @@ async function analyzeContext(context, promptSections) {
   }
 
   const payload = await response.json();
-  const parsed = extractChartAnnotations(payload.output_text || "");
+  return payload.output_text || "";
+}
+
+function extractGeminiText(payload) {
+  return (payload.candidates || [])
+    .flatMap((candidate) => candidate.content?.parts || [])
+    .map((part) => part.text || "")
+    .join("\n")
+    .trim();
+}
+
+async function requestGemini(prompt, apiKey, model) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ]
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini request failed: ${response.status} ${errorText}`);
+  }
+
+  const payload = await response.json();
+  return extractGeminiText(payload);
+}
+
+async function analyzeContext(context, promptSections, options = {}) {
+  const prompt = buildPrompt(context, promptSections);
+  const config = resolveProviderConfig(options.provider, options.credentials, {
+    useEnvFallback: options.useEnvFallback
+  });
+
+  if (!config.apiKey) {
+    return {
+      ok: false,
+      provider: config.provider,
+      model: null,
+      analysis: `${config.missing}가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다.`,
+      annotations: []
+    };
+  }
+
+  const outputText =
+    config.provider === "gemini"
+      ? await requestGemini(prompt, config.apiKey, config.model)
+      : await requestOpenAi(prompt, config.apiKey, config.model);
+  const parsed = extractChartAnnotations(outputText);
 
   return {
     ok: true,
+    provider: config.provider,
+    model: config.model,
     analysis: parsed.analysis,
     annotations: parsed.annotations
   };

@@ -1,17 +1,16 @@
 # Coin AI Briefing
 
-빗썸 시세를 국내 기준으로 보고, 바이낸스 가격을 글로벌 기준점으로 함께 비교한 뒤 개인 컨텍스트까지 묶어서 AI에 넘기는 개인용 웹앱입니다.
+바이낸스 시세를 메인 차트 기준으로 보고, 빗썸 가격을 국내 비교점으로 함께 확인한 뒤 개인 컨텍스트까지 묶어서 GPT 또는 Gemini에 넘기는 개인용 웹앱입니다.
 
 ## 기능
 
-- 빗썸 현재가, 24시간 변동률, 거래량, 호가 조회
-- 바이낸스 현재가, 24시간 변동률, 거래량, 호가 조회
-- 빗썸 `USDT/KRW`를 이용한 글로벌 가격 KRW 환산
-- 빗썸 가격과 글로벌 환산 가격 차이 계산
-- 최근 빗썸 1시간봉 24개 조회
+- 바이낸스 현물 심볼 자동 수집과 검색
+- 바이낸스 현재가, 24시간 변동률, 거래량, 호가, 최근 체결, 캔들 조회
+- 빗썸 비교가와 가격 괴리 계산
+- `15분`, `1시간`, `4시간`, `일봉`, `주봉` 차트
 - 개인 프로필, 리스크 원칙, 당일 메모를 로컬에 저장
 - 모듈 단위로 컨텍스트를 수집하고 부분 실패를 분리
-- OpenAI API로 시장 데이터 + 개인 컨텍스트 분석 요청
+- OpenAI 또는 Gemini로 시장 데이터 + 개인 컨텍스트 분석 요청
 
 ## 현재 모듈
 
@@ -40,15 +39,18 @@ npm run smoke
 ## Vercel
 
 - 루트 디렉터리는 프로젝트 루트 그대로 `d:\\aass\\gainob`
-- API는 [api/[...route].js](d:/aass/gainob/api/[...route].js) 를 통해 서버리스 함수로 배포됩니다.
+- API는 [api/index.js](d:/aass/gainob/api/index.js) 를 통해 서버리스 함수로 배포됩니다.
 - 실제 Express 앱 엔트리는 [src/web-handler.js](d:/aass/gainob/src/web-handler.js) 입니다.
 - 정적 파일은 `public/`에서 그대로 서빙됩니다.
-- Vercel 환경변수에 `OPENAI_API_KEY`, 필요하면 `OPENAI_MODEL`을 넣으면 됩니다.
+- Vercel 환경변수에 `OPENAI_API_KEY` 또는 `GEMINI_API_KEY`를 넣으면 됩니다.
 
 ## 환경변수
 
-- `OPENAI_API_KEY`: AI 분석 기능 사용 시 필요
+- `AI_PROVIDER`: `auto`, `openai`, `gemini`
+- `OPENAI_API_KEY`: GPT 분석 기능 사용 시 필요
 - `OPENAI_MODEL`: 기본값 `gpt-4.1-mini`
+- `GEMINI_API_KEY`: Gemini 분석 기능 사용 시 필요
+- `GEMINI_MODEL`: 기본값 `gemini-2.5-flash`
 - `PORT`: 기본값 `3000`
 
 ## 메모
