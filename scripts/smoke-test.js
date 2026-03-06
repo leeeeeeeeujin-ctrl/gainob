@@ -168,7 +168,10 @@ async function main() {
           publicBriefing: {
             symbol: publicBriefing.symbol,
             timeframe: publicBriefing.timeframe,
-            latestHeadline: publicBriefing.intelligence.newsStats.latestHeadline
+            latestHeadline: publicBriefing.intelligence.newsStats.latestHeadline,
+            wallPressure: publicBriefing.wall_pressure,
+            bidWallPrice: publicBriefing.bid_wall_price,
+            askWallPrice: publicBriefing.ask_wall_price
           },
           intelligence: {
             btcDominancePct: intelligence.macroStats.btcDominancePct,

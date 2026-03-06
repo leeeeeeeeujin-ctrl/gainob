@@ -58,7 +58,7 @@ npm run smoke
 - `GET /api/public`
   - 어떤 공개 엔드포인트가 있는지 설명 JSON을 반환합니다.
 - `GET /api/public/briefing?symbol=BTC&timeframe=1h`
-  - 바이낸스 메인 시세, 빗썸 비교가, 매크로/뉴스 요약, 기본 차트 주석을 JSON으로 반환합니다.
+  - 바이낸스 메인 시세, 빗썸 비교가, 호가/매물벽 요약, 매크로/뉴스 요약, 기본 차트 주석을 JSON으로 반환합니다.
 - `GET /api/public/briefing?symbol=BTC&timeframe=1h&format=text`
   - 같은 내용을 ChatGPT 웹에 붙여넣기 쉬운 텍스트로 반환합니다.
 
@@ -69,6 +69,20 @@ https://<your-domain>/api/public
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
 ```
+
+브리핑 최상단에는 외부 AI가 바로 쓰기 쉽게 다음 같은 평탄화 키가 함께 포함됩니다.
+
+- `price`
+- `bithumb_price`
+- `premium`
+- `spread_usdt`
+- `depth_imbalance_pct`
+- `wall_pressure`
+- `bid_wall_price`
+- `ask_wall_price`
+- `btc_dominance`
+- `total_marketcap_usd`
+- `news_summary`
 
 ## 메모
 

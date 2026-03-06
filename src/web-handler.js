@@ -33,16 +33,28 @@ function formatPublicBriefingText(briefing) {
     `조회 시각: ${briefing.fetchedAt}`,
     ``,
     `[시장]`,
-    `- 바이낸스 현재가: ${briefing.market.primary.priceUsdt} USDT`,
+    `- 바이낸스 현재가: ${briefing.price} USDT`,
     `- 바이낸스 24h 등락: ${briefing.market.primary.change24hPct}%`,
     `- 바이낸스 거래대금: ${briefing.market.primary.quoteVolume24hUsdt} USDT`,
     `- 바이낸스 호가: ${briefing.market.primary.bidUsdt} / ${briefing.market.primary.askUsdt}`,
-    `- 빗썸 비교가: ${briefing.market.local.available ? `${briefing.market.local.priceKrw} KRW` : "미지원"}`,
-    `- 가격 괴리: ${briefing.market.comparison.premiumPct ?? "미지원"}%`,
+    `- 빗썸 비교가: ${briefing.market.local.available ? `${briefing.bithumb_price} KRW` : "미지원"}`,
+    `- 가격 괴리: ${briefing.premium ?? "미지원"}%`,
+    ``,
+    `[호가/매물벽]`,
+    `- 스프레드: ${briefing.spread_usdt} USDT`,
+    `- 호가 불균형: ${briefing.depth_imbalance_pct}%`,
+    `- 매물 압력: ${briefing.wall_pressure}`,
+    `- 주요 매수벽: ${
+      briefing.bid_wall_price ? `${briefing.bid_wall_price} USDT / ${briefing.bid_wall_value_usdt} USDT` : "없음"
+    }`,
+    `- 주요 매도벽: ${
+      briefing.ask_wall_price ? `${briefing.ask_wall_price} USDT / ${briefing.ask_wall_value_usdt} USDT` : "없음"
+    }`,
     ``,
     `[매크로]`,
-    `- BTC 도미넌스: ${briefing.intelligence.macroStats.btcDominancePct}%`,
-    `- ETH 도미넌스: ${briefing.intelligence.macroStats.ethDominancePct}%`,
+    `- BTC 도미넌스: ${briefing.btc_dominance}%`,
+    `- ETH 도미넌스: ${briefing.eth_dominance}%`,
+    `- 글로벌 시총: ${briefing.total_marketcap_usd} USD`,
     `- 글로벌 시총 변동(24h): ${briefing.intelligence.macroStats.marketCapChange24hUsd}%`,
     ``,
     `[뉴스]`,
@@ -59,6 +71,12 @@ function formatPublicBriefingText(briefing) {
   }
 
   return lines.join("\n");
+}
+
+function getRequestBaseUrl(request) {
+  const forwardedProto = String(request.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const protocol = forwardedProto || request.protocol || "https";
+  return `${protocol}://${request.get("host")}`;
 }
 
 function buildPublicEndpointDocs(baseUrl = "") {
@@ -80,7 +98,8 @@ function buildPublicEndpointDocs(baseUrl = "") {
           timeframe: "15m | 1h | 4h | 1d | 1w",
           format: "json 또는 text"
         },
-        returns: "바이낸스 메인 시세, 빗썸 비교가, 매크로/뉴스 요약, 차트 주석이 포함된 공개 브리핑"
+        returns:
+          "바이낸스 메인 시세, 빗썸 비교가, 호가/매물벽 요약, 매크로/뉴스 요약, 차트 주석이 포함된 공개 브리핑"
       }
     ]
   };
@@ -243,6 +262,31 @@ async function buildPublicBriefing(symbol, timeframe) {
     symbol,
     label,
     timeframe: market.timeframe,
+    timestamp: Math.floor(Date.now() / 1000),
+    price: market.primary.priceUsdt,
+    bithumb_price: market.local.available ? market.local.priceKrw : null,
+    premium: market.comparison.premiumPct,
+    spread_usdt: market.orderbook.spreadUsdt,
+    bid_depth_units: market.orderbook.totalBidUnits,
+    ask_depth_units: market.orderbook.totalAskUnits,
+    bid_depth_value_usdt: market.orderbook.totalBidValueUsdt,
+    ask_depth_value_usdt: market.orderbook.totalAskValueUsdt,
+    depth_imbalance_pct: market.orderbook.imbalancePct,
+    wall_pressure: market.orderbook.wallPressure,
+    bid_wall_price: market.orderbook.bidWall?.price || null,
+    bid_wall_size: market.orderbook.bidWall?.quantity || null,
+    bid_wall_value_usdt: market.orderbook.bidWall?.valueUsdt || null,
+    ask_wall_price: market.orderbook.askWall?.price || null,
+    ask_wall_size: market.orderbook.askWall?.quantity || null,
+    ask_wall_value_usdt: market.orderbook.askWall?.valueUsdt || null,
+    support_wall_price: market.orderbook.supportWallPrice,
+    resistance_wall_price: market.orderbook.resistanceWallPrice,
+    btc_dominance: intelligence.macroStats.btcDominancePct,
+    eth_dominance: intelligence.macroStats.ethDominancePct,
+    total_marketcap_usd: intelligence.macroStats.totalMarketCapUsd,
+    total_volume_usd: intelligence.macroStats.totalVolumeUsd,
+    macro: intelligence.binanceStats.momentum24hPct >= 0 ? "risk-on" : "risk-off",
+    news_summary: intelligence.newsStats.latestHeadline || null,
     market,
     intelligence,
     usage: {
@@ -294,7 +338,7 @@ app.get("/api/modules", (_request, response) => {
 });
 
 app.get("/api/public", (request, response) => {
-  const baseUrl = `${request.protocol}://${request.get("host")}`;
+  const baseUrl = getRequestBaseUrl(request);
   response.json(buildPublicEndpointDocs(baseUrl));
 });
 

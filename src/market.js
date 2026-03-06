@@ -169,20 +169,87 @@ function normalizeBinanceOrderbook(entries) {
   }));
 }
 
+function findLargestWall(levels, direction, bestPrice) {
+  if (!levels.length) {
+    return null;
+  }
+
+  const largest = levels.reduce((current, level) => {
+    if (!current) {
+      return level;
+    }
+
+    if (level.valueUsdt !== current.valueUsdt) {
+      return level.valueUsdt > current.valueUsdt ? level : current;
+    }
+
+    return level.quantity > current.quantity ? level : current;
+  }, null);
+
+  return {
+    direction,
+    price: largest.price,
+    quantity: largest.quantity,
+    valueUsdt: largest.valueUsdt,
+    distancePct: bestPrice > 0 ? ((largest.price - bestPrice) / bestPrice) * 100 : 0
+  };
+}
+
+function summarizeLiquidity(bids, asks, bestBid, bestAsk) {
+  const totalBidValueUsdt = bids.reduce((sum, level) => sum + level.valueUsdt, 0);
+  const totalAskValueUsdt = asks.reduce((sum, level) => sum + level.valueUsdt, 0);
+  const totalBidUnits = bids.reduce((sum, level) => sum + level.quantity, 0);
+  const totalAskUnits = asks.reduce((sum, level) => sum + level.quantity, 0);
+  const totalValue = totalBidValueUsdt + totalAskValueUsdt;
+  const imbalancePct = totalValue
+    ? ((totalBidValueUsdt - totalAskValueUsdt) / totalValue) * 100
+    : 0;
+  const bidWall = findLargestWall(bids, "bid", bestBid);
+  const askWall = findLargestWall(asks, "ask", bestAsk);
+  const wallPressure =
+    imbalancePct >= 12
+      ? "bid-heavy"
+      : imbalancePct <= -12
+        ? "ask-heavy"
+        : "balanced";
+
+  return {
+    totalBidUnits,
+    totalAskUnits,
+    totalBidValueUsdt,
+    totalAskValueUsdt,
+    imbalancePct,
+    wallPressure,
+    bidWall,
+    askWall,
+    supportWallPrice: bidWall?.price || null,
+    resistanceWallPrice: askWall?.price || null
+  };
+}
+
 function buildPrimaryOrderbook(orderbook) {
   const bids = normalizeBinanceOrderbook(orderbook.bids);
   const asks = normalizeBinanceOrderbook(orderbook.asks);
   const bestBid = bids[0]?.price || 0;
   const bestAsk = asks[0]?.price || 0;
+  const liquidity = summarizeLiquidity(bids, asks, bestBid, bestAsk);
 
   return {
     bids,
     asks,
+    bestBid,
+    bestAsk,
     spreadUsdt: Math.max(bestAsk - bestBid, 0),
-    totalBidUnits: bids.reduce((sum, level) => sum + level.quantity, 0),
-    totalAskUnits: asks.reduce((sum, level) => sum + level.quantity, 0),
-    totalBidValueUsdt: bids.reduce((sum, level) => sum + level.valueUsdt, 0),
-    totalAskValueUsdt: asks.reduce((sum, level) => sum + level.valueUsdt, 0)
+    totalBidUnits: liquidity.totalBidUnits,
+    totalAskUnits: liquidity.totalAskUnits,
+    totalBidValueUsdt: liquidity.totalBidValueUsdt,
+    totalAskValueUsdt: liquidity.totalAskValueUsdt,
+    imbalancePct: liquidity.imbalancePct,
+    wallPressure: liquidity.wallPressure,
+    bidWall: liquidity.bidWall,
+    askWall: liquidity.askWall,
+    supportWallPrice: liquidity.supportWallPrice,
+    resistanceWallPrice: liquidity.resistanceWallPrice
   };
 }
 
@@ -207,6 +274,64 @@ function buildCandles(klines) {
     volume: toNumber(entry[5]),
     quoteVolume: toNumber(entry[7])
   }));
+}
+
+function summarizeCandles(candles) {
+  if (!candles.length) {
+    return {
+      candleCount: 0,
+      firstClose: null,
+      lastClose: null,
+      changePct: 0,
+      highest: null,
+      lowest: null,
+      totalVolume: 0,
+      totalQuoteVolume: 0,
+      trend: "flat"
+    };
+  }
+
+  const firstClose = candles[0].close;
+  const lastClose = candles.at(-1).close;
+  const highest = Math.max(...candles.map((candle) => candle.high));
+  const lowest = Math.min(...candles.map((candle) => candle.low));
+  const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0);
+  const totalQuoteVolume = candles.reduce((sum, candle) => sum + candle.quoteVolume, 0);
+  const changePct = firstClose ? ((lastClose - firstClose) / firstClose) * 100 : 0;
+  const trend = changePct >= 1 ? "up" : changePct <= -1 ? "down" : "flat";
+
+  return {
+    candleCount: candles.length,
+    firstClose,
+    lastClose,
+    changePct,
+    highest,
+    lowest,
+    totalVolume,
+    totalQuoteVolume,
+    trend
+  };
+}
+
+function buildTimeframeSummary(snapshot, options = {}) {
+  const recentCandleLimit = options.recentCandleLimit || 12;
+  const visibleCandles = snapshot.candles.slice(-Math.min(snapshot.candles.length, options.summaryWindow || 120));
+  const summary = summarizeCandles(visibleCandles);
+
+  return {
+    timeframe: snapshot.timeframe,
+    label: getTimeframeConfig(snapshot.timeframe).label,
+    candleCount: summary.candleCount,
+    firstClose: summary.firstClose,
+    lastClose: summary.lastClose,
+    changePct: summary.changePct,
+    highest: summary.highest,
+    lowest: summary.lowest,
+    totalVolume: summary.totalVolume,
+    totalQuoteVolume: summary.totalQuoteVolume,
+    trend: summary.trend,
+    recentCandles: snapshot.candles.slice(-Math.min(snapshot.candles.length, recentCandleLimit))
+  };
 }
 
 function buildAnnotations(symbol, candles, orderbook, currentPriceUsdt) {
@@ -410,8 +535,28 @@ async function getMarketSnapshot(symbol, options = {}) {
   return payload;
 }
 
+async function getMultiTimeframeMarketPacket(symbol, options = {}) {
+  const requestedTimeframe = getTimeframeConfig(options.timeframe).id;
+  const summaries = await Promise.all(
+    SUPPORTED_TIMEFRAMES.map(async (timeframe) => getMarketSnapshot(symbol, { timeframe: timeframe.id }))
+  );
+  const activeSnapshot =
+    summaries.find((snapshot) => snapshot.timeframe === requestedTimeframe) || summaries[0] || null;
+
+  if (!activeSnapshot) {
+    throw new Error(`Unsupported symbol: ${symbol}`);
+  }
+
+  return {
+    ...activeSnapshot,
+    requestedTimeframe,
+    multiTimeframes: summaries.map((snapshot) => buildTimeframeSummary(snapshot))
+  };
+}
+
 module.exports = {
   getMarketSnapshot,
+  getMultiTimeframeMarketPacket,
   getSupportedCoins,
   getSupportedTimeframes
 };
