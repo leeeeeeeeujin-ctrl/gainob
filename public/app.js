@@ -889,8 +889,8 @@ async function refreshMarket() {
 
   try {
     const [snapshot, intelligence] = await Promise.all([
-      fetchJson(`/api/market/${symbol}?timeframe=${encodeURIComponent(timeframe)}`),
-      fetchJson(`/api/intelligence/${symbol}`)
+      fetchJson(`/api/market?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
+      fetchJson(`/api/intelligence?symbol=${encodeURIComponent(symbol)}`)
     ]);
     renderSnapshot(snapshot);
     renderIntelligence(intelligence);

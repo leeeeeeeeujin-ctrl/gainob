@@ -257,9 +257,9 @@ app.post("/api/auth/delete-account", async (request, response) => {
   }
 });
 
-app.get("/api/market/:symbol", async (request, response) => {
+async function handleMarketRequest(request, response) {
   try {
-    const symbol = String(request.params.symbol || "").toUpperCase();
+    const symbol = String(request.params.symbol || request.query.symbol || "").toUpperCase();
     const timeframe = String(request.query.timeframe || "1h").toLowerCase();
     const snapshot = await getMarketSnapshot(symbol, { timeframe });
 
@@ -269,11 +269,11 @@ app.get("/api/market/:symbol", async (request, response) => {
       error: error.message
     });
   }
-});
+}
 
-app.get("/api/intelligence/:symbol", async (request, response) => {
+async function handleIntelligenceRequest(request, response) {
   try {
-    const symbol = String(request.params.symbol || "").toUpperCase();
+    const symbol = String(request.params.symbol || request.query.symbol || "").toUpperCase();
     const snapshot = await getIntelligenceSnapshot(symbol, getCoinLabel(symbol));
 
     response.json(snapshot);
@@ -282,7 +282,12 @@ app.get("/api/intelligence/:symbol", async (request, response) => {
       error: error.message
     });
   }
-});
+}
+
+app.get("/api/market", handleMarketRequest);
+app.get("/api/market/:symbol", handleMarketRequest);
+app.get("/api/intelligence", handleIntelligenceRequest);
+app.get("/api/intelligence/:symbol", handleIntelligenceRequest);
 
 app.post("/api/context", async (request, response) => {
   try {

@@ -99,8 +99,8 @@ async function main() {
       password: "smoke123"
     });
     const session = await fetchJson("/api/session");
-    const market = await fetchJson("/api/market/BTC");
-    const intelligence = await fetchJson("/api/intelligence/BTC");
+    const market = await fetchJson("/api/market?symbol=BTC&timeframe=1h");
+    const intelligence = await fetchJson("/api/intelligence?symbol=BTC");
     const analyze = await postJson("/api/analyze", {
       symbol: "BTC",
       modules: ["market", "macro", "news", "profile", "journal"],
