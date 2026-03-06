@@ -1055,6 +1055,131 @@ app.delete('/api/account/keys', async (request, response) => {
   }
 });
 
+// Conversations / chat storage for interactive AI dialogues
+app.post('/api/conversations', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+
+    const title = String(request.body.title || '').trim();
+    const symbol = String(request.body.symbol || '').toUpperCase() || null;
+    const timeframe = String(request.body.timeframe || '1h').toLowerCase();
+
+    const result = await query(
+      `insert into conversations(user_id, title, symbol, timeframe) values ($1,$2,$3,$4) returning id, created_at`,
+      [user.id, title || null, symbol, timeframe]
+    );
+
+    response.json({ ok: true, conversation: { id: result.rows[0].id, title, symbol, timeframe, createdAt: result.rows[0].created_at } });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/conversations', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+
+    const rows = await query(`select id, title, symbol, timeframe, created_at from conversations where user_id = $1 order by created_at desc limit 200`, [user.id]);
+    response.json({ ok: true, conversations: rows.rows.map((r) => ({ id: r.id, title: r.title, symbol: r.symbol, timeframe: r.timeframe, createdAt: r.created_at })) });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/conversations/:id', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+    const id = String(request.params.id || '');
+
+    const conv = await query(`select id, title, symbol, timeframe, created_at from conversations where id = $1 and user_id = $2 limit 1`, [id, user.id]);
+    if (!conv.rows[0]) return response.status(404).json({ error: 'not_found' });
+
+    const messages = await query(`select id, sender, content, meta, created_at from conversation_messages where conversation_id = $1 order by created_at asc`, [id]);
+
+    response.json({ ok: true, conversation: conv.rows[0], messages: messages.rows });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/conversations/:id/messages', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+    const id = String(request.params.id || '');
+    const content = String(request.body.content || '').trim();
+    const askAi = Boolean(request.body.askAi);
+
+    const conv = await query(`select id, symbol, timeframe from conversations where id = $1 and user_id = $2 limit 1`, [id, user.id]);
+    if (!conv.rows[0]) return response.status(404).json({ error: 'not_found' });
+
+    // store user message
+    const inserted = await query(
+      `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
+      [id, 'user', content, null]
+    );
+
+    let aiMessage = null;
+
+    if (askAi) {
+      // build context and call analyze flow similar to /api/analyze
+      const symbol = conv.rows[0].symbol || request.body.symbol || '';
+      const timeframe = conv.rows[0].timeframe || request.body.timeframe || '1h';
+      const profile = await getUserProfile(user.id);
+
+      const context = await moduleContext.collect({
+        symbol: String(symbol).toUpperCase(),
+        label: await getCoinLabel(String(symbol).toUpperCase()),
+        timeframe: String(timeframe).toLowerCase(),
+        moduleIds: request.body.modules,
+        profile: request.body.profile,
+        journal: request.body.journal
+      });
+
+      const promptSections = moduleContext.buildPromptSections({ ...context, manualAnnotations: [] });
+      const result = await analyzeContext(context, promptSections, {
+        provider: request.body.provider,
+        credentials: {
+          provider: profile?.ai_provider,
+          openAiKey: profile?.openai_api_key,
+          openAiModel: profile?.openai_model,
+          geminiKey: profile?.gemini_api_key,
+          geminiModel: profile?.gemini_model
+        },
+        useEnvFallback: false
+      });
+
+      // store AI response
+      const aiInserted = await query(
+        `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
+        [id, 'ai', result.analysis || result.analysisText || JSON.stringify(result), JSON.stringify({ provider: result.provider, model: result.model, annotations: result.annotations })]
+      );
+
+      aiMessage = { id: aiInserted.rows[0].id, sender: 'ai', content: result.analysis || result.analysisText || result.analysis || '', createdAt: aiInserted.rows[0].created_at };
+    }
+
+    response.json({ ok: true, messageId: inserted.rows[0].id, ai: aiMessage });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/conversations/:id', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+    const id = String(request.params.id || '');
+
+    await query(`delete from conversations where id = $1 and user_id = $2`, [id, user.id]);
+    response.json({ ok: true });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/auth/login", async (request, response) => {
   try {
     const username = String(request.body.username || "").trim().toLowerCase();
