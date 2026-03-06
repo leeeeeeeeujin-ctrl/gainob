@@ -75,10 +75,12 @@ const elements = {
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
   chatContextMeta: document.querySelector("#chatContextMeta"),
+  conversationList: document.querySelector("#conversationList"),
   chatMessageList: document.querySelector("#chatMessageList"),
   chatPromptInput: document.querySelector("#chatPromptInput"),
   sendChatButton: document.querySelector("#sendChatButton"),
   newConversationButton: document.querySelector("#newConversationButton"),
+  deleteConversationButton: document.querySelector("#deleteConversationButton"),
   floatingChatMessages: document.querySelector("#floatingChatMessages"),
   floatingChatPromptInput: document.querySelector("#floatingChatPromptInput"),
   floatingSendChatButton: document.querySelector("#floatingSendChatButton"),
@@ -300,7 +302,9 @@ function updateChatContextMeta() {
 
   const symbol = elements.coinSelect?.value || "BTC";
   const timeframe = elements.timeframeSelect?.value || "1h";
-  elements.chatContextMeta.textContent = `현재 대화 기준: ${symbol} · ${timeframe}. 대화 중 AI는 이 종목 컨텍스트와 최근 대화를 함께 사용합니다.`;
+  const currentConversation = state.conversations.find((item) => item.id === state.currentConversationId);
+  const title = currentConversation?.title ? ` · ${currentConversation.title}` : "";
+  elements.chatContextMeta.textContent = `현재 대화 기준: ${symbol} · ${timeframe}${title}. 대화 중 AI는 이 종목 컨텍스트와 최근 대화를 함께 사용합니다.`;
 }
 
 function renderChatMessages() {
@@ -345,21 +349,9 @@ function renderChatMessages() {
 }
 
 function renderConversationList() {
-  if (!elements.floatingConversationList) {
-    return;
-  }
-
-  elements.floatingConversationList.hidden = !state.floatingHistoryOpen;
-  if (!state.floatingHistoryOpen) {
-    return;
-  }
-
-  if (!state.conversations.length) {
-    elements.floatingConversationList.innerHTML = "대화 내역이 없습니다.";
-    return;
-  }
-
-  elements.floatingConversationList.innerHTML = state.conversations
+  const html = !state.conversations.length
+    ? "대화 내역이 없습니다."
+    : state.conversations
     .map(
       (conversation) => `
         <button class="floating-conversation-item ${conversation.id === state.currentConversationId ? "is-active" : ""}" data-conversation-id="${conversation.id}" type="button">
@@ -369,6 +361,21 @@ function renderConversationList() {
       `
     )
     .join("");
+
+  if (elements.conversationList) {
+    elements.conversationList.innerHTML = html;
+  }
+
+  if (!elements.floatingConversationList) {
+    return;
+  }
+
+  elements.floatingConversationList.hidden = !state.floatingHistoryOpen;
+  if (!state.floatingHistoryOpen) {
+    return;
+  }
+
+  elements.floatingConversationList.innerHTML = html;
 }
 
 async function loadConversation(conversationId) {
@@ -377,6 +384,7 @@ async function loadConversation(conversationId) {
   state.chatMessages = payload.messages || [];
   renderConversationList();
   renderChatMessages();
+  updateChatContextMeta();
 }
 
 async function loadConversations() {
@@ -401,6 +409,7 @@ async function loadConversations() {
       state.chatMessages = [];
       renderConversationList();
       renderChatMessages();
+      updateChatContextMeta();
     }
   } catch (_error) {
     state.currentConversationId = null;
@@ -408,6 +417,7 @@ async function loadConversations() {
     state.chatMessages = [];
     renderConversationList();
     renderChatMessages();
+    updateChatContextMeta();
   }
 }
 
@@ -431,6 +441,7 @@ async function ensureConversation() {
   state.chatMessages = [];
   renderConversationList();
   renderChatMessages();
+  updateChatContextMeta();
   return state.currentConversationId;
 }
 
@@ -458,6 +469,13 @@ async function sendChatMessage(source = "main") {
 
   try {
     const conversationId = await ensureConversation();
+    const currentConversation = state.conversations.find((item) => item.id === conversationId);
+    const defaultTitle = `${elements.coinSelect.value || "시장"} ${elements.timeframeSelect.value || "1h"} 대화`;
+    if (currentConversation && (!currentConversation.title || currentConversation.title === defaultTitle)) {
+      currentConversation.title = content.slice(0, 36) || defaultTitle;
+      renderConversationList();
+      updateChatContextMeta();
+    }
     state.chatMessages.push({ sender: "user", content, created_at: new Date().toISOString() });
     renderChatMessages();
     if (promptElement) {
@@ -521,6 +539,32 @@ async function createNewConversation() {
   renderChatMessages();
   updateChatContextMeta();
   elements.chatPromptInput?.focus();
+}
+
+async function deleteCurrentConversation() {
+  if (!state.currentConversationId) {
+    return;
+  }
+
+  const confirmed = window.confirm("현재 대화를 삭제할까요?");
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    await fetchJson(`/api/conversations/${encodeURIComponent(state.currentConversationId)}`, {
+      method: "DELETE"
+    });
+    state.conversations = state.conversations.filter((item) => item.id !== state.currentConversationId);
+    state.currentConversationId = null;
+    state.chatMessages = [];
+    renderConversationList();
+    renderChatMessages();
+    updateChatContextMeta();
+    setFloatingBriefingMeta("대화 삭제 완료");
+  } catch (error) {
+    setAnalysisMessage(error.message);
+  }
 }
 
 async function deleteStoredKey(provider) {
@@ -1996,6 +2040,15 @@ elements.floatingConversationList?.addEventListener("click", async (event) => {
   state.floatingHistoryOpen = false;
   renderConversationList();
 });
+elements.conversationList?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-conversation-id]");
+  if (!button) {
+    return;
+  }
+
+  await loadConversation(button.dataset.conversationId);
+});
+elements.deleteConversationButton?.addEventListener("click", deleteCurrentConversation);
 elements.chatPromptInput?.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();

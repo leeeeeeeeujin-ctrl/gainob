@@ -1146,7 +1146,7 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
     const content = String(request.body.content || '').trim();
     const askAi = Boolean(request.body.askAi);
 
-    const conv = await query(`select id, symbol, timeframe from conversations where id = $1 and user_id = $2 limit 1`, [id, user.id]);
+    const conv = await query(`select id, title, symbol, timeframe from conversations where id = $1 and user_id = $2 limit 1`, [id, user.id]);
     if (!conv.rows[0]) return response.status(404).json({ error: 'not_found' });
 
     // store user message
@@ -1154,6 +1154,13 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
       `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
       [id, 'user', content, null]
     );
+
+    const currentTitle = String(conv.rows[0].title || '').trim();
+    const defaultTitle = `${conv.rows[0].symbol || "시장"} ${conv.rows[0].timeframe || "1h"} 대화`;
+    if (!currentTitle || currentTitle === defaultTitle) {
+      const nextTitle = content.slice(0, 36) || defaultTitle;
+      await query(`update conversations set title = $1 where id = $2 and user_id = $3`, [nextTitle, id, user.id]);
+    }
 
     let aiMessage = null;
 

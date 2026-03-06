@@ -1077,6 +1077,28 @@ textarea {
   gap: 8px;
 }
 
+.chat-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.chat-sidebar-panel,
+.chat-main-panel {
+  min-height: 0;
+}
+
+.chat-sidebar-actions {
+  margin-bottom: 10px;
+}
+
+.conversation-list {
+  display: grid;
+  gap: 8px;
+  max-height: 64vh;
+  overflow: auto;
+}
+
 .chat-shell {
   display: grid;
   gap: 12px;
@@ -1212,6 +1234,11 @@ textarea {
   .market-side {
     grid-template-columns: 1fr 1fr;
   }
+
+  .chat-layout {
+    grid-template-columns: 1fr;
+  }
+}
 }
 
 @media (max-width: 760px) {
