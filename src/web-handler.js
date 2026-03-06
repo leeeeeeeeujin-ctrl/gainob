@@ -745,6 +745,34 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
+function buildSeoHead(title, description, url) {
+  const t = escapeHtml(title || "");
+  const d = escapeHtml(description || "");
+  const u = escapeHtml(url || "");
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'WebPage',
+    name: title || '',
+    description: description || '',
+    url: url || ''
+  };
+  const jsonLdStr = JSON.stringify(jsonLd);
+
+  return `
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${t}</title>
+    <meta name="description" content="${d}">
+    <meta name="robots" content="index,follow">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="${t}">
+    <meta property="og:description" content="${d}">
+    <meta property="og:url" content="${u}">
+    <link rel="canonical" href="${u}">
+    <script type="application/ld+json">${jsonLdStr}</script>
+  `;
+}
+
 // SEO-friendly public pages (server-side rendered) so search engines can index snapshots
 app.get("/public/market", async (request, response) => {
   try {
@@ -755,9 +783,8 @@ app.get("/public/market", async (request, response) => {
     const title = `Market snapshot — ${briefing.symbol} ${briefing.label}`;
     const description = `Market snapshot for ${briefing.symbol} (${briefing.label}) — price ${briefing.price} USDT — timeframe ${briefing.timeframe}`;
 
-    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
-      title
-    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;line-height:1.4;padding:18px;max-width:980px;margin:auto;color:#0b0b0b}pre{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px;overflow:auto}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Summary</h2><ul><li>Price: ${escapeHtml(String(briefing.price))} USDT</li><li>Timeframe: ${escapeHtml(String(briefing.timeframe))}</li><li>Fetched: ${escapeHtml(String(briefing.fetchedAt))}</li><li>BTC Dominance: ${escapeHtml(String(briefing.btc_dominance))}%</li><li>ETH Dominance: ${escapeHtml(String(briefing.eth_dominance))}%</li></ul><h2>Market & Orderbook</h2><pre>${escapeHtml(JSON.stringify(briefing.market, null, 2))}</pre><h2>Intelligence</h2><pre>${escapeHtml(JSON.stringify(briefing.intelligence, null, 2))}</pre><h2>Notes</h2><pre>${escapeHtml(briefing.usage?.note || "")}</pre></body></html>`;
+    const pageUrl = getRequestBaseUrl(request) + request.originalUrl;
+    const html = `<!doctype html><html lang="ko"><head>${buildSeoHead(title, description, pageUrl)}<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;line-height:1.4;padding:18px;max-width:980px;margin:auto;color:#0b0b0b}pre{white-space:pre-wrap;word-break:break-word;background:#f8f8f8;padding:12px;border-radius:6px;overflow:auto}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Summary</h2><ul><li>Price: ${escapeHtml(String(briefing.price))} USDT</li><li>Timeframe: ${escapeHtml(String(briefing.timeframe))}</li><li>Fetched: ${escapeHtml(String(briefing.fetchedAt))}</li><li>BTC Dominance: ${escapeHtml(String(briefing.btc_dominance))}%</li><li>ETH Dominance: ${escapeHtml(String(briefing.eth_dominance))}%</li></ul><h2>Market & Orderbook</h2><pre>${escapeHtml(JSON.stringify(briefing.market, null, 2))}</pre><h2>Intelligence</h2><pre>${escapeHtml(JSON.stringify(briefing.intelligence, null, 2))}</pre><h2>Notes</h2><pre>${escapeHtml(briefing.usage?.note || "")}</pre></body></html>`;
 
     response.type("text/html; charset=utf-8").send(html);
   } catch (err) {
@@ -775,9 +802,8 @@ app.get("/public/liquidity", async (request, response) => {
     const title = `Liquidity — ${symbol}`;
     const description = `Liquidity snapshot for ${symbol} — spread ${ob.spreadUsdt} USDT`;
 
-    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
-      title
-    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Orderbook</h2><pre>${escapeHtml(JSON.stringify(ob, null, 2))}</pre></body></html>`;
+    const pageUrl = getRequestBaseUrl(request) + request.originalUrl;
+    const html = `<!doctype html><html lang="ko"><head>${buildSeoHead(title, description, pageUrl)}<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Orderbook</h2><pre>${escapeHtml(JSON.stringify(ob, null, 2))}</pre></body></html>`;
 
     response.type("text/html; charset=utf-8").send(html);
   } catch (err) {
@@ -794,9 +820,8 @@ app.get("/public/structure", async (request, response) => {
     const title = `Structure — ${symbol}`;
     const description = `Multi-timeframe structure for ${symbol}`;
 
-    const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
-      title
-    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Multi Timeframes</h2><pre>${escapeHtml(JSON.stringify(packet.multiTimeframes || packet, null, 2))}</pre></body></html>`;
+    const pageUrl = getRequestBaseUrl(request) + request.originalUrl;
+    const html = `<!doctype html><html lang="ko"><head>${buildSeoHead(title, description, pageUrl)}<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#f8f8f8;padding:12px;border-radius:6px}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><h2>Multi Timeframes</h2><pre>${escapeHtml(JSON.stringify(packet.multiTimeframes || packet, null, 2))}</pre></body></html>`;
 
     response.type("text/html; charset=utf-8").send(html);
   } catch (err) {
@@ -812,15 +837,38 @@ app.get("/public/readme", (request, response) => {
     const data = fs.readFileSync(readmePath, "utf8");
     const title = "Gainob — README";
     const description = "Project README and public API documentation.";
-
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(
-      title
-    )}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#fff;padding:12px;border-radius:6px;border:1px solid #eee}</style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(data)}</pre></body></html>`;
+    const pageUrl = getRequestBaseUrl(request) + request.originalUrl;
+    const html = `<!doctype html><html lang="en"><head>${buildSeoHead(title, description, pageUrl)}<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial;padding:18px;max-width:980px;margin:auto}pre{white-space:pre-wrap;background:#fff;padding:12px;border-radius:6px;border:1px solid #eee}</style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(data)}</pre></body></html>`;
 
     response.type("text/html; charset=utf-8").send(html);
   } catch (err) {
     response.status(500).send("README not available");
   }
+});
+
+// Sitemap for search engines (basic dynamic sitemap)
+app.get('/public/sitemap.xml', (req, res) => {
+  const base = getRequestBaseUrl(req);
+  const symbols = ['BTC','ETH','SOL'];
+  const timeframes = ['1h'];
+  const urls = [];
+
+  urls.push(`${base}/public/readme`);
+  urls.push(`${base}/public/market`);
+
+  symbols.forEach((s) => {
+    timeframes.forEach((tf) => {
+      urls.push(`${base}/public/market?symbol=${s}&timeframe=${tf}`);
+      urls.push(`${base}/public/liquidity?symbol=${s}`);
+      urls.push(`${base}/public/structure?symbol=${s}`);
+    });
+  });
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+    .map((u) => `  <url>\n    <loc>${escapeHtml(u)}</loc>\n  </url>`)
+    .join('\n')}\n</urlset>`;
+
+  res.type('application/xml; charset=utf-8').send(xml);
 });
 
 app.get("/api/session", async (request, response) => {
