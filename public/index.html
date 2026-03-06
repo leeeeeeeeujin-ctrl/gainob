@@ -82,12 +82,22 @@
                 <span id="floatingBriefingMeta">고정 패널</span>
               </div>
               <div class="floating-briefing-actions">
+                <button id="floatingBriefingHistoryButton" class="floating-action" type="button">기록</button>
                 <button id="floatingBriefingOpenButton" class="floating-action" type="button">화면</button>
                 <button id="floatingBriefingMinimizeButton" class="floating-action" type="button">접기</button>
               </div>
             </div>
             <div id="floatingBriefingBody" class="floating-briefing-body">
-              <pre id="analysisFloatingOutput" class="analysis floating-analysis">먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre>
+              <div id="floatingConversationList" class="floating-conversation-list" hidden>대화 내역이 없습니다.</div>
+              <div class="floating-chat-shell">
+                <div id="floatingChatMessages" class="floating-chat-messages">대화를 시작하면 메시지가 여기에 표시됩니다.</div>
+                <div class="floating-chat-input-bar">
+                  <textarea id="floatingChatPromptInput" rows="3" placeholder="여기서 바로 질문하세요. 예: 지금 BTC 흐름을 짧게 설명해줘."></textarea>
+                  <div class="floating-chat-actions-row">
+                    <button id="floatingSendChatButton" class="button accent" type="button">보내기</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </aside>
 

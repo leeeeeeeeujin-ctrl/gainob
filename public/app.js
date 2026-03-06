@@ -15,8 +15,10 @@ const state = {
   drawingTool: "move",
   pendingDrawing: null,
   currentConversationId: null,
+  conversations: [],
   chatMessages: [],
   chatBusy: false,
+  floatingHistoryOpen: false,
   floatingPanel: {
     x: null,
     y: null,
@@ -72,16 +74,20 @@ const elements = {
   newsStatsOutput: document.querySelector("#newsStatsOutput"),
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
-  analysisFloatingOutput: document.querySelector("#analysisFloatingOutput"),
   chatContextMeta: document.querySelector("#chatContextMeta"),
   chatMessageList: document.querySelector("#chatMessageList"),
   chatPromptInput: document.querySelector("#chatPromptInput"),
   sendChatButton: document.querySelector("#sendChatButton"),
   newConversationButton: document.querySelector("#newConversationButton"),
+  floatingChatMessages: document.querySelector("#floatingChatMessages"),
+  floatingChatPromptInput: document.querySelector("#floatingChatPromptInput"),
+  floatingSendChatButton: document.querySelector("#floatingSendChatButton"),
+  floatingConversationList: document.querySelector("#floatingConversationList"),
   floatingBriefingPanel: document.querySelector("#floatingBriefingPanel"),
   floatingBriefingHeader: document.querySelector("#floatingBriefingHeader"),
   floatingBriefingBody: document.querySelector("#floatingBriefingBody"),
   floatingBriefingMeta: document.querySelector("#floatingBriefingMeta"),
+  floatingBriefingHistoryButton: document.querySelector("#floatingBriefingHistoryButton"),
   floatingBriefingOpenButton: document.querySelector("#floatingBriefingOpenButton"),
   floatingBriefingMinimizeButton: document.querySelector("#floatingBriefingMinimizeButton"),
   historyMeta: document.querySelector("#historyMeta"),
@@ -255,7 +261,6 @@ function savePersonalSettings() {
 function setAnalysisMessage(message) {
   elements.analysisOutput.textContent = message;
   elements.analysisOutputMirror.textContent = message;
-  elements.analysisFloatingOutput.textContent = message;
 }
 
 function setAiSettingsStatus(message) {
@@ -299,16 +304,23 @@ function updateChatContextMeta() {
 }
 
 function renderChatMessages() {
-  if (!elements.chatMessageList) {
+  if (!elements.chatMessageList && !elements.floatingChatMessages) {
     return;
   }
+
+  const emptyMessage = "대화를 시작하면 메시지가 여기에 표시됩니다.";
 
   if (!state.chatMessages.length) {
-    elements.chatMessageList.innerHTML = "대화를 시작하면 메시지가 여기에 표시됩니다.";
+    if (elements.chatMessageList) {
+      elements.chatMessageList.innerHTML = emptyMessage;
+    }
+    if (elements.floatingChatMessages) {
+      elements.floatingChatMessages.innerHTML = emptyMessage;
+    }
     return;
   }
 
-  elements.chatMessageList.innerHTML = state.chatMessages
+  const html = state.chatMessages
     .map(
       (message) => `
         <article class="chat-message ${message.sender === "ai" ? "is-ai" : "is-user"}">
@@ -322,37 +334,79 @@ function renderChatMessages() {
     )
     .join("");
 
-  elements.chatMessageList.scrollTop = elements.chatMessageList.scrollHeight;
+  if (elements.chatMessageList) {
+    elements.chatMessageList.innerHTML = html;
+    elements.chatMessageList.scrollTop = elements.chatMessageList.scrollHeight;
+  }
+  if (elements.floatingChatMessages) {
+    elements.floatingChatMessages.innerHTML = html;
+    elements.floatingChatMessages.scrollTop = elements.floatingChatMessages.scrollHeight;
+  }
+}
+
+function renderConversationList() {
+  if (!elements.floatingConversationList) {
+    return;
+  }
+
+  elements.floatingConversationList.hidden = !state.floatingHistoryOpen;
+  if (!state.floatingHistoryOpen) {
+    return;
+  }
+
+  if (!state.conversations.length) {
+    elements.floatingConversationList.innerHTML = "대화 내역이 없습니다.";
+    return;
+  }
+
+  elements.floatingConversationList.innerHTML = state.conversations
+    .map(
+      (conversation) => `
+        <button class="floating-conversation-item ${conversation.id === state.currentConversationId ? "is-active" : ""}" data-conversation-id="${conversation.id}" type="button">
+          <strong>${escapeHtml(conversation.title || `${conversation.symbol || "시장"} 대화`)}</strong>
+          <span>${escapeHtml(conversation.symbol || "-")} · ${escapeHtml(conversation.timeframe || "-")}</span>
+        </button>
+      `
+    )
+    .join("");
 }
 
 async function loadConversation(conversationId) {
   const payload = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}`);
   state.currentConversationId = conversationId;
   state.chatMessages = payload.messages || [];
+  renderConversationList();
   renderChatMessages();
 }
 
 async function loadConversations() {
   if (!state.account?.authenticated) {
     state.currentConversationId = null;
+    state.conversations = [];
     state.chatMessages = [];
+    renderConversationList();
     renderChatMessages();
     return;
   }
 
   try {
     const payload = await fetchJson("/api/conversations");
-    const firstConversation = (payload.conversations || [])[0];
+    state.conversations = payload.conversations || [];
+    renderConversationList();
+    const firstConversation = state.conversations[0];
     if (firstConversation?.id) {
       await loadConversation(firstConversation.id);
     } else {
       state.currentConversationId = null;
       state.chatMessages = [];
+      renderConversationList();
       renderChatMessages();
     }
   } catch (_error) {
     state.currentConversationId = null;
+    state.conversations = [];
     state.chatMessages = [];
+    renderConversationList();
     renderChatMessages();
   }
 }
@@ -373,31 +427,45 @@ async function ensureConversation() {
     body: JSON.stringify({ title, symbol, timeframe })
   });
   state.currentConversationId = payload.conversation.id;
+  state.conversations = [payload.conversation, ...state.conversations];
   state.chatMessages = [];
+  renderConversationList();
   renderChatMessages();
   return state.currentConversationId;
 }
 
-async function sendChatMessage() {
+async function sendChatMessage(source = "main") {
   if (!state.account?.authenticated) {
     setAnalysisMessage("로그인 후 AI 채팅을 사용할 수 있습니다.");
     setActiveView("accountView");
     return;
   }
 
-  const content = String(elements.chatPromptInput.value || "").trim();
+  const promptElement = source === "floating" ? elements.floatingChatPromptInput : elements.chatPromptInput;
+  const mirrorElement = source === "floating" ? elements.chatPromptInput : elements.floatingChatPromptInput;
+  const content = String(promptElement?.value || "").trim();
   if (!content || state.chatBusy) {
     return;
   }
 
   state.chatBusy = true;
-  elements.sendChatButton.disabled = true;
+  if (elements.sendChatButton) {
+    elements.sendChatButton.disabled = true;
+  }
+  if (elements.floatingSendChatButton) {
+    elements.floatingSendChatButton.disabled = true;
+  }
 
   try {
     const conversationId = await ensureConversation();
     state.chatMessages.push({ sender: "user", content, created_at: new Date().toISOString() });
     renderChatMessages();
-    elements.chatPromptInput.value = "";
+    if (promptElement) {
+      promptElement.value = "";
+    }
+    if (mirrorElement) {
+      mirrorElement.value = "";
+    }
     setFloatingBriefingMeta("AI 응답 생성 중");
 
     const payload = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
@@ -436,13 +504,20 @@ async function sendChatMessage() {
     setFloatingBriefingMeta("AI 채팅 실패");
   } finally {
     state.chatBusy = false;
-    elements.sendChatButton.disabled = false;
+    if (elements.sendChatButton) {
+      elements.sendChatButton.disabled = false;
+    }
+    if (elements.floatingSendChatButton) {
+      elements.floatingSendChatButton.disabled = false;
+    }
   }
 }
 
 async function createNewConversation() {
   state.currentConversationId = null;
   state.chatMessages = [];
+  state.floatingHistoryOpen = false;
+  renderConversationList();
   renderChatMessages();
   updateChatContextMeta();
   elements.chatPromptInput?.focus();
@@ -1808,7 +1883,11 @@ async function analyze() {
   setActiveView("briefingView");
   updateChatContextMeta();
   if (!elements.chatPromptInput.value.trim()) {
-    elements.chatPromptInput.value = `${elements.coinSelect.value} ${elements.timeframeSelect.value} 기준으로 지금 상태를 내 투자 스타일과 메모를 반영해서 설명해줘.`;
+    const seedPrompt = `${elements.coinSelect.value} ${elements.timeframeSelect.value} 기준으로 지금 상태를 내 투자 스타일과 메모를 반영해서 설명해줘.`;
+    elements.chatPromptInput.value = seedPrompt;
+    if (elements.floatingChatPromptInput) {
+      elements.floatingChatPromptInput.value = seedPrompt;
+    }
   }
   elements.chatPromptInput.focus();
   setFloatingBriefingMeta("대화 입력 대기 중");
@@ -1828,6 +1907,10 @@ elements.resetChartViewButton.addEventListener("click", () => {
 });
 elements.floatingBriefingOpenButton.addEventListener("click", () => {
   setActiveView("briefingView");
+});
+elements.floatingBriefingHistoryButton?.addEventListener("click", () => {
+  state.floatingHistoryOpen = !state.floatingHistoryOpen;
+  renderConversationList();
 });
 elements.floatingBriefingMinimizeButton.addEventListener("click", () => {
   state.floatingPanel.minimized = !state.floatingPanel.minimized;
@@ -1899,13 +1982,40 @@ elements.logoutButton.addEventListener("click", logoutAccount);
 elements.deleteAccountButton.addEventListener("click", deleteAccount);
 elements.saveAiSettingsButton.addEventListener("click", saveAiSettings);
 elements.sendChatButton?.addEventListener("click", sendChatMessage);
+elements.floatingSendChatButton?.addEventListener("click", () => sendChatMessage("floating"));
 elements.newConversationButton?.addEventListener("click", createNewConversation);
 elements.deleteOpenAiKeyButton?.addEventListener("click", () => deleteStoredKey("openai"));
 elements.deleteGeminiKeyButton?.addEventListener("click", () => deleteStoredKey("gemini"));
+elements.floatingConversationList?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-conversation-id]");
+  if (!button) {
+    return;
+  }
+
+  await loadConversation(button.dataset.conversationId);
+  state.floatingHistoryOpen = false;
+  renderConversationList();
+});
 elements.chatPromptInput?.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
     sendChatMessage();
+  }
+});
+elements.floatingChatPromptInput?.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    sendChatMessage("floating");
+  }
+});
+elements.chatPromptInput?.addEventListener("input", () => {
+  if (elements.floatingChatPromptInput && document.activeElement === elements.chatPromptInput) {
+    elements.floatingChatPromptInput.value = elements.chatPromptInput.value;
+  }
+});
+elements.floatingChatPromptInput?.addEventListener("input", () => {
+  if (elements.chatPromptInput && document.activeElement === elements.floatingChatPromptInput) {
+    elements.chatPromptInput.value = elements.floatingChatPromptInput.value;
   }
 });
 elements.navButtons.forEach((button) => {
