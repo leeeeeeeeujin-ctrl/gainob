@@ -7,136 +7,162 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="hero">
-        <p class="eyebrow">BITHUMB + GLOBAL BENCHMARK</p>
-        <h1>시장 데이터 위에 개인 컨텍스트를 올려서 내 AI처럼 씁니다.</h1>
-        <p class="lead">
-          빗썸 현물 가격과 바이낸스 글로벌 기준점을 비교하고, 내 투자 스타일과 메모를 같이 묶어
-          AI 분석에 전달합니다.
-        </p>
-      </section>
-
-      <section class="controls card">
-        <label class="field">
-          <span>코인</span>
-          <select id="coinSelect"></select>
-        </label>
-
-        <button id="refreshButton" class="button accent">시세 새로고침</button>
-
-        <label class="field">
-          <span>내 AI 별칭</span>
-          <input id="aliasInput" type="text" placeholder="예: swing-helper" />
-        </label>
-
-        <button id="analyzeButton" class="button">AI 분석 요청</button>
-      </section>
-
-      <section class="details-grid personal-grid">
-        <article class="card">
-          <div class="card-head">
-            <h3>활성 모듈</h3>
-            <span class="stamp">확장 가능</span>
+    <main class="overlay-shell">
+      <section class="overlay-frame">
+        <aside class="sidebar">
+          <div class="brand-block">
+            <p class="eyebrow">PERSONAL OVERLAY AI</p>
+            <h1>Gainob</h1>
+            <p class="sidebar-copy">
+              왼쪽에서 컨텍스트를 고르고, 오른쪽에서 시장과 AI 응답을 같이 봅니다.
+            </p>
           </div>
-          <div id="moduleList" class="module-list"></div>
-          <div id="moduleStatus" class="module-status">아직 수집 전입니다.</div>
-        </article>
 
-        <article class="card">
-          <div class="card-head">
-            <h3>개인 컨텍스트</h3>
-            <span class="stamp">로컬 저장</span>
-          </div>
-          <div class="stack">
+          <section class="sidebar-card">
+            <div class="section-head">
+              <h2>세션 제어</h2>
+              <span>Live</span>
+            </div>
             <label class="field">
-              <span>투자 스타일</span>
-              <textarea
-                id="styleInput"
-                rows="2"
-                placeholder="예: 단기 스윙 위주, 거래량과 추세 우선"
-              ></textarea>
+              <span>코인</span>
+              <select id="coinSelect"></select>
             </label>
             <label class="field">
-              <span>리스크 원칙</span>
-              <textarea
-                id="riskRuleInput"
-                rows="2"
-                placeholder="예: 손절은 -3% 이내, 급등 추격 금지"
-              ></textarea>
+              <span>내 AI 별칭</span>
+              <input id="aliasInput" type="text" placeholder="예: swing-helper" />
             </label>
-            <label class="field">
-              <span>주시 항목</span>
-              <textarea
-                id="watchItemsInput"
-                rows="2"
-                placeholder="예: 거래대금 급증, 해외 가격 괴리, 호가 비대칭"
-              ></textarea>
-            </label>
-            <label class="field">
-              <span>당일 메모</span>
-              <textarea
-                id="noteInput"
-                rows="3"
-                placeholder="예: 오늘 급등 후 눌림이 나오는지, 빗썸 가격이 과열인지 보고 싶음"
-              ></textarea>
-            </label>
-            <label class="field">
-              <span>지금 확인하고 싶은 질문</span>
-              <textarea
-                id="focusQuestionInput"
-                rows="2"
-                placeholder="예: 지금은 추격 구간인지, 관망 구간인지"
-              ></textarea>
-            </label>
-          </div>
-        </article>
-      </section>
+            <div class="button-row">
+              <button id="refreshButton" class="button ghost">시세 새로고침</button>
+              <button id="analyzeButton" class="button accent">AI 분석 요청</button>
+            </div>
+          </section>
 
-      <section class="grid">
-        <article class="card metric-card">
-          <p class="label">빗썸 현재가</p>
-          <h2 id="bithumbPrice">-</h2>
-          <p id="bithumbChange" class="muted">-</p>
-        </article>
+          <section class="sidebar-card">
+            <div class="section-head">
+              <h2>활성 모듈</h2>
+              <span>Optional</span>
+            </div>
+            <div id="moduleList" class="module-list"></div>
+          </section>
 
-        <article class="card metric-card">
-          <p class="label">글로벌 환산가</p>
-          <h2 id="benchmarkPrice">-</h2>
-          <p id="benchmarkChange" class="muted">-</p>
-        </article>
+          <section class="sidebar-card status-card">
+            <div class="section-head">
+              <h2>모듈 상태</h2>
+              <span>Runtime</span>
+            </div>
+            <div id="moduleStatus" class="module-status">아직 수집 전입니다.</div>
+          </section>
+        </aside>
 
-        <article class="card metric-card">
-          <p class="label">가격 차이</p>
-          <h2 id="premium">-</h2>
-          <p id="usdtKrw" class="muted">-</p>
-        </article>
-      </section>
+        <section class="main-panel">
+          <header class="hero-card">
+            <div>
+              <p class="eyebrow muted-eye">BITHUMB + BINANCE</p>
+              <h2>시장 데이터 위에 개인 컨텍스트를 올리는 오버레이</h2>
+            </div>
+            <p class="hero-copy">
+              빗썸 시세와 글로벌 기준 가격을 나란히 보고, 메모와 리스크 원칙을 함께 묶어 AI에
+              전달합니다.
+            </p>
+          </header>
 
-      <section class="details-grid">
-        <article class="card">
-          <div class="card-head">
-            <h3>시장 비교</h3>
-            <span id="fetchedAt" class="stamp">-</span>
-          </div>
-          <dl id="marketDetails" class="facts"></dl>
-        </article>
+          <section class="metric-strip">
+            <article class="metric-card">
+              <p class="label">빗썸 현재가</p>
+              <h3 id="bithumbPrice">-</h3>
+              <p id="bithumbChange" class="muted">-</p>
+            </article>
 
-        <article class="card">
-          <div class="card-head">
-            <h3>최근 1시간봉 24개</h3>
-            <span class="stamp">빗썸 기준</span>
-          </div>
-          <pre id="candlesOutput" class="code-block">-</pre>
-        </article>
-      </section>
+            <article class="metric-card">
+              <p class="label">글로벌 환산가</p>
+              <h3 id="benchmarkPrice">-</h3>
+              <p id="benchmarkChange" class="muted">-</p>
+            </article>
 
-      <section class="card">
-        <div class="card-head">
-          <h3>AI 분석</h3>
-          <span class="stamp">OpenAI + Modules</span>
-        </div>
-        <pre id="analysisOutput" class="analysis">먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre>
+            <article class="metric-card accent-card">
+              <p class="label">가격 차이</p>
+              <h3 id="premium">-</h3>
+              <p id="usdtKrw" class="muted">-</p>
+            </article>
+          </section>
+
+          <section class="workspace-grid">
+            <article class="panel-card form-card">
+              <div class="section-head">
+                <h2>개인 컨텍스트</h2>
+                <span>Local</span>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>투자 스타일</span>
+                  <textarea
+                    id="styleInput"
+                    rows="3"
+                    placeholder="예: 단기 스윙 위주, 거래량과 추세 우선"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>리스크 원칙</span>
+                  <textarea
+                    id="riskRuleInput"
+                    rows="3"
+                    placeholder="예: 손절은 -3% 이내, 급등 추격 금지"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>주시 항목</span>
+                  <textarea
+                    id="watchItemsInput"
+                    rows="3"
+                    placeholder="예: 거래대금 급증, 해외 가격 괴리, 호가 비대칭"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>당일 메모</span>
+                  <textarea
+                    id="noteInput"
+                    rows="4"
+                    placeholder="예: 오늘 급등 후 눌림이 나오는지, 빗썸 가격이 과열인지 보고 싶음"
+                  ></textarea>
+                </label>
+                <label class="field full-span">
+                  <span>지금 확인하고 싶은 질문</span>
+                  <textarea
+                    id="focusQuestionInput"
+                    rows="3"
+                    placeholder="예: 지금은 추격 구간인지, 관망 구간인지"
+                  ></textarea>
+                </label>
+              </div>
+            </article>
+
+            <article class="panel-card">
+              <div class="section-head">
+                <h2>시장 비교</h2>
+                <span id="fetchedAt">-</span>
+              </div>
+              <dl id="marketDetails" class="facts"></dl>
+            </article>
+
+            <article class="panel-card wide-panel">
+              <div class="section-head">
+                <h2>최근 1시간봉 24개</h2>
+                <span>빗썸 기준</span>
+              </div>
+              <pre id="candlesOutput" class="code-block">-</pre>
+            </article>
+
+            <article class="panel-card wide-panel analysis-card">
+              <div class="section-head">
+                <h2>AI 분석</h2>
+                <span>OpenAI + Modules</span>
+              </div>
+              <pre id="analysisOutput" class="analysis">
+먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre
+              >
+            </article>
+          </section>
+        </section>
       </section>
     </main>
 
