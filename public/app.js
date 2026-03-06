@@ -2943,8 +2943,8 @@ elements.floatingBriefingMinimizeButton.addEventListener("click", () => {
   updateFloatingBriefingState();
   savePersonalSettings();
 });
-elements.chartHost.addEventListener("pointerup", (event) => {
-  if (event.button !== 0) {
+elements.chartHost.addEventListener("click", (event) => {
+  if (state.drawingTool === "move") {
     return;
   }
 
