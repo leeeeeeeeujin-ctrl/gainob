@@ -113,8 +113,7 @@ const elements = {
   accountOpenAiKeyInput: document.querySelector("#accountOpenAiKeyInput"),
   accountGeminiKeyInput: document.querySelector("#accountGeminiKeyInput"),
   storedKeySummary: document.querySelector("#storedKeySummary"),
-  deleteOpenAiKeyButton: document.querySelector("#deleteOpenAiKeyButton"),
-  deleteGeminiKeyButton: document.querySelector("#deleteGeminiKeyButton"),
+  storedKeyList: document.querySelector("#storedKeyList"),
   saveAiSettingsButton: document.querySelector("#saveAiSettingsButton"),
   aiSettingsStatus: document.querySelector("#aiSettingsStatus"),
   authUsernameInput: document.querySelector("#authUsernameInput"),
@@ -275,9 +274,50 @@ function setStoredKeySummary(message) {
   }
 }
 
+function renderStoredKeyList(keys = {}) {
+  if (!elements.storedKeyList) {
+    return;
+  }
+
+  const aiSettings = state.account?.aiSettings || {};
+  const items = [
+    {
+      provider: "openai",
+      label: "GPT",
+      masked: keys.openai?.masked,
+      present: Boolean(keys.openai?.present),
+      model: aiSettings.openAiModel || "gpt-4.1-mini"
+    },
+    {
+      provider: "gemini",
+      label: "Gemini",
+      masked: keys.gemini?.masked,
+      present: Boolean(keys.gemini?.present),
+      model: aiSettings.geminiModel || "gemini-2.5-flash"
+    }
+  ];
+
+  elements.storedKeyList.innerHTML = items
+    .map(
+      (item) => `
+        <article class="stored-key-row ${item.present ? "is-present" : "is-empty"}">
+          <div class="stored-key-copy">
+            <strong>${item.label}</strong>
+            <span>${item.present ? `${escapeHtml(item.masked)} · 기본 모델 ${escapeHtml(item.model)}` : "저장된 키 없음"}</span>
+          </div>
+          <div class="stored-key-actions">
+            <button class="button ghost stored-key-delete" data-provider="${item.provider}" type="button" ${item.present ? "" : "disabled"}>삭제</button>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
 async function loadStoredKeys() {
   if (!state.account?.authenticated) {
     setStoredKeySummary("로그인 후 저장된 키 목록을 확인할 수 있습니다.");
+    renderStoredKeyList({});
     return;
   }
 
@@ -290,8 +330,10 @@ async function loadStoredKeys() {
         gemini?.present ? gemini.masked : "없음"
       }`
     );
+    renderStoredKeyList(payload.keys || {});
   } catch (_error) {
     setStoredKeySummary("저장된 키 상태를 불러오지 못했습니다.");
+    renderStoredKeyList({});
   }
 }
 
@@ -2028,8 +2070,14 @@ elements.saveAiSettingsButton.addEventListener("click", saveAiSettings);
 elements.sendChatButton?.addEventListener("click", sendChatMessage);
 elements.floatingSendChatButton?.addEventListener("click", () => sendChatMessage("floating"));
 elements.newConversationButton?.addEventListener("click", createNewConversation);
-elements.deleteOpenAiKeyButton?.addEventListener("click", () => deleteStoredKey("openai"));
-elements.deleteGeminiKeyButton?.addEventListener("click", () => deleteStoredKey("gemini"));
+elements.storedKeyList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-provider]");
+  if (!button) {
+    return;
+  }
+
+  deleteStoredKey(button.dataset.provider);
+});
 elements.floatingConversationList?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-conversation-id]");
   if (!button) {

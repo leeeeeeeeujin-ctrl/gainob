@@ -1099,6 +1099,46 @@ textarea {
   overflow: auto;
 }
 
+.stored-key-list {
+  display: grid;
+  gap: 8px;
+}
+
+.stored-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(18, 22, 26, 0.04);
+  border: 1px solid rgba(18, 22, 26, 0.08);
+}
+
+.stored-key-row.is-present {
+  border-color: rgba(14, 165, 160, 0.2);
+}
+
+.stored-key-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.stored-key-copy strong {
+  font-size: 0.9rem;
+}
+
+.stored-key-copy span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.stored-key-actions {
+  display: flex;
+  align-items: center;
+}
+
 .chat-shell {
   display: grid;
   gap: 12px;
