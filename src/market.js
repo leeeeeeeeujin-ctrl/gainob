@@ -1,21 +1,27 @@
 const BITHUMB_BASE_URL = "https://api.bithumb.com/public";
 const BINANCE_BASE_URL = "https://data-api.binance.vision/api/v3";
 
-const SUPPORTED_COINS = [
-  { symbol: "BTC", label: "Bitcoin" },
-  { symbol: "ETH", label: "Ethereum" },
-  { symbol: "XRP", label: "XRP" },
-  { symbol: "SOL", label: "Solana" },
-  { symbol: "DOGE", label: "Dogecoin" },
-  { symbol: "ADA", label: "Cardano" }
+const DEFAULT_COINS = [
+  { symbol: "BTC", pair: "BTCUSDT", label: "BTC", localSupported: true },
+  { symbol: "ETH", pair: "ETHUSDT", label: "ETH", localSupported: true },
+  { symbol: "XRP", pair: "XRPUSDT", label: "XRP", localSupported: true },
+  { symbol: "SOL", pair: "SOLUSDT", label: "SOL", localSupported: true },
+  { symbol: "DOGE", pair: "DOGEUSDT", label: "DOGE", localSupported: true },
+  { symbol: "ADA", pair: "ADAUSDT", label: "ADA", localSupported: true }
 ];
 
 const SUPPORTED_TIMEFRAMES = [
-  { id: "5m", label: "5m", bithumbInterval: "5m", candleLimit: 96 },
-  { id: "30m", label: "30m", bithumbInterval: "30m", candleLimit: 72 },
-  { id: "1h", label: "1h", bithumbInterval: "1h", candleLimit: 72 },
-  { id: "6h", label: "6h", bithumbInterval: "6h", candleLimit: 60 }
+  { id: "15m", label: "15분", binanceInterval: "15m", candleLimit: 800 },
+  { id: "1h", label: "1시간", binanceInterval: "1h", candleLimit: 1000 },
+  { id: "4h", label: "4시간", binanceInterval: "4h", candleLimit: 1000 },
+  { id: "1d", label: "일봉", binanceInterval: "1d", candleLimit: 1000 },
+  { id: "1w", label: "주봉", binanceInterval: "1w", candleLimit: 520 }
 ];
+
+const coinCache = {
+  coins: DEFAULT_COINS,
+  expiresAt: 0
+};
 
 async function fetchJson(url) {
   const response = await fetch(url, {
@@ -31,6 +37,44 @@ async function fetchJson(url) {
   return response.json();
 }
 
+function toNumber(value) {
+  return Number(value || 0);
+}
+
+function getTimeframeConfig(timeframeId = "1h") {
+  return SUPPORTED_TIMEFRAMES.find((timeframe) => timeframe.id === timeframeId) || SUPPORTED_TIMEFRAMES[1];
+}
+
+async function fetchBinanceExchangeInfo() {
+  return fetchJson(`${BINANCE_BASE_URL}/exchangeInfo`);
+}
+
+async function fetchBinanceTickers() {
+  return fetchJson(`${BINANCE_BASE_URL}/ticker/24hr`);
+}
+
+async function fetchBinanceTicker(pair) {
+  return fetchJson(`${BINANCE_BASE_URL}/ticker/24hr?symbol=${pair}`);
+}
+
+async function fetchBinanceBookTicker(pair) {
+  return fetchJson(`${BINANCE_BASE_URL}/ticker/bookTicker?symbol=${pair}`);
+}
+
+async function fetchBinanceOrderbook(pair) {
+  return fetchJson(`${BINANCE_BASE_URL}/depth?symbol=${pair}&limit=20`);
+}
+
+async function fetchBinanceTrades(pair) {
+  return fetchJson(`${BINANCE_BASE_URL}/trades?symbol=${pair}&limit=30`);
+}
+
+async function fetchBinanceKlines(pair, timeframe) {
+  return fetchJson(
+    `${BINANCE_BASE_URL}/klines?symbol=${pair}&interval=${timeframe.binanceInterval}&limit=${timeframe.candleLimit}`
+  );
+}
+
 async function fetchBithumbTicker(symbol) {
   const payload = await fetchJson(`${BITHUMB_BASE_URL}/ticker/${symbol}_KRW`);
 
@@ -42,7 +86,7 @@ async function fetchBithumbTicker(symbol) {
 }
 
 async function fetchBithumbOrderbook(symbol) {
-  const payload = await fetchJson(`${BITHUMB_BASE_URL}/orderbook/${symbol}_KRW?count=15`);
+  const payload = await fetchJson(`${BITHUMB_BASE_URL}/orderbook/${symbol}_KRW?count=10`);
 
   if (payload.status !== "0000") {
     throw new Error(`Bithumb orderbook error for ${symbol}: ${payload.status}`);
@@ -51,125 +95,132 @@ async function fetchBithumbOrderbook(symbol) {
   return payload.data;
 }
 
-async function fetchBithumbCandles(symbol, timeframe) {
-  const payload = await fetchJson(`${BITHUMB_BASE_URL}/candlestick/${symbol}_KRW/${timeframe.bithumbInterval}`);
-
-  if (payload.status !== "0000") {
-    return [];
-  }
-
-  return payload.data.slice(-timeframe.candleLimit).map((entry) => ({
-    timestamp: Number(entry[0]),
-    open: Number(entry[1]),
-    close: Number(entry[2]),
-    high: Number(entry[3]),
-    low: Number(entry[4]),
-    volume: Number(entry[5])
-  }));
-}
-
-async function fetchBithumbRecentTrades(symbol) {
-  const payload = await fetchJson(`${BITHUMB_BASE_URL}/transaction_history/${symbol}_KRW?count=25`);
-
-  if (payload.status !== "0000") {
-    return [];
-  }
-
-  return Array.isArray(payload.data) ? payload.data : [];
-}
-
 async function fetchUsdtKrwRate() {
   const ticker = await fetchBithumbTicker("USDT");
   return Number(ticker.closing_price);
 }
 
-async function fetchBinanceTicker(symbol) {
-  return fetchJson(`${BINANCE_BASE_URL}/ticker/24hr?symbol=${symbol}USDT`);
+function normalizeBinanceCoin(symbolInfo, tickerByPair) {
+  const ticker = tickerByPair.get(symbolInfo.symbol);
+
+  return {
+    symbol: symbolInfo.baseAsset,
+    pair: symbolInfo.symbol,
+    label: symbolInfo.baseAsset,
+    lastPriceUsdt: toNumber(ticker?.lastPrice),
+    change24hPct: toNumber(ticker?.priceChangePercent),
+    quoteVolume24hUsdt: toNumber(ticker?.quoteVolume),
+    localSupported: DEFAULT_COINS.some((coin) => coin.symbol === symbolInfo.baseAsset)
+  };
 }
 
-async function fetchBinanceBookTicker(symbol) {
-  return fetchJson(`${BINANCE_BASE_URL}/ticker/bookTicker?symbol=${symbol}USDT`);
+async function getSupportedCoins() {
+  if (coinCache.expiresAt > Date.now()) {
+    return coinCache.coins;
+  }
+
+  try {
+    const [exchangeInfo, tickers] = await Promise.all([fetchBinanceExchangeInfo(), fetchBinanceTickers()]);
+    const tickerByPair = new Map(
+      tickers
+        .filter((ticker) => typeof ticker.symbol === "string")
+        .map((ticker) => [ticker.symbol, ticker])
+    );
+    const coins = (exchangeInfo.symbols || [])
+      .filter(
+        (symbolInfo) =>
+          symbolInfo.quoteAsset === "USDT" &&
+          symbolInfo.status === "TRADING" &&
+          symbolInfo.isSpotTradingAllowed
+      )
+      .map((symbolInfo) => normalizeBinanceCoin(symbolInfo, tickerByPair))
+      .sort((left, right) => right.quoteVolume24hUsdt - left.quoteVolume24hUsdt);
+
+    coinCache.coins = coins.length ? coins : DEFAULT_COINS;
+    coinCache.expiresAt = Date.now() + 10 * 60 * 1000;
+  } catch (_error) {
+    coinCache.coins = coinCache.coins.length ? coinCache.coins : DEFAULT_COINS;
+    coinCache.expiresAt = Date.now() + 60 * 1000;
+  }
+
+  return coinCache.coins;
 }
 
-function toNumber(value) {
-  return Number(value);
+function getCachedCoins() {
+  return coinCache.coins;
 }
 
-function getSupportedCoins() {
-  return SUPPORTED_COINS;
+async function getCoinMeta(symbol) {
+  const coins = await getSupportedCoins();
+  return coins.find((coin) => coin.symbol === symbol) || getCachedCoins().find((coin) => coin.symbol === symbol) || null;
 }
 
 function getSupportedTimeframes() {
   return SUPPORTED_TIMEFRAMES.map(({ id, label }) => ({ id, label }));
 }
 
-function assertSupported(symbol) {
-  if (!SUPPORTED_COINS.some((coin) => coin.symbol === symbol)) {
-    throw new Error(`Unsupported symbol: ${symbol}`);
-  }
-}
-
-function getTimeframeConfig(timeframeId = "1h") {
-  return SUPPORTED_TIMEFRAMES.find((timeframe) => timeframe.id === timeframeId) || SUPPORTED_TIMEFRAMES[2];
-}
-
-function normalizeOrderbookSide(levels) {
-  return (levels || []).map((level) => ({
-    price: toNumber(level.price),
-    quantity: toNumber(level.quantity)
+function normalizeBinanceOrderbook(entries) {
+  return (entries || []).map(([price, quantity]) => ({
+    price: toNumber(price),
+    quantity: toNumber(quantity),
+    valueUsdt: toNumber(price) * toNumber(quantity)
   }));
 }
 
-function buildOrderbook(orderbook) {
-  const bids = normalizeOrderbookSide(orderbook.bids);
-  const asks = normalizeOrderbookSide(orderbook.asks);
+function buildPrimaryOrderbook(orderbook) {
+  const bids = normalizeBinanceOrderbook(orderbook.bids);
+  const asks = normalizeBinanceOrderbook(orderbook.asks);
   const bestBid = bids[0]?.price || 0;
   const bestAsk = asks[0]?.price || 0;
 
   return {
     bids,
     asks,
-    spreadKrw: Math.max(bestAsk - bestBid, 0),
+    spreadUsdt: Math.max(bestAsk - bestBid, 0),
     totalBidUnits: bids.reduce((sum, level) => sum + level.quantity, 0),
-    totalAskUnits: asks.reduce((sum, level) => sum + level.quantity, 0)
+    totalAskUnits: asks.reduce((sum, level) => sum + level.quantity, 0),
+    totalBidValueUsdt: bids.reduce((sum, level) => sum + level.valueUsdt, 0),
+    totalAskValueUsdt: asks.reduce((sum, level) => sum + level.valueUsdt, 0)
   };
 }
 
-function parseTradeTimestamp(value) {
-  if (!value) {
-    return new Date().toISOString();
-  }
-
-  const parsed = Date.parse(String(value).replace(" ", "T"));
-
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
-}
-
 function buildRecentTrades(trades) {
-  return trades.map((trade, index) => ({
-    id: trade.cont_no || `${trade.transaction_date || "trade"}-${index}`,
-    timestamp: parseTradeTimestamp(trade.transaction_date),
-    side: String(trade.type || "bid").toLowerCase() === "ask" ? "sell" : "buy",
-    priceKrw: toNumber(trade.price),
-    quantity: toNumber(trade.units_traded),
-    valueKrw: toNumber(trade.total)
+  return (trades || []).map((trade) => ({
+    id: trade.id,
+    timestamp: new Date(Number(trade.time)).toISOString(),
+    side: trade.isBuyerMaker ? "sell" : "buy",
+    priceUsdt: toNumber(trade.price),
+    quantity: toNumber(trade.qty),
+    valueUsdt: toNumber(trade.price) * toNumber(trade.qty)
   }));
 }
 
-function buildAnnotations(symbol, candles, orderbook, bithumbPriceKrw) {
+function buildCandles(klines) {
+  return (klines || []).map((entry) => ({
+    timestamp: Number(entry[0]),
+    open: toNumber(entry[1]),
+    high: toNumber(entry[2]),
+    low: toNumber(entry[3]),
+    close: toNumber(entry[4]),
+    volume: toNumber(entry[5]),
+    quoteVolume: toNumber(entry[7])
+  }));
+}
+
+function buildAnnotations(symbol, candles, orderbook, currentPriceUsdt) {
   if (!candles.length) {
     return [];
   }
 
-  const visibleCandles = candles.slice(-Math.min(candles.length, 32));
+  const visibleCandles = candles.slice(-Math.min(candles.length, 48));
   const lows = visibleCandles.map((candle) => candle.low);
   const highs = visibleCandles.map((candle) => candle.high);
   const firstCandle = visibleCandles[0];
   const lastCandle = visibleCandles.at(-1);
   const support = Math.min(...lows);
   const resistance = Math.max(...highs);
-  const supportBand = support * 0.003;
-  const resistanceBand = resistance * 0.003;
+  const supportBand = support * 0.004;
+  const resistanceBand = resistance * 0.004;
   const bidPressureRatio = orderbook.totalBidUnits / Math.max(orderbook.totalAskUnits, 0.0001);
   const pressureLabel =
     bidPressureRatio >= 1.15
@@ -189,7 +240,7 @@ function buildAnnotations(symbol, candles, orderbook, bithumbPriceKrw) {
       endTime: lastCandle.timestamp,
       minPrice: Math.max(support - supportBand, 0),
       maxPrice: support + supportBand,
-      reason: "최근 캔들 저점 묶음 기반"
+      reason: "최근 저점 영역 기반"
     },
     {
       id: `${symbol}-resistance`,
@@ -201,7 +252,7 @@ function buildAnnotations(symbol, candles, orderbook, bithumbPriceKrw) {
       endTime: lastCandle.timestamp,
       minPrice: Math.max(resistance - resistanceBand, 0),
       maxPrice: resistance + resistanceBand,
-      reason: "최근 캔들 고점 묶음 기반"
+      reason: "최근 고점 영역 기반"
     },
     {
       id: `${symbol}-trend`,
@@ -224,67 +275,117 @@ function buildAnnotations(symbol, candles, orderbook, bithumbPriceKrw) {
       label: `${pressureLabel} · 현재가`,
       color: bidPressureRatio >= 1 ? "#0ea5a0" : "#d2483f",
       time: lastCandle.timestamp,
-      price: bithumbPriceKrw,
-      reason: `현재가 ${Math.round(bithumbPriceKrw).toLocaleString("ko-KR")} KRW`
+      price: currentPriceUsdt,
+      reason: `현재가 ${currentPriceUsdt.toFixed(2)} USDT`
     }
   ];
 }
 
-async function getMarketSnapshot(symbol, options = {}) {
-  assertSupported(symbol);
-  const timeframe = getTimeframeConfig(options.timeframe);
+function buildLocalSnapshot(symbol, bithumbTicker, bithumbOrderbook, usdtKrw, primaryPriceUsdt) {
+  if (!bithumbTicker || !bithumbOrderbook) {
+    return {
+      exchange: "Bithumb",
+      market: `${symbol}/KRW`,
+      available: false,
+      priceKrw: null,
+      change24hPct: null,
+      high24hKrw: null,
+      low24hKrw: null,
+      volume24h: null,
+      value24hKrw: null,
+      bidKrw: null,
+      askKrw: null,
+      premiumPct: null,
+      benchmarkKrw: primaryPriceUsdt * usdtKrw
+    };
+  }
 
-  const [bithumbTicker, bithumbOrderbookRaw, bithumbRecentTradesRaw, usdtKrw, binanceTicker, binanceBookTicker, candles] =
+  const priceKrw = toNumber(bithumbTicker.closing_price);
+  const benchmarkKrw = primaryPriceUsdt * usdtKrw;
+
+  return {
+    exchange: "Bithumb",
+    market: `${symbol}/KRW`,
+    available: true,
+    priceKrw,
+    change24hPct: toNumber(bithumbTicker.fluctate_rate_24H),
+    high24hKrw: toNumber(bithumbTicker.max_price),
+    low24hKrw: toNumber(bithumbTicker.min_price),
+    volume24h: toNumber(bithumbTicker.units_traded_24H),
+    value24hKrw: toNumber(bithumbTicker.acc_trade_value_24H),
+    bidKrw: toNumber(bithumbOrderbook.bids?.[0]?.price ?? 0),
+    askKrw: toNumber(bithumbOrderbook.asks?.[0]?.price ?? 0),
+    premiumPct: ((priceKrw - benchmarkKrw) / Math.max(benchmarkKrw, 1)) * 100,
+    benchmarkKrw
+  };
+}
+
+async function getMarketSnapshot(symbol, options = {}) {
+  const coinMeta = await getCoinMeta(symbol);
+
+  if (!coinMeta) {
+    throw new Error(`Unsupported symbol: ${symbol}`);
+  }
+
+  const timeframe = getTimeframeConfig(options.timeframe);
+  const [binanceTicker, binanceBookTicker, binanceOrderbookRaw, binanceTradesRaw, klines, usdtKrw] =
     await Promise.all([
-      fetchBithumbTicker(symbol),
-      fetchBithumbOrderbook(symbol),
-      fetchBithumbRecentTrades(symbol),
-      fetchUsdtKrwRate(),
-      fetchBinanceTicker(symbol),
-      fetchBinanceBookTicker(symbol),
-      fetchBithumbCandles(symbol, timeframe)
+      fetchBinanceTicker(coinMeta.pair),
+      fetchBinanceBookTicker(coinMeta.pair),
+      fetchBinanceOrderbook(coinMeta.pair),
+      fetchBinanceTrades(coinMeta.pair),
+      fetchBinanceKlines(coinMeta.pair, timeframe),
+      fetchUsdtKrwRate()
     ]);
 
-  const bithumbPriceKrw = toNumber(bithumbTicker.closing_price);
-  const benchmarkPriceUsdt = toNumber(binanceTicker.lastPrice);
-  const benchmarkPriceKrw = benchmarkPriceUsdt * usdtKrw;
-  const premiumPct = ((bithumbPriceKrw - benchmarkPriceKrw) / benchmarkPriceKrw) * 100;
-  const orderbook = buildOrderbook(bithumbOrderbookRaw);
-  const recentTrades = buildRecentTrades(bithumbRecentTradesRaw);
-  const annotations = buildAnnotations(symbol, candles, orderbook, bithumbPriceKrw);
+  let bithumbTicker = null;
+  let bithumbOrderbook = null;
+
+  try {
+    [bithumbTicker, bithumbOrderbook] = await Promise.all([
+      fetchBithumbTicker(symbol),
+      fetchBithumbOrderbook(symbol)
+    ]);
+  } catch (_error) {
+    bithumbTicker = null;
+    bithumbOrderbook = null;
+  }
+
+  const primaryPriceUsdt = toNumber(binanceTicker.lastPrice);
+  const orderbook = buildPrimaryOrderbook(binanceOrderbookRaw);
+  const candles = buildCandles(klines);
+  const recentTrades = buildRecentTrades(binanceTradesRaw);
+  const local = buildLocalSnapshot(symbol, bithumbTicker, bithumbOrderbook, usdtKrw, primaryPriceUsdt);
+  const annotations = buildAnnotations(symbol, candles, orderbook, primaryPriceUsdt);
 
   return {
     symbol,
-    label: SUPPORTED_COINS.find((coin) => coin.symbol === symbol)?.label ?? symbol,
+    pair: coinMeta.pair,
+    label: coinMeta.label,
     fetchedAt: new Date().toISOString(),
     timeframe: timeframe.id,
     availableTimeframes: getSupportedTimeframes(),
     usdtKrw,
-    premiumPct,
-    bithumb: {
-      exchange: "Bithumb",
-      market: `${symbol}/KRW`,
-      priceKrw: bithumbPriceKrw,
-      change24hPct: toNumber(bithumbTicker.fluctate_rate_24H),
-      high24hKrw: toNumber(bithumbTicker.max_price),
-      low24hKrw: toNumber(bithumbTicker.min_price),
-      volume24h: toNumber(bithumbTicker.units_traded_24H),
-      value24hKrw: toNumber(bithumbTicker.acc_trade_value_24H),
-      bidKrw: orderbook.bids[0]?.price || 0,
-      askKrw: orderbook.asks[0]?.price || 0
-    },
-    benchmark: {
+    primary: {
       exchange: "Binance",
-      market: `${symbol}/USDT`,
-      priceUsdt: benchmarkPriceUsdt,
-      priceKrw: benchmarkPriceKrw,
+      market: coinMeta.pair,
+      priceUsdt: primaryPriceUsdt,
+      priceKrw: primaryPriceUsdt * usdtKrw,
       change24hPct: toNumber(binanceTicker.priceChangePercent),
       high24hUsdt: toNumber(binanceTicker.highPrice),
       low24hUsdt: toNumber(binanceTicker.lowPrice),
       volume24h: toNumber(binanceTicker.volume),
       quoteVolume24hUsdt: toNumber(binanceTicker.quoteVolume),
+      tradeCount24h: toNumber(binanceTicker.count),
       bidUsdt: toNumber(binanceBookTicker.bidPrice),
       askUsdt: toNumber(binanceBookTicker.askPrice)
+    },
+    local,
+    comparison: {
+      localSupported: local.available,
+      premiumPct: local.premiumPct,
+      benchmarkKrw: local.benchmarkKrw,
+      usdtKrw
     },
     orderbook,
     recentTrades,

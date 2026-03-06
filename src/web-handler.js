@@ -20,8 +20,9 @@ const modules = require("./modules");
 const moduleContext = createModuleContext(modules);
 const app = express();
 
-function getCoinLabel(symbol) {
-  return getSupportedCoins().find((coin) => coin.symbol === symbol)?.label || symbol;
+async function getCoinLabel(symbol) {
+  const coins = await getSupportedCoins();
+  return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
 }
 
 async function getAuthenticatedUser(request) {
@@ -66,10 +67,6 @@ async function createUserSession(userId, request, response) {
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "public")));
-app.use(
-  "/vendor/lightweight-charts",
-  express.static(path.join(__dirname, "..", "node_modules", "lightweight-charts", "dist"))
-);
 
 app.get("/api/health", (_request, response) => {
   response.json({
@@ -78,12 +75,14 @@ app.get("/api/health", (_request, response) => {
   });
 });
 
-app.get("/api/coins", (_request, response) => {
+app.get("/api/coins", async (_request, response) => {
+  const coins = await getSupportedCoins();
+
   response.json({
-    coins: getSupportedCoins(),
+    coins,
     timeframes: getSupportedTimeframes(),
     localExchange: "Bithumb",
-    benchmarkExchange: "Binance"
+    primaryExchange: "Binance"
   });
 });
 
@@ -274,7 +273,7 @@ async function handleMarketRequest(request, response) {
 async function handleIntelligenceRequest(request, response) {
   try {
     const symbol = String(request.params.symbol || request.query.symbol || "").toUpperCase();
-    const snapshot = await getIntelligenceSnapshot(symbol, getCoinLabel(symbol));
+    const snapshot = await getIntelligenceSnapshot(symbol, await getCoinLabel(symbol));
 
     response.json(snapshot);
   } catch (error) {
@@ -294,7 +293,7 @@ app.post("/api/context", async (request, response) => {
     const symbol = String(request.body.symbol || "").toUpperCase();
     const context = await moduleContext.collect({
       symbol,
-      label: getCoinLabel(symbol),
+      label: await getCoinLabel(symbol),
       timeframe: String(request.body.timeframe || "1h").toLowerCase(),
       moduleIds: request.body.modules,
       profile: request.body.profile,
@@ -318,7 +317,7 @@ app.post("/api/analyze", async (request, response) => {
     const symbol = String(request.body.symbol || "").toUpperCase();
     const context = await moduleContext.collect({
       symbol,
-      label: getCoinLabel(symbol),
+      label: await getCoinLabel(symbol),
       timeframe: String(request.body.timeframe || "1h").toLowerCase(),
       moduleIds: request.body.modules,
       profile: request.body.profile,

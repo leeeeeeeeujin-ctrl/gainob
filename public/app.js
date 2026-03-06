@@ -6,6 +6,7 @@ const state = {
   account: null,
   coins: [],
   timeframes: [],
+  marketSearchTerm: "",
   resizeObserver: null,
   aiAnnotations: [],
   chartGeometry: null,
@@ -24,12 +25,20 @@ const elements = {
   noteInput: document.querySelector("#noteInput"),
   focusQuestionInput: document.querySelector("#focusQuestionInput"),
   overlayToggle: document.querySelector("#overlayToggle"),
-  symbolShortcutList: document.querySelector("#symbolShortcutList"),
+  marketSearchInput: document.querySelector("#marketSearchInput"),
+  marketSymbolList: document.querySelector("#marketSymbolList"),
+  marketHeadline: document.querySelector("#marketHeadline"),
+  marketBrowserMeta: document.querySelector("#marketBrowserMeta"),
+  selectedMarketMeta: document.querySelector("#selectedMarketMeta"),
+  selectedLocalMeta: document.querySelector("#selectedLocalMeta"),
   timeframeShortcutList: document.querySelector("#timeframeShortcutList"),
   resetChartViewButton: document.querySelector("#resetChartViewButton"),
   chartInteractionHint: document.querySelector("#chartInteractionHint"),
   moduleList: document.querySelector("#moduleList"),
   moduleStatus: document.querySelector("#moduleStatus"),
+  primaryMetricLabel: document.querySelector("#primaryMetricLabel"),
+  secondaryMetricLabel: document.querySelector("#secondaryMetricLabel"),
+  premiumMetricLabel: document.querySelector("#premiumMetricLabel"),
   bithumbPrice: document.querySelector("#bithumbPrice"),
   bithumbChange: document.querySelector("#bithumbChange"),
   benchmarkPrice: document.querySelector("#benchmarkPrice"),
@@ -41,11 +50,12 @@ const elements = {
   marketDetailsMirror: document.querySelector("#marketDetailsMirror"),
   macroStatsOutput: document.querySelector("#macroStatsOutput"),
   newsStatsOutput: document.querySelector("#newsStatsOutput"),
-  candlesOutput: document.querySelector("#candlesOutput"),
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
   orderbookOutput: document.querySelector("#orderbookOutput"),
+  orderbookMeta: document.querySelector("#orderbookMeta"),
   tradesOutput: document.querySelector("#tradesOutput"),
+  tradeMeta: document.querySelector("#tradeMeta"),
   annotationList: document.querySelector("#annotationList"),
   annotationSummary: document.querySelector("#annotationSummary"),
   chartHost: document.querySelector(".chart-host"),
@@ -55,6 +65,7 @@ const elements = {
   chartSymbolChip: document.querySelector("#chartSymbolChip"),
   chartTimeframeChip: document.querySelector("#chartTimeframeChip"),
   chartPriceChip: document.querySelector("#chartPriceChip"),
+  chartComparisonChip: document.querySelector("#chartComparisonChip"),
   accountStatus: document.querySelector("#accountStatus"),
   authUsernameInput: document.querySelector("#authUsernameInput"),
   authDisplayNameInput: document.querySelector("#authDisplayNameInput"),
@@ -88,7 +99,15 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function formatKrw(value) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
   return new Intl.NumberFormat("ko-KR", {
     style: "currency",
     currency: "KRW",
@@ -97,6 +116,10 @@ function formatKrw(value) {
 }
 
 function formatUsdt(value) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -112,6 +135,10 @@ function formatNumber(value, maximumFractionDigits = 2) {
 }
 
 function formatPct(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
   const numeric = Number(value || 0);
   const prefix = numeric > 0 ? "+" : "";
   return `${prefix}${formatNumber(numeric, 2)}%`;
@@ -122,65 +149,6 @@ function formatShortTime(value) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function toChartTime(timestamp) {
-  return Math.floor(Number(timestamp) / 1000);
-}
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function getDefaultVisibleCount(timeframe, totalCandles) {
-  const defaults = {
-    "5m": 48,
-    "30m": 42,
-    "1h": 36,
-    "6h": 24
-  };
-
-  return clamp(defaults[timeframe] || 30, 12, Math.max(totalCandles, 12));
-}
-
-function resetChartViewport(snapshot) {
-  if (!snapshot?.candles?.length) {
-    state.chartViewport = null;
-    return;
-  }
-
-  const visibleCount = getDefaultVisibleCount(snapshot.timeframe, snapshot.candles.length);
-  state.chartViewport = {
-    startIndex: Math.max(snapshot.candles.length - visibleCount, 0),
-    visibleCount,
-    isDragging: false,
-    dragOriginX: 0,
-    dragStartIndex: 0
-  };
-}
-
-function getVisibleCandles(snapshot) {
-  if (!snapshot?.candles?.length) {
-    return [];
-  }
-
-  if (!state.chartViewport) {
-    resetChartViewport(snapshot);
-  }
-
-  const maxVisibleCount = snapshot.candles.length;
-  const visibleCount = clamp(state.chartViewport.visibleCount, 12, maxVisibleCount);
-  const maxStartIndex = Math.max(maxVisibleCount - visibleCount, 0);
-  const startIndex = clamp(state.chartViewport.startIndex, 0, maxStartIndex);
-
-  state.chartViewport.startIndex = startIndex;
-  state.chartViewport.visibleCount = visibleCount;
-
-  return snapshot.candles.slice(startIndex, startIndex + visibleCount);
-}
-
-function setChartHint(message) {
-  elements.chartInteractionHint.textContent = message;
 }
 
 function loadPersonalSettings() {
@@ -200,6 +168,12 @@ function loadPersonalSettings() {
     elements.focusQuestionInput.value = saved.focusQuestion || "";
     elements.overlayToggle.checked = saved.overlayEnabled ?? true;
     state.activeViewId = saved.activeViewId || state.activeViewId;
+    state.marketSearchTerm = saved.marketSearchTerm || "";
+    elements.marketSearchInput.value = state.marketSearchTerm;
+
+    if (saved.selectedCoin) {
+      elements.coinSelect.dataset.initialValue = saved.selectedCoin;
+    }
 
     if (saved.selectedTimeframe) {
       elements.timeframeSelect.dataset.initialValue = saved.selectedTimeframe;
@@ -222,6 +196,7 @@ function savePersonalSettings() {
       activeViewId: state.activeViewId,
       selectedCoin: elements.coinSelect.value || "BTC",
       selectedTimeframe: elements.timeframeSelect.value || "1h",
+      marketSearchTerm: state.marketSearchTerm,
       overlayEnabled: elements.overlayToggle.checked
     })
   );
@@ -233,22 +208,27 @@ function setAnalysisMessage(message) {
 }
 
 function renderFactsHtml(snapshot) {
+  const timeframeLabel =
+    state.timeframes.find((timeframe) => timeframe.id === snapshot.timeframe)?.label || snapshot.timeframe;
   const rows = [
-    ["차트 타임프레임", snapshot.timeframe],
-    ["빗썸 고가", formatKrw(snapshot.bithumb.high24hKrw)],
-    ["빗썸 저가", formatKrw(snapshot.bithumb.low24hKrw)],
-    ["빗썸 24h 거래량", formatNumber(snapshot.bithumb.volume24h, 4)],
-    ["빗썸 24h 거래대금", formatKrw(snapshot.bithumb.value24hKrw)],
-    ["빗썸 호가", `${formatKrw(snapshot.bithumb.bidKrw)} / ${formatKrw(snapshot.bithumb.askKrw)}`],
-    ["호가 스프레드", formatKrw(snapshot.orderbook.spreadKrw)],
+    ["메인 거래소", `${snapshot.primary.exchange} ${snapshot.primary.market}`],
+    ["차트 타임프레임", timeframeLabel],
+    ["바이낸스 현재가", formatUsdt(snapshot.primary.priceUsdt)],
+    ["바이낸스 24h 등락", formatPct(snapshot.primary.change24hPct)],
+    ["바이낸스 24h 고가", formatUsdt(snapshot.primary.high24hUsdt)],
+    ["바이낸스 24h 저가", formatUsdt(snapshot.primary.low24hUsdt)],
+    ["바이낸스 24h 거래량", formatNumber(snapshot.primary.volume24h, 4)],
+    ["바이낸스 24h 거래대금", formatUsdt(snapshot.primary.quoteVolume24hUsdt)],
+    ["바이낸스 호가", `${formatUsdt(snapshot.primary.bidUsdt)} / ${formatUsdt(snapshot.primary.askUsdt)}`],
+    ["호가 스프레드", formatUsdt(snapshot.orderbook.spreadUsdt)],
     [
       "호가 잔량 합계",
       `${formatNumber(snapshot.orderbook.totalBidUnits, 4)} / ${formatNumber(snapshot.orderbook.totalAskUnits, 4)}`
     ],
-    ["바이낸스 24h 고가", formatUsdt(snapshot.benchmark.high24hUsdt)],
-    ["바이낸스 24h 저가", formatUsdt(snapshot.benchmark.low24hUsdt)],
-    ["바이낸스 24h 거래량", formatNumber(snapshot.benchmark.volume24h, 4)],
-    ["바이낸스 호가", `${formatUsdt(snapshot.benchmark.bidUsdt)} / ${formatUsdt(snapshot.benchmark.askUsdt)}`]
+    ["빗썸 비교", snapshot.local.available ? formatKrw(snapshot.local.priceKrw) : "미지원"],
+    ["빗썸 24h 등락", snapshot.local.available ? formatPct(snapshot.local.change24hPct) : "-"],
+    ["가격 괴리", snapshot.local.available ? formatPct(snapshot.comparison.premiumPct) : "미지원"],
+    ["USDT/KRW", formatKrw(snapshot.usdtKrw)]
   ];
 
   return rows
@@ -261,17 +241,6 @@ function renderFactsHtml(snapshot) {
       `
     )
     .join("");
-}
-
-function renderCandles(snapshot) {
-  elements.candlesOutput.textContent = snapshot.candles.length
-    ? snapshot.candles
-        .map(
-          (candle) =>
-            `${new Date(candle.timestamp).toLocaleString("ko-KR")} | O ${formatNumber(candle.open)} | H ${formatNumber(candle.high)} | L ${formatNumber(candle.low)} | C ${formatNumber(candle.close)} | V ${formatNumber(candle.volume, 4)}`
-        )
-        .join("\n")
-    : "캔들 데이터를 불러오지 못했습니다.";
 }
 
 function renderStatRows(rows) {
@@ -314,34 +283,55 @@ function renderIntelligence(intelligence) {
   elements.newsStatsOutput.innerHTML = renderStatRows(newsRows);
 }
 
-function renderShortcutButtons() {
-  elements.symbolShortcutList.innerHTML = state.coins
-    .map(
-      (coin) => `
-        <button
-          class="shortcut-button ${coin.symbol === elements.coinSelect.value ? "is-active" : ""}"
-          data-shortcut-symbol="${coin.symbol}"
-          type="button"
-        >
-          ${escapeHtml(coin.symbol)}
-        </button>
-      `
-    )
-    .join("");
+function setChartHint(message) {
+  elements.chartInteractionHint.textContent = message;
+}
 
-  elements.timeframeShortcutList.innerHTML = state.timeframes
-    .map(
-      (timeframe) => `
-        <button
-          class="shortcut-button ${timeframe.id === elements.timeframeSelect.value ? "is-active" : ""}"
-          data-shortcut-timeframe="${timeframe.id}"
-          type="button"
-        >
-          ${escapeHtml(timeframe.label)}
-        </button>
-      `
-    )
-    .join("");
+function getDefaultVisibleCount(timeframe, totalCandles) {
+  const defaults = {
+    "15m": 72,
+    "1h": 96,
+    "4h": 84,
+    "1d": 120,
+    "1w": 80
+  };
+
+  return clamp(defaults[timeframe] || 72, 20, Math.max(totalCandles, 20));
+}
+
+function resetChartViewport(snapshot) {
+  if (!snapshot?.candles?.length) {
+    state.chartViewport = null;
+    return;
+  }
+
+  const visibleCount = getDefaultVisibleCount(snapshot.timeframe, snapshot.candles.length);
+  state.chartViewport = {
+    startIndex: Math.max(snapshot.candles.length - visibleCount, 0),
+    visibleCount,
+    isDragging: false,
+    dragOriginX: 0,
+    dragStartIndex: 0
+  };
+}
+
+function getVisibleCandles(snapshot) {
+  if (!snapshot?.candles?.length) {
+    return [];
+  }
+
+  if (!state.chartViewport) {
+    resetChartViewport(snapshot);
+  }
+
+  const visibleCount = clamp(state.chartViewport.visibleCount, 20, snapshot.candles.length);
+  const maxStartIndex = Math.max(snapshot.candles.length - visibleCount, 0);
+  const startIndex = clamp(state.chartViewport.startIndex, 0, maxStartIndex);
+
+  state.chartViewport.startIndex = startIndex;
+  state.chartViewport.visibleCount = visibleCount;
+
+  return snapshot.candles.slice(startIndex, startIndex + visibleCount);
 }
 
 function getActiveAnnotations() {
@@ -350,64 +340,6 @@ function getActiveAnnotations() {
   }
 
   return state.aiAnnotations.length ? state.aiAnnotations : state.snapshot?.annotations || [];
-}
-
-function renderOrderbook(snapshot) {
-  const totalDepth = Math.max(snapshot.orderbook.totalBidUnits, snapshot.orderbook.totalAskUnits, 0.0001);
-  const asks = snapshot.orderbook.asks.slice().reverse();
-  const bids = snapshot.orderbook.bids.slice(0, 8);
-
-  const spreadHtml = `
-    <div class="orderbook-spread">
-      <strong>${formatKrw(snapshot.orderbook.spreadKrw)} spread</strong>
-      <span>매수 ${formatNumber(snapshot.orderbook.totalBidUnits, 4)} / 매도 ${formatNumber(snapshot.orderbook.totalAskUnits, 4)}</span>
-    </div>
-  `;
-
-  const sideHtml = (title, side, levels) => `
-    <div class="orderbook-side">
-      <div class="orderbook-label">
-        <span>${escapeHtml(title)}</span>
-        <span>${levels.length} levels</span>
-      </div>
-      ${levels
-        .map((level) => {
-          const share = (level.quantity / totalDepth) * 100;
-          return `
-            <div class="orderbook-row ${side}" style="--depth:${share.toFixed(2)}%">
-              <span class="orderbook-price">${formatNumber(level.price, 0)}</span>
-              <span class="orderbook-quantity">${formatNumber(level.quantity, 4)}</span>
-              <span class="orderbook-share">${formatNumber(share, 1)}%</span>
-            </div>
-          `;
-        })
-        .join("")}
-    </div>
-  `;
-
-  elements.orderbookOutput.innerHTML = [
-    spreadHtml,
-    sideHtml("ASK", "ask", asks.slice(0, 8)),
-    sideHtml("BID", "bid", bids)
-  ].join("");
-}
-
-function renderTrades(snapshot) {
-  const trades = snapshot.recentTrades.slice(0, 16);
-
-  elements.tradesOutput.innerHTML = trades.length
-    ? trades
-        .map(
-          (trade) => `
-            <div class="trade-row ${trade.side}">
-              <span class="trade-time">${escapeHtml(formatShortTime(trade.timestamp))}</span>
-              <span class="trade-size">${formatNumber(trade.quantity, 4)}</span>
-              <span class="trade-price">${formatNumber(trade.priceKrw, 0)}</span>
-            </div>
-          `
-        )
-        .join("")
-    : "최근 체결 데이터를 불러오지 못했습니다.";
 }
 
 function renderAnnotationList() {
@@ -433,10 +365,147 @@ function renderAnnotationList() {
     : "AI가 차트 위에 그릴 선/구간/마커가 아직 없습니다.";
 }
 
-function ensureChart() {
+function renderMarketSymbolList() {
+  const searchTerm = state.marketSearchTerm.trim().toLowerCase();
+  const currentSymbol = elements.coinSelect.value;
+  const filtered = state.coins.filter((coin) => {
+    if (!searchTerm) {
+      return true;
+    }
+
+    return coin.symbol.toLowerCase().includes(searchTerm) || coin.pair.toLowerCase().includes(searchTerm);
+  });
+
+  const prioritized = filtered
+    .slice()
+    .sort((left, right) => {
+      if (left.symbol === currentSymbol) {
+        return -1;
+      }
+
+      if (right.symbol === currentSymbol) {
+        return 1;
+      }
+
+      return right.quoteVolume24hUsdt - left.quoteVolume24hUsdt;
+    })
+    .slice(0, 80);
+
+  elements.marketBrowserMeta.textContent = `${formatNumber(filtered.length, 0)} / ${formatNumber(
+    state.coins.length,
+    0
+  )} symbols · USDT Spot`;
+
+  if (!prioritized.length) {
+    elements.marketSymbolList.innerHTML = `<div class="market-empty">검색 조건에 맞는 심볼이 없습니다.</div>`;
+    return;
+  }
+
+  elements.marketSymbolList.innerHTML = prioritized
+    .map(
+      (coin) => `
+        <button class="market-symbol-row ${coin.symbol === currentSymbol ? "is-active" : ""}" data-symbol-row="${coin.symbol}" type="button">
+          <span class="market-symbol-main">
+            <strong>${escapeHtml(coin.symbol)}</strong>
+            <small>${escapeHtml(coin.pair)}</small>
+          </span>
+          <span class="market-symbol-stats">
+            <em>${formatUsdt(coin.lastPriceUsdt)}</em>
+            <small class="${coin.change24hPct >= 0 ? "up" : "down"}">${formatPct(coin.change24hPct)}</small>
+          </span>
+          <span class="market-symbol-meta">
+            <small>${formatNumber(coin.quoteVolume24hUsdt / 1_000_000, 0)}M</small>
+            <small>${coin.localSupported ? "빗썸 비교" : "비교 없음"}</small>
+          </span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function renderTimeframeButtons() {
+  const currentTimeframe = elements.timeframeSelect.value;
+
+  elements.timeframeShortcutList.innerHTML = state.timeframes
+    .map(
+      (timeframe) => `
+        <button class="shortcut-button ${timeframe.id === currentTimeframe ? "is-active" : ""}" data-shortcut-timeframe="${timeframe.id}" type="button">
+          ${escapeHtml(timeframe.label)}
+        </button>
+      `
+    )
+    .join("");
+}
+
+function renderOrderbook(snapshot) {
+  const totalDepth = Math.max(snapshot.orderbook.totalBidUnits, snapshot.orderbook.totalAskUnits, 0.0001);
+  const asks = snapshot.orderbook.asks.slice().reverse().slice(0, 10);
+  const bids = snapshot.orderbook.bids.slice(0, 10);
+
+  const spreadHtml = `
+    <div class="orderbook-spread">
+      <strong>${formatUsdt(snapshot.orderbook.spreadUsdt)} spread</strong>
+      <span>매수 ${formatNumber(snapshot.orderbook.totalBidUnits, 4)} / 매도 ${formatNumber(snapshot.orderbook.totalAskUnits, 4)}</span>
+    </div>
+  `;
+
+  const sideHtml = (title, side, levels) => `
+    <div class="orderbook-side">
+      <div class="orderbook-label">
+        <span>${escapeHtml(title)}</span>
+        <span>${levels.length} levels</span>
+      </div>
+      ${levels
+        .map((level) => {
+          const share = (level.quantity / totalDepth) * 100;
+          return `
+            <div class="orderbook-row ${side}" style="--depth:${share.toFixed(2)}%">
+              <span class="orderbook-price">${formatNumber(level.price, 2)}</span>
+              <span class="orderbook-quantity">${formatNumber(level.quantity, 4)}</span>
+              <span class="orderbook-share">${formatNumber(share, 1)}%</span>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  elements.orderbookOutput.innerHTML = [spreadHtml, sideHtml("ASK", "ask", asks), sideHtml("BID", "bid", bids)].join("");
+  elements.orderbookMeta.textContent = `${snapshot.orderbook.asks.length + snapshot.orderbook.bids.length} levels`;
+}
+
+function renderTrades(snapshot) {
+  elements.tradeMeta.textContent = `${Math.min(snapshot.recentTrades.length, 20)} prints`;
+  elements.tradesOutput.innerHTML = snapshot.recentTrades.length
+    ? snapshot.recentTrades
+        .slice(0, 20)
+        .map(
+          (trade) => `
+            <div class="trade-row ${trade.side}">
+              <span class="trade-time">${escapeHtml(formatShortTime(trade.timestamp))}</span>
+              <span class="trade-size">${formatNumber(trade.quantity, 4)}</span>
+              <span class="trade-price">${formatNumber(trade.priceUsdt, 2)}</span>
+            </div>
+          `
+        )
+        .join("")
+    : "최근 체결 데이터를 불러오지 못했습니다.";
+}
+
+function ensureChartInteractions() {
   if (state.resizeObserver || !elements.chartHost) {
     return;
   }
+
+  const releaseDrag = () => {
+    if (!state.chartViewport) {
+      return;
+    }
+
+    state.chartViewport.isDragging = false;
+    elements.chartHost.classList.remove("is-dragging");
+    setChartHint("드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
+  };
 
   elements.chartHost.addEventListener("pointerdown", (event) => {
     if (!state.snapshot || !state.chartViewport) {
@@ -458,20 +527,10 @@ function ensureChart() {
     const deltaCandles = Math.round((event.clientX - state.chartViewport.dragOriginX) / state.chartGeometry.candleGap);
     const maxStartIndex = Math.max(state.snapshot.candles.length - state.chartViewport.visibleCount, 0);
     state.chartViewport.startIndex = clamp(state.chartViewport.dragStartIndex - deltaCandles, 0, maxStartIndex);
-    setChartHint(`이동 중 · 시작 ${state.chartViewport.startIndex + 1} / ${state.snapshot.candles.length}`);
+    setChartHint(`이동 중 · ${state.chartViewport.startIndex + 1}번째 봉부터 표시`);
     renderChart(state.snapshot);
     renderChartOverlay();
   });
-
-  const releaseDrag = () => {
-    if (!state.chartViewport) {
-      return;
-    }
-
-    state.chartViewport.isDragging = false;
-    elements.chartHost.classList.remove("is-dragging");
-    setChartHint("드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
-  };
 
   elements.chartHost.addEventListener("pointerup", releaseDrag);
   elements.chartHost.addEventListener("pointerleave", releaseDrag);
@@ -488,7 +547,7 @@ function ensureChart() {
 
       const direction = event.deltaY > 0 ? 1 : -1;
       const currentCount = state.chartViewport.visibleCount;
-      const nextCount = clamp(currentCount + direction * 4, 12, state.snapshot.candles.length);
+      const nextCount = clamp(currentCount + direction * 8, 20, state.snapshot.candles.length);
 
       if (nextCount === currentCount) {
         return;
@@ -506,7 +565,7 @@ function ensureChart() {
 
       state.chartViewport.visibleCount = nextCount;
       state.chartViewport.startIndex = nextStartIndex;
-      setChartHint(`줌 ${nextCount}봉 표시 중`);
+      setChartHint(`${nextCount}봉 표시 중`);
       renderChart(state.snapshot);
       renderChartOverlay();
     },
@@ -540,27 +599,22 @@ function ensureChart() {
 function renderChartOverlay() {
   const annotations = getActiveAnnotations();
 
-  if (
-    state.activeViewId !== "marketView" ||
-    !state.snapshot ||
-    !state.chartGeometry ||
-    !annotations.length
-  ) {
+  if (!state.snapshot || state.activeViewId !== "marketView" || !state.chartGeometry || !annotations.length) {
     elements.chartOverlay.innerHTML = "";
     return;
   }
 
   const width = elements.chartHost.clientWidth;
   const height = elements.chartHost.clientHeight;
+  const { candles, left, plotWidth, priceTop, priceHeight, minPrice, maxPrice } = state.chartGeometry;
+
   elements.chartOverlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
   const priceToY = (price) => {
-    const { minPrice, maxPrice, top, plotHeight } = state.chartGeometry;
     const ratio = (Number(price) - minPrice) / Math.max(maxPrice - minPrice, 1);
-    return top + plotHeight - ratio * plotHeight;
+    return priceTop + priceHeight - ratio * priceHeight;
   };
   const timeToX = (time) => {
-    const { candles, left, plotWidth } = state.chartGeometry;
     if (!candles.length) {
       return null;
     }
@@ -571,7 +625,7 @@ function renderChartOverlay() {
     return left + clamp(ratio, 0, 1) * plotWidth;
   };
 
-  const shapes = annotations
+  elements.chartOverlay.innerHTML = annotations
     .map((annotation) => {
       if (annotation.type === "line" && annotation.from && annotation.to) {
         const x1 = timeToX(annotation.from.time);
@@ -584,7 +638,7 @@ function renderChartOverlay() {
         }
 
         return `
-          <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="2.25" />
+          <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="2.2" />
           <text x="${clamp(x2 + 6, 12, width - 120)}" y="${Math.max(y2 - 6, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "line")}</text>
         `;
       }
@@ -606,7 +660,7 @@ function renderChartOverlay() {
 
         return `
           <rect x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="1.5" rx="6" ry="6" />
-          <text x="${x + 6}" y="${Math.max(y + 14, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
+          <text x="${clamp(x + 6, 12, width - 120)}" y="${Math.max(y + 14, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
         `;
       }
 
@@ -627,8 +681,6 @@ function renderChartOverlay() {
       return "";
     })
     .join("");
-
-  elements.chartOverlay.innerHTML = shapes;
 }
 
 function renderChart(snapshot) {
@@ -639,59 +691,76 @@ function renderChart(snapshot) {
   const hostWidth = elements.chartHost?.clientWidth || 0;
   const hostHeight = elements.chartHost?.clientHeight || 0;
 
-  if (hostWidth < 80 || hostHeight < 160) {
-    window.requestAnimationFrame(() => {
-      renderChart(snapshot);
-    });
+  if (hostWidth < 120 || hostHeight < 220) {
+    window.requestAnimationFrame(() => renderChart(snapshot));
     return;
   }
 
-  ensureChart();
+  ensureChartInteractions();
 
-  if (!snapshot.candles.length) {
+  const visibleCandles = getVisibleCandles(snapshot);
+
+  if (!visibleCandles.length) {
     state.chartGeometry = null;
     elements.chartCanvas.innerHTML = "";
     elements.chartOverlay.innerHTML = "";
     return;
   }
 
-  const visibleCandles = getVisibleCandles(snapshot);
-
-  const padding = { top: 16, right: 74, bottom: 28, left: 14 };
-  const plotWidth = Math.max(hostWidth - padding.left - padding.right, 40);
-  const plotHeight = Math.max(hostHeight - padding.top - padding.bottom, 40);
-  const lows = visibleCandles.map((candle) => candle.low);
-  const highs = visibleCandles.map((candle) => candle.high);
-  const minLow = Math.min(...lows);
-  const maxHigh = Math.max(...highs);
-  const pricePadding = (maxHigh - minLow || snapshot.bithumb.priceKrw * 0.02 || 1) * 0.12;
-  const minPrice = Math.max(minLow - pricePadding, 0);
-  const maxPrice = maxHigh + pricePadding;
+  const padding = { top: 14, right: 82, bottom: 24, left: 12 };
+  const innerHeight = hostHeight - padding.top - padding.bottom;
+  const volumeHeight = Math.max(innerHeight * 0.19, 48);
+  const separatorGap = 14;
+  const priceHeight = Math.max(innerHeight - volumeHeight - separatorGap, 120);
+  const priceTop = padding.top;
+  const volumeTop = priceTop + priceHeight + separatorGap;
+  const plotWidth = Math.max(hostWidth - padding.left - padding.right, 80);
   const candleGap = plotWidth / Math.max(visibleCandles.length, 1);
   const candleWidth = Math.max(Math.min(candleGap * 0.56, 12), 3);
+
+  const lows = visibleCandles.map((candle) => candle.low);
+  const highs = visibleCandles.map((candle) => candle.high);
+  const maxVolume = Math.max(...visibleCandles.map((candle) => candle.volume), 1);
+  const minLow = Math.min(...lows);
+  const maxHigh = Math.max(...highs);
+  const pricePadding = (maxHigh - minLow || snapshot.primary.priceUsdt * 0.02 || 1) * 0.12;
+  const minPrice = Math.max(minLow - pricePadding, 0);
+  const maxPrice = maxHigh + pricePadding;
+
   const yForPrice = (price) => {
     const ratio = (price - minPrice) / Math.max(maxPrice - minPrice, 1);
-    return padding.top + plotHeight - ratio * plotHeight;
+    return priceTop + priceHeight - ratio * priceHeight;
   };
+  const yForVolume = (volume) => volumeTop + volumeHeight - (volume / Math.max(maxVolume, 1)) * volumeHeight;
   const xForIndex = (index) => padding.left + candleGap * index + candleGap / 2;
 
   const gridLines = Array.from({ length: 5 }, (_, index) => {
     const ratio = index / 4;
-    const y = padding.top + plotHeight * ratio;
+    const y = priceTop + priceHeight * ratio;
     const price = maxPrice - (maxPrice - minPrice) * ratio;
     return `
       <line x1="${padding.left}" y1="${y}" x2="${padding.left + plotWidth}" y2="${y}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
-      <text x="${padding.left + plotWidth + 10}" y="${y + 4}" fill="#96a7b5" font-size="11">${escapeHtml(formatNumber(price, 0))}</text>
+      <text x="${padding.left + plotWidth + 10}" y="${y + 4}" fill="#96a7b5" font-size="11">${escapeHtml(formatNumber(price, 2))}</text>
     `;
   }).join("");
 
   const timeLabels = visibleCandles
-    .filter((_, index) => index === 0 || index === visibleCandles.length - 1 || index % Math.max(Math.floor(visibleCandles.length / 4), 1) === 0)
+    .filter(
+      (_candle, index) =>
+        index === 0 ||
+        index === visibleCandles.length - 1 ||
+        index % Math.max(Math.floor(visibleCandles.length / 4), 1) === 0
+    )
     .map((candle, index, collection) => {
       const candleIndex = visibleCandles.findIndex((entry) => entry.timestamp === candle.timestamp);
       const x = xForIndex(candleIndex);
       const anchor = index === 0 ? "start" : index === collection.length - 1 ? "end" : "middle";
-      return `<text x="${x}" y="${padding.top + plotHeight + 18}" text-anchor="${anchor}" fill="#96a7b5" font-size="11">${escapeHtml(formatShortTime(candle.timestamp))}</text>`;
+      const timeLabel =
+        snapshot.timeframe === "1w" || snapshot.timeframe === "1d"
+          ? new Date(candle.timestamp).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })
+          : formatShortTime(candle.timestamp);
+
+      return `<text x="${x}" y="${hostHeight - 4}" text-anchor="${anchor}" fill="#96a7b5" font-size="11">${escapeHtml(timeLabel)}</text>`;
     })
     .join("");
 
@@ -703,27 +772,32 @@ function renderChart(snapshot) {
       const highY = yForPrice(candle.high);
       const lowY = yForPrice(candle.low);
       const isUp = candle.close >= candle.open;
-      const color = isUp ? "#0ea5a0" : "#d2483f";
+      const color = isUp ? "#09b9b3" : "#ef6257";
       const bodyY = Math.min(openY, closeY);
       const bodyHeight = Math.max(Math.abs(closeY - openY), 1.5);
+      const volumeY = yForVolume(candle.volume);
+      const volumeHeightPx = volumeTop + volumeHeight - volumeY;
 
       return `
-        <line x1="${x}" y1="${highY}" x2="${x}" y2="${lowY}" stroke="${color}" stroke-width="1.5" />
+        <line x1="${x}" y1="${highY}" x2="${x}" y2="${lowY}" stroke="${color}" stroke-width="1.4" />
         <rect x="${x - candleWidth / 2}" y="${bodyY}" width="${candleWidth}" height="${bodyHeight}" fill="${color}" rx="1.5" ry="1.5" />
+        <rect x="${x - candleWidth / 2}" y="${volumeY}" width="${candleWidth}" height="${Math.max(volumeHeightPx, 1)}" fill="${isUp ? "rgba(9,185,179,0.58)" : "rgba(239,98,87,0.58)"}" rx="1" ry="1" />
       `;
     })
     .join("");
 
-  const currentLineY = yForPrice(snapshot.bithumb.priceKrw);
+  const currentLineY = yForPrice(snapshot.primary.priceUsdt);
   const currentLine = `
-    <line x1="${padding.left}" y1="${currentLineY}" x2="${padding.left + plotWidth}" y2="${currentLineY}" stroke="rgba(111, 227, 215, 0.5)" stroke-width="1" stroke-dasharray="5 4" />
-    <text x="${padding.left + plotWidth + 10}" y="${currentLineY - 6}" fill="#6fe3d7" font-size="11">NOW ${escapeHtml(formatNumber(snapshot.bithumb.priceKrw, 0))}</text>
+    <line x1="${padding.left}" y1="${currentLineY}" x2="${padding.left + plotWidth}" y2="${currentLineY}" stroke="rgba(111, 227, 215, 0.45)" stroke-width="1" stroke-dasharray="5 4" />
+    <text x="${padding.left + plotWidth + 10}" y="${currentLineY - 6}" fill="#6fe3d7" font-size="11">NOW ${escapeHtml(formatNumber(snapshot.primary.priceUsdt, 2))}</text>
   `;
 
   elements.chartCanvas.innerHTML = `
     <svg viewBox="0 0 ${hostWidth} ${hostHeight}" width="100%" height="100%" role="img" aria-label="${escapeHtml(snapshot.symbol)} candle chart">
       <rect x="0" y="0" width="${hostWidth}" height="${hostHeight}" fill="transparent" />
       ${gridLines}
+      <line x1="${padding.left}" y1="${volumeTop - 8}" x2="${padding.left + plotWidth}" y2="${volumeTop - 8}" stroke="rgba(255,255,255,0.06)" stroke-width="1" />
+      <text x="${padding.left}" y="${volumeTop - 14}" fill="#96a7b5" font-size="11">Vol ${escapeHtml(formatNumber(maxVolume, 2))}</text>
       ${currentLine}
       ${candleSvg}
       ${timeLabels}
@@ -733,25 +807,40 @@ function renderChart(snapshot) {
   state.chartGeometry = {
     candles: visibleCandles,
     left: padding.left,
-    top: padding.top,
     plotWidth,
-    plotHeight,
+    priceTop,
+    priceHeight,
     minPrice,
     maxPrice,
     candleGap
   };
+
   window.requestAnimationFrame(renderChartOverlay);
 }
 
 function renderMarketWorkspace(snapshot) {
-  elements.chartMeta.textContent = `${snapshot.bithumb.exchange} ${snapshot.timeframe} candles · AI overlay ready`;
-  elements.chartSymbolChip.textContent = `${snapshot.symbol} / KRW`;
-  elements.chartTimeframeChip.textContent = snapshot.timeframe;
-  elements.chartPriceChip.textContent = formatKrw(snapshot.bithumb.priceKrw);
+  const timeframeLabel =
+    state.timeframes.find((timeframe) => timeframe.id === snapshot.timeframe)?.label || snapshot.timeframe;
+
+  elements.marketHeadline.textContent = `${snapshot.symbol} / ${snapshot.pair}`;
+  elements.chartMeta.textContent = `Binance Spot · ${timeframeLabel}`;
+  elements.selectedMarketMeta.textContent = `${snapshot.primary.market} · ${formatUsdt(snapshot.primary.priceUsdt)}`;
+  elements.selectedLocalMeta.textContent = snapshot.local.available
+    ? `빗썸 ${formatKrw(snapshot.local.priceKrw)} · 괴리 ${formatPct(snapshot.comparison.premiumPct)}`
+    : "빗썸 비교 없음";
+
+  elements.chartSymbolChip.textContent = snapshot.primary.market;
+  elements.chartTimeframeChip.textContent = timeframeLabel;
+  elements.chartPriceChip.textContent = formatUsdt(snapshot.primary.priceUsdt);
+  elements.chartComparisonChip.textContent = snapshot.local.available
+    ? `빗썸 괴리 ${formatPct(snapshot.comparison.premiumPct)}`
+    : "빗썸 미지원";
 
   renderOrderbook(snapshot);
   renderTrades(snapshot);
   renderAnnotationList();
+  renderTimeframeButtons();
+  renderMarketSymbolList();
   renderChart(snapshot);
 }
 
@@ -760,18 +849,23 @@ function renderSnapshot(snapshot) {
   resetChartViewport(snapshot);
   const factsHtml = renderFactsHtml(snapshot);
 
-  elements.bithumbPrice.textContent = formatKrw(snapshot.bithumb.priceKrw);
-  elements.bithumbChange.textContent = `24h ${formatPct(snapshot.bithumb.change24hPct)}`;
-  elements.benchmarkPrice.textContent = formatKrw(snapshot.benchmark.priceKrw);
-  elements.benchmarkChange.textContent = `Binance ${formatPct(snapshot.benchmark.change24hPct)}`;
-  elements.premium.textContent = formatPct(snapshot.premiumPct);
-  elements.premium.className = snapshot.premiumPct >= 0 ? "positive" : "negative";
+  elements.primaryMetricLabel.textContent = "바이낸스 현재가";
+  elements.secondaryMetricLabel.textContent = snapshot.local.available ? "빗썸 비교가" : "빗썸 비교";
+  elements.premiumMetricLabel.textContent = "가격 괴리";
+  elements.bithumbPrice.textContent = formatUsdt(snapshot.primary.priceUsdt);
+  elements.bithumbChange.textContent = `24h ${formatPct(snapshot.primary.change24hPct)}`;
+  elements.benchmarkPrice.textContent = snapshot.local.available ? formatKrw(snapshot.local.priceKrw) : "미지원";
+  elements.benchmarkChange.textContent = snapshot.local.available
+    ? `Bithumb ${formatPct(snapshot.local.change24hPct)}`
+    : "국내 비교 종목 없음";
+  elements.premium.textContent = snapshot.local.available ? formatPct(snapshot.comparison.premiumPct) : "미지원";
+  elements.premium.className =
+    snapshot.local.available && snapshot.comparison.premiumPct >= 0 ? "positive" : "negative";
   elements.usdtKrw.textContent = `USDT/KRW ${formatKrw(snapshot.usdtKrw)}`;
   elements.fetchedAt.textContent = new Date(snapshot.fetchedAt).toLocaleString("ko-KR");
   elements.marketDetails.innerHTML = factsHtml;
   elements.marketDetailsMirror.innerHTML = factsHtml;
 
-  renderCandles(snapshot);
   renderMarketWorkspace(snapshot);
 }
 
@@ -900,20 +994,27 @@ async function loadCoins() {
   state.timeframes = payload.timeframes || [];
 
   elements.coinSelect.innerHTML = state.coins
-    .map((coin) => `<option value="${coin.symbol}">${coin.symbol} · ${coin.label}</option>`)
+    .map((coin) => `<option value="${coin.symbol}">${coin.symbol}</option>`)
     .join("");
-
   elements.timeframeSelect.innerHTML = state.timeframes
     .map((timeframe) => `<option value="${timeframe.id}">${timeframe.label}</option>`)
     .join("");
 
+  const initialCoin = elements.coinSelect.dataset.initialValue || "BTC";
   const initialTimeframe = elements.timeframeSelect.dataset.initialValue || "1h";
+
+  if (state.coins.some((coin) => coin.symbol === initialCoin)) {
+    elements.coinSelect.value = initialCoin;
+  } else if (state.coins[0]) {
+    elements.coinSelect.value = state.coins[0].symbol;
+  }
 
   if (state.timeframes.some((timeframe) => timeframe.id === initialTimeframe)) {
     elements.timeframeSelect.value = initialTimeframe;
   }
 
-  renderShortcutButtons();
+  renderTimeframeButtons();
+  renderMarketSymbolList();
 }
 
 async function loadModules() {
@@ -1076,7 +1177,6 @@ async function refreshMarket() {
     ]);
     renderSnapshot(snapshot);
     renderIntelligence(intelligence);
-    renderShortcutButtons();
     renderModuleStatus(null);
     setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
   } catch (error) {
@@ -1124,21 +1224,20 @@ elements.resetChartViewButton.addEventListener("click", () => {
   renderChart(state.snapshot);
   renderChartOverlay();
 });
-elements.registerButton.addEventListener("click", registerAccount);
-elements.loginButton.addEventListener("click", loginAccount);
-elements.logoutButton.addEventListener("click", logoutAccount);
-elements.deleteAccountButton.addEventListener("click", deleteAccount);
-elements.coinSelect.addEventListener("change", refreshMarket);
-elements.timeframeSelect.addEventListener("change", refreshMarket);
-elements.symbolShortcutList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-shortcut-symbol]");
+elements.marketSearchInput.addEventListener("input", (event) => {
+  state.marketSearchTerm = event.target.value;
+  savePersonalSettings();
+  renderMarketSymbolList();
+});
+elements.marketSymbolList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-symbol-row]");
 
   if (!button) {
     return;
   }
 
-  elements.coinSelect.value = button.dataset.shortcutSymbol;
-  renderShortcutButtons();
+  elements.coinSelect.value = button.dataset.symbolRow;
+  renderMarketSymbolList();
   refreshMarket();
 });
 elements.timeframeShortcutList.addEventListener("click", (event) => {
@@ -1149,7 +1248,7 @@ elements.timeframeShortcutList.addEventListener("click", (event) => {
   }
 
   elements.timeframeSelect.value = button.dataset.shortcutTimeframe;
-  renderShortcutButtons();
+  renderTimeframeButtons();
   refreshMarket();
 });
 elements.overlayToggle.addEventListener("change", () => {
@@ -1157,6 +1256,10 @@ elements.overlayToggle.addEventListener("change", () => {
   renderAnnotationList();
   renderChartOverlay();
 });
+elements.registerButton.addEventListener("click", registerAccount);
+elements.loginButton.addEventListener("click", loginAccount);
+elements.logoutButton.addEventListener("click", logoutAccount);
+elements.deleteAccountButton.addEventListener("click", deleteAccount);
 elements.navButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveView(button.dataset.viewTarget);

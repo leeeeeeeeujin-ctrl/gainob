@@ -6,7 +6,7 @@ async function main() {
   try {
     await new Promise((resolve) => setTimeout(resolve, 800));
 
-    for (const path of ["/api/market?symbol=BTC&timeframe=6h", "/api/intelligence?symbol=BTC"]) {
+    for (const path of ["/api/market?symbol=BTC&timeframe=1d", "/api/intelligence?symbol=BTC"]) {
       const response = await fetch(`http://localhost:3471${path}`);
       const text = await response.text();
       console.log(`PATH ${path}`);

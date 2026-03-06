@@ -54,18 +54,10 @@
         <section class="main-panel">
           <header class="topbar panel-card">
             <div class="topbar-copy">
-              <p class="eyebrow muted-eye">BITHUMB + BINANCE</p>
+              <p class="eyebrow muted-eye">BINANCE PRIMARY · BITHUMB CHECK</p>
               <h2 id="viewTitle">전체 요약</h2>
             </div>
             <div class="topbar-controls">
-              <label class="compact-field">
-                <span>코인</span>
-                <select id="coinSelect"></select>
-              </label>
-              <label class="compact-field">
-                <span>차트</span>
-                <select id="timeframeSelect"></select>
-              </label>
               <label class="compact-field">
                 <span>내 AI</span>
                 <input id="aliasInput" type="text" placeholder="swing-helper" />
@@ -78,17 +70,17 @@
           <section id="overviewView" class="view-panel is-active" data-view>
             <section class="metric-strip">
               <article class="metric-card">
-                <p class="label">빗썸 현재가</p>
+                <p id="primaryMetricLabel" class="label">바이낸스 현재가</p>
                 <h3 id="bithumbPrice">-</h3>
                 <p id="bithumbChange" class="muted">-</p>
               </article>
               <article class="metric-card">
-                <p class="label">글로벌 환산가</p>
+                <p id="secondaryMetricLabel" class="label">빗썸 비교가</p>
                 <h3 id="benchmarkPrice">-</h3>
                 <p id="benchmarkChange" class="muted">-</p>
               </article>
               <article class="metric-card accent-card">
-                <p class="label">가격 차이</p>
+                <p id="premiumMetricLabel" class="label">가격 괴리</p>
                 <h3 id="premium">-</h3>
                 <p id="usdtKrw" class="muted">-</p>
               </article>
@@ -139,54 +131,89 @@
 
           <section id="marketView" class="view-panel" data-view hidden>
             <section class="market-layout">
-              <article class="panel-card chart-panel">
+              <aside class="panel-card market-browser">
                 <div class="section-head">
-                  <h2>차트 워크스테이션</h2>
-                  <span id="chartMeta">Bithumb Candles</span>
+                  <h2>바이낸스 마켓</h2>
+                  <span id="marketBrowserMeta">USDT Spot</span>
                 </div>
-                <div class="market-quickbar">
-                  <div class="quick-control">
-                    <span class="quick-label">종목</span>
-                    <div id="symbolShortcutList" class="shortcut-strip"></div>
-                  </div>
-                  <div class="quick-control">
-                    <span class="quick-label">봉</span>
-                    <div id="timeframeShortcutList" class="shortcut-strip"></div>
-                  </div>
-                  <div class="chart-actions">
-                    <button id="resetChartViewButton" class="button chart-button" type="button">뷰 리셋</button>
-                    <p id="chartInteractionHint" class="chart-hint">
-                      드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화
-                    </p>
-                  </div>
+                <label class="field compact-search">
+                  <span>검색</span>
+                  <input id="marketSearchInput" type="search" placeholder="심볼 검색 예: BTC, SOL, ARB" />
+                </label>
+                <div class="browser-inline-meta">
+                  <span id="selectedMarketMeta">-</span>
+                  <span id="selectedLocalMeta">-</span>
                 </div>
-                <div class="chart-toolbar">
-                  <div class="chip-strip">
-                    <span class="chip" id="chartSymbolChip">-</span>
-                    <span class="chip" id="chartTimeframeChip">-</span>
-                    <span class="chip" id="chartPriceChip">-</span>
+                <div id="marketSymbolList" class="market-symbol-list"></div>
+                <select id="coinSelect" hidden></select>
+              </aside>
+
+              <section class="market-main">
+                <article class="panel-card chart-panel">
+                  <div class="section-head">
+                    <h2 id="marketHeadline">바이낸스 차트</h2>
+                    <span id="chartMeta">Binance Spot</span>
                   </div>
-                  <label class="overlay-toggle">
-                    <input id="overlayToggle" type="checkbox" checked />
-                    <span>AI 오버레이 표시</span>
-                  </label>
-                </div>
-                <div class="chart-stack">
-                  <div class="chart-host">
-                    <div id="chartCanvas" class="chart-canvas"></div>
-                    <svg id="chartOverlay" class="chart-overlay" aria-hidden="true"></svg>
+                  <div class="market-quickbar">
+                    <div class="quick-control full-width">
+                      <span class="quick-label">봉 선택</span>
+                      <div id="timeframeShortcutList" class="shortcut-strip"></div>
+                      <select id="timeframeSelect" hidden></select>
+                    </div>
+                    <div class="chart-actions">
+                      <button id="resetChartViewButton" class="button chart-button" type="button">뷰 리셋</button>
+                      <p id="chartInteractionHint" class="chart-hint">
+                        드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화
+                      </p>
+                    </div>
                   </div>
-                  <div id="annotationSummary" class="annotation-summary">
-                    차트 위 주석 레이어를 준비 중입니다.
+                  <div class="chart-toolbar">
+                    <div class="chip-strip">
+                      <span class="chip" id="chartSymbolChip">-</span>
+                      <span class="chip" id="chartTimeframeChip">-</span>
+                      <span class="chip" id="chartPriceChip">-</span>
+                      <span class="chip" id="chartComparisonChip">-</span>
+                    </div>
+                    <label class="overlay-toggle">
+                      <input id="overlayToggle" type="checkbox" checked />
+                        <span>AI 오버레이</span>
+                      </label>
+                    </div>
+                  <div class="chart-stack">
+                    <div class="chart-host">
+                      <div id="chartCanvas" class="chart-canvas"></div>
+                      <svg id="chartOverlay" class="chart-overlay" aria-hidden="true"></svg>
+                    </div>
+                    <div id="annotationSummary" class="annotation-summary">
+                      차트 위 주석 레이어를 준비 중입니다.
+                    </div>
                   </div>
-                </div>
-              </article>
+                </article>
+
+                <section class="market-bottom-grid">
+                  <article class="panel-card">
+                    <div class="section-head">
+                      <h2>시장 비교</h2>
+                      <span>Detail</span>
+                    </div>
+                    <dl class="facts dense-facts" id="marketDetailsMirror"></dl>
+                  </article>
+
+                  <article class="panel-card">
+                    <div class="section-head">
+                      <h2>AI 드로잉 지시</h2>
+                      <span>Annotation JSON</span>
+                    </div>
+                    <div id="annotationList" class="annotation-list">-</div>
+                  </article>
+                </section>
+              </section>
 
               <aside class="market-side">
                 <article class="panel-card side-panel">
                   <div class="section-head">
                     <h2>호가창</h2>
-                    <span id="orderbookMeta">Top 15</span>
+                    <span id="orderbookMeta">Top 20</span>
                   </div>
                   <div id="orderbookOutput" class="orderbook-panel">-</div>
                 </article>
@@ -194,35 +221,11 @@
                 <article class="panel-card side-panel">
                   <div class="section-head">
                     <h2>최근 체결</h2>
-                    <span id="tradeMeta">25 prints</span>
+                    <span id="tradeMeta">30 prints</span>
                   </div>
                   <div id="tradesOutput" class="trade-panel-output">-</div>
                 </article>
               </aside>
-
-              <article class="panel-card">
-                <div class="section-head">
-                  <h2>시장 비교</h2>
-                  <span>Detail</span>
-                </div>
-                <dl class="facts dense-facts" id="marketDetailsMirror"></dl>
-              </article>
-
-              <article class="panel-card">
-                <div class="section-head">
-                  <h2>AI 드로잉 지시</h2>
-                  <span>Annotation JSON</span>
-                </div>
-                <div id="annotationList" class="annotation-list">-</div>
-              </article>
-
-              <article class="panel-card wide-panel">
-                <div class="section-head">
-                  <h2>캔들 원본</h2>
-                  <span>Audit</span>
-                </div>
-                <pre id="candlesOutput" class="code-block">-</pre>
-              </article>
             </section>
           </section>
 
@@ -381,7 +384,6 @@
       </section>
     </main>
 
-    <script src="/vendor/lightweight-charts/lightweight-charts.standalone.production.js"></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

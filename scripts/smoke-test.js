@@ -138,9 +138,12 @@ async function main() {
           },
           market: {
             symbol: market.symbol,
-            premiumPct: market.premiumPct,
-            bithumbPriceKrw: market.bithumb.priceKrw,
-            benchmarkPriceKrw: market.benchmark.priceKrw
+            pair: market.pair,
+            timeframe: market.timeframe,
+            premiumPct: market.comparison.premiumPct,
+            binancePriceUsdt: market.primary.priceUsdt,
+            bithumbPriceKrw: market.local.priceKrw,
+            benchmarkPriceKrw: market.comparison.benchmarkKrw
           },
           intelligence: {
             btcDominancePct: intelligence.macroStats.btcDominancePct,
