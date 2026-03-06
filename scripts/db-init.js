@@ -96,6 +96,34 @@ const statements = [
   `
     create index if not exists analysis_history_user_id_created_at_idx
     on analysis_history(user_id, created_at desc);
+  `,
+  `
+    create table if not exists conversations (
+      id uuid primary key default gen_random_uuid(),
+      user_id uuid not null references app_users(id) on delete cascade,
+      title text,
+      symbol text,
+      timeframe text,
+      created_at timestamptz not null default now()
+    );
+  `,
+  `
+    create table if not exists conversation_messages (
+      id uuid primary key default gen_random_uuid(),
+      conversation_id uuid not null references conversations(id) on delete cascade,
+      sender text not null,
+      content text,
+      meta jsonb,
+      created_at timestamptz not null default now()
+    );
+  `,
+  `
+    create index if not exists conversations_user_id_created_at_idx
+    on conversations(user_id, created_at desc);
+  `,
+  `
+    create index if not exists conversation_messages_conversation_id_created_at_idx
+    on conversation_messages(conversation_id, created_at asc);
   `
 ];
 
