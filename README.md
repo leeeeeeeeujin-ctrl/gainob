@@ -53,6 +53,23 @@ npm run smoke
 - `GEMINI_MODEL`: 기본값 `gemini-2.5-flash`
 - `PORT`: 기본값 `3000`
 
+## 공개 엔드포인트
+
+- `GET /api/public`
+  - 어떤 공개 엔드포인트가 있는지 설명 JSON을 반환합니다.
+- `GET /api/public/briefing?symbol=BTC&timeframe=1h`
+  - 바이낸스 메인 시세, 빗썸 비교가, 매크로/뉴스 요약, 기본 차트 주석을 JSON으로 반환합니다.
+- `GET /api/public/briefing?symbol=BTC&timeframe=1h&format=text`
+  - 같은 내용을 ChatGPT 웹에 붙여넣기 쉬운 텍스트로 반환합니다.
+
+예:
+
+```text
+https://<your-domain>/api/public
+https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h
+https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
+```
+
 ## 메모
 
 - 로컬 기준 거래소는 `빗썸`

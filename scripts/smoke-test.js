@@ -90,6 +90,7 @@ async function main() {
     await waitForServer();
 
     const health = await fetchJson("/api/health");
+    const publicApi = await fetchJson("/api/public");
     const coins = await fetchJson("/api/coins");
     const modules = await fetchJson("/api/modules");
     const username = `smoke_${Date.now()}`;
@@ -105,6 +106,7 @@ async function main() {
     });
     const session = await fetchJson("/api/session");
     const market = await fetchJson("/api/market?symbol=BTC&timeframe=1h");
+    const publicBriefing = await fetchJson("/api/public/briefing?symbol=BTC&timeframe=1h");
     const intelligence = await fetchJson("/api/intelligence?symbol=BTC");
     const analyze = await postJson("/api/analyze", {
       symbol: "BTC",
@@ -140,6 +142,7 @@ async function main() {
       JSON.stringify(
         {
           health,
+          publicEndpoints: publicApi.endpoints.length,
           coinsCount: coins.coins.length,
           modules: modules.modules.map((module) => module.id),
           registeredUser: register.user.username,
@@ -161,6 +164,11 @@ async function main() {
             binancePriceUsdt: market.primary.priceUsdt,
             bithumbPriceKrw: market.local.priceKrw,
             benchmarkPriceKrw: market.comparison.benchmarkKrw
+          },
+          publicBriefing: {
+            symbol: publicBriefing.symbol,
+            timeframe: publicBriefing.timeframe,
+            latestHeadline: publicBriefing.intelligence.newsStats.latestHeadline
           },
           intelligence: {
             btcDominancePct: intelligence.macroStats.btcDominancePct,

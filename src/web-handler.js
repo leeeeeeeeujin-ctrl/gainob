@@ -25,6 +25,67 @@ async function getCoinLabel(symbol) {
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
 }
 
+function formatPublicBriefingText(briefing) {
+  const lines = [
+    `공개 브리핑`,
+    `종목: ${briefing.symbol} (${briefing.label})`,
+    `타임프레임: ${briefing.timeframe}`,
+    `조회 시각: ${briefing.fetchedAt}`,
+    ``,
+    `[시장]`,
+    `- 바이낸스 현재가: ${briefing.market.primary.priceUsdt} USDT`,
+    `- 바이낸스 24h 등락: ${briefing.market.primary.change24hPct}%`,
+    `- 바이낸스 거래대금: ${briefing.market.primary.quoteVolume24hUsdt} USDT`,
+    `- 바이낸스 호가: ${briefing.market.primary.bidUsdt} / ${briefing.market.primary.askUsdt}`,
+    `- 빗썸 비교가: ${briefing.market.local.available ? `${briefing.market.local.priceKrw} KRW` : "미지원"}`,
+    `- 가격 괴리: ${briefing.market.comparison.premiumPct ?? "미지원"}%`,
+    ``,
+    `[매크로]`,
+    `- BTC 도미넌스: ${briefing.intelligence.macroStats.btcDominancePct}%`,
+    `- ETH 도미넌스: ${briefing.intelligence.macroStats.ethDominancePct}%`,
+    `- 글로벌 시총 변동(24h): ${briefing.intelligence.macroStats.marketCapChange24hUsd}%`,
+    ``,
+    `[뉴스]`,
+    `- 기사 수: ${briefing.intelligence.newsStats.articleCount}`,
+    `- 24시간 기사 수: ${briefing.intelligence.newsStats.recent24hCount}`,
+    `- 최신 기사: ${briefing.intelligence.newsStats.latestHeadline || "없음"}`,
+    ``,
+    `[차트 주석]`,
+    ...briefing.market.annotations.slice(0, 6).map((annotation) => `- ${annotation.type} | ${annotation.label} | ${annotation.reason || "근거 없음"}`)
+  ];
+
+  if (briefing.intelligence.errors?.length) {
+    lines.push("", "[오류]", ...briefing.intelligence.errors.map((error) => `- ${error}`));
+  }
+
+  return lines.join("\n");
+}
+
+function buildPublicEndpointDocs(baseUrl = "") {
+  return {
+    name: "Gainob Public Data API",
+    description: "ChatGPT 같은 외부 도구가 읽기 쉬운 공개 스냅샷 엔드포인트입니다. 개인 계정 데이터와 저장된 히스토리는 포함하지 않습니다.",
+    endpoints: [
+      {
+        path: `${baseUrl}/api/public`,
+        method: "GET",
+        query: {},
+        returns: "공개 API 설명서 JSON"
+      },
+      {
+        path: `${baseUrl}/api/public/briefing?symbol=BTC&timeframe=1h`,
+        method: "GET",
+        query: {
+          symbol: "조회할 심볼. 예: BTC, ETH, SOL",
+          timeframe: "15m | 1h | 4h | 1d | 1w",
+          format: "json 또는 text"
+        },
+        returns: "바이낸스 메인 시세, 빗썸 비교가, 매크로/뉴스 요약, 차트 주석이 포함된 공개 브리핑"
+      }
+    ]
+  };
+}
+
 function summarizeAiSettings(profile) {
   return {
     provider: profile?.ai_provider || "auto",
@@ -170,6 +231,26 @@ async function getAnalysisHistory(userId) {
   }));
 }
 
+async function buildPublicBriefing(symbol, timeframe) {
+  const label = await getCoinLabel(symbol);
+  const [market, intelligence] = await Promise.all([
+    getMarketSnapshot(symbol, { timeframe }),
+    getIntelligenceSnapshot(symbol, label)
+  ]);
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    symbol,
+    label,
+    timeframe: market.timeframe,
+    market,
+    intelligence,
+    usage: {
+      note: "이 응답은 공개용이며 개인 계정 정보, 저장된 히스토리, 사용자별 AI 키는 포함하지 않습니다."
+    }
+  };
+}
+
 async function createUserSession(userId, request, response) {
   const sessionToken = createSessionToken();
   const tokenHash = hashToken(sessionToken);
@@ -211,6 +292,34 @@ app.get("/api/modules", (_request, response) => {
     modules: moduleContext.listModules()
   });
 });
+
+app.get("/api/public", (request, response) => {
+  const baseUrl = `${request.protocol}://${request.get("host")}`;
+  response.json(buildPublicEndpointDocs(baseUrl));
+});
+
+async function handlePublicBriefingRequest(request, response) {
+  try {
+    const symbol = String(request.params.symbol || request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const format = String(request.query.format || "json").toLowerCase();
+    const briefing = await buildPublicBriefing(symbol, timeframe);
+
+    if (format === "text") {
+      response.type("text/plain; charset=utf-8").send(formatPublicBriefingText(briefing));
+      return;
+    }
+
+    response.json(briefing);
+  } catch (error) {
+    response.status(400).json({
+      error: error.message
+    });
+  }
+}
+
+app.get("/api/public/briefing", handlePublicBriefingRequest);
+app.get("/api/public/briefing/:symbol", handlePublicBriefingRequest);
 
 app.get("/api/session", async (request, response) => {
   const database = await getDatabaseStatus();
