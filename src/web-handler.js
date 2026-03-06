@@ -17,7 +17,7 @@ const { getIntelligenceSnapshot } = require("./intelligence");
 const { createModuleContext } = require("./core/module-context");
 const { getMarketSnapshot, getMultiTimeframeMarketPacket, getSupportedCoins, getSupportedTimeframes } = require("./market");
 const modules = require("./modules");
-const { getDepositMetrics } = require("./onchain");
+const { getBinancePublicMetrics } = require("./onchain");
 
 const moduleContext = createModuleContext(modules);
 const app = express();
@@ -1379,15 +1379,14 @@ app.get("/api/scan", async (request, response) => {
     const wantOnchain = String(request.query.onchain || "").toLowerCase() === "true";
     if (wantOnchain && symbolsParam) {
       try {
-        const depositMetrics = await getDepositMetrics({ symbols: symbols, exchanges: ['binance','coinbase'], windowMinutes: Number(request.query.windowMinutes || 60) });
-        // merge per-symbol
+        const binanceMetrics = await getBinancePublicMetrics(symbols, String(request.query.timeframe || '1h'));
         for (const r of results) {
-          if (r.symbol && depositMetrics[r.symbol]) {
-            r.onchainDeposits = depositMetrics[r.symbol];
+          if (r.symbol && binanceMetrics[r.symbol]) {
+            r.binancePublic = binanceMetrics[r.symbol];
           }
         }
       } catch (_e) {
-        // ignore onchain failures
+        // ignore onchain/binance failures
       }
     }
 
