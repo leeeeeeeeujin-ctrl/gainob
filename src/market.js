@@ -1,5 +1,5 @@
 const BITHUMB_BASE_URL = "https://api.bithumb.com/public";
-const BINANCE_BASE_URL = "https://api.binance.com/api/v3";
+const BINANCE_BASE_URL = "https://data-api.binance.vision/api/v3";
 
 const SUPPORTED_COINS = [
   { symbol: "BTC", label: "Bitcoin" },
