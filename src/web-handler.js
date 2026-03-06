@@ -433,7 +433,16 @@ app.get("/api/public/readme", (request, response) => {
       return;
     }
 
-    // Return as markdown/plain text so callers can parse or display it
+    // Support JSON-safe delivery for parsers that block raw markdown
+    const wantJson = String(request.query.format || "").toLowerCase() === "json";
+
+    if (wantJson) {
+      // Return as JSON with content field; callers can parse or sanitize safely
+      response.type("application/json; charset=utf-8").json({ content: data });
+      return;
+    }
+
+    // Default: return as markdown/plain text so browsers can render
     response.type("text/markdown; charset=utf-8").send(data);
   });
 });
