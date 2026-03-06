@@ -2,10 +2,27 @@ function buildPrompt(context, promptSections) {
   const moduleSummary = context.modules
     .map((module) => `- ${module.label}: ${module.status}${module.error ? ` (${module.error})` : ""}`)
     .join("\n");
+  const manualAnnotations = Array.isArray(context.manualAnnotations) ? context.manualAnnotations : [];
+  const drawingSection = manualAnnotations.length
+    ? `\n\n[사용자 드로잉]\n${manualAnnotations
+        .map((annotation) => {
+          if (annotation.type === "line") {
+            return `- line | ${annotation.label || "사용자 선"} | (${annotation.from?.time}, ${annotation.from?.price}) -> (${annotation.to?.time}, ${annotation.to?.price}) | ${annotation.reason || "사용자 표시"}`;
+          }
+
+          if (annotation.type === "zone") {
+            return `- zone | ${annotation.label || "사용자 구간"} | ${annotation.startTime}~${annotation.endTime} | ${annotation.minPrice}~${annotation.maxPrice} | ${annotation.reason || "사용자 표시"}`;
+          }
+
+          return `- marker | ${annotation.label || "사용자 마커"} | (${annotation.time}, ${annotation.price}) | ${annotation.reason || "사용자 표시"}`;
+        })
+        .join("\n")}`
+    : "";
 
   return `
 당신은 사용자의 개인 분석 AI다.
 시장 데이터만 기계적으로 요약하지 말고, 개인 프로필과 세션 메모가 있으면 함께 반영하라.
+사용자가 직접 차트에 그린 드로잉이 있으면 그 의도를 우선 반영하라.
 확신이 없는 내용은 단정하지 말고, 관찰과 가설을 분리해서 표현하라.
 반드시 아래 형식으로 한국어로 답하라.
 
@@ -27,7 +44,7 @@ JSON 형식:
 ${moduleSummary}
 
 [수집 컨텍스트]
-${promptSections}
+${promptSections}${drawingSection}
 `.trim();
 }
 

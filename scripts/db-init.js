@@ -61,6 +61,22 @@ const statements = [
     );
   `,
   `
+    create table if not exists analysis_history (
+      id uuid primary key default gen_random_uuid(),
+      user_id uuid not null references app_users(id) on delete cascade,
+      symbol text not null,
+      timeframe text,
+      provider text,
+      model text,
+      manual_annotations jsonb not null default '[]'::jsonb,
+      ai_annotations jsonb not null default '[]'::jsonb,
+      snapshot jsonb,
+      context jsonb,
+      analysis text,
+      created_at timestamptz not null default now()
+    );
+  `,
+  `
     create table if not exists app_sessions (
       id uuid primary key default gen_random_uuid(),
       user_id uuid not null references app_users(id) on delete cascade,
@@ -76,6 +92,10 @@ const statements = [
   `
     create index if not exists app_sessions_user_id_idx
     on app_sessions(user_id);
+  `,
+  `
+    create index if not exists analysis_history_user_id_created_at_idx
+    on analysis_history(user_id, created_at desc);
   `
 ];
 

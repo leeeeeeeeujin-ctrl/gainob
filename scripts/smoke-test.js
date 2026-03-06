@@ -108,6 +108,16 @@ async function main() {
     const intelligence = await fetchJson("/api/intelligence?symbol=BTC");
     const analyze = await postJson("/api/analyze", {
       symbol: "BTC",
+      timeframe: "1h",
+      manualAnnotations: [
+        {
+          type: "marker",
+          label: "스모크 마커",
+          reason: "테스트용 수동 표시",
+          time: Date.now(),
+          price: 70000
+        }
+      ],
       modules: ["market", "macro", "news", "profile", "journal"],
       profile: {
         alias: "smoke-user",
@@ -120,6 +130,7 @@ async function main() {
         focusQuestion: "과열 여부 확인"
       }
     });
+    const history = await fetchJson("/api/history");
     await postJson("/api/auth/delete-account", {
       password: "smoke123"
     });
@@ -161,8 +172,8 @@ async function main() {
             id: module.id,
             status: module.status
           })),
-          analyzePreview: analyze.analysis.slice(0, 80)
-          ,
+          analyzePreview: analyze.analysis.slice(0, 80),
+          historyCount: history.items.length,
           savedAiSettings: {
             provider: savedAiSettings.aiSettings.provider,
             hasOpenAiKey: savedAiSettings.aiSettings.hasOpenAiKey,

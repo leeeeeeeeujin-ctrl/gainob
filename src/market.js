@@ -22,6 +22,8 @@ const coinCache = {
   coins: DEFAULT_COINS,
   expiresAt: 0
 };
+const snapshotCache = new Map();
+const SNAPSHOT_CACHE_TTL_MS = 12_000;
 
 async function fetchJson(url) {
   const response = await fetch(url, {
@@ -328,6 +330,13 @@ async function getMarketSnapshot(symbol, options = {}) {
   }
 
   const timeframe = getTimeframeConfig(options.timeframe);
+  const cacheKey = `${symbol}:${timeframe.id}`;
+  const cachedSnapshot = snapshotCache.get(cacheKey);
+
+  if (cachedSnapshot && cachedSnapshot.expiresAt > Date.now()) {
+    return cachedSnapshot.payload;
+  }
+
   const [binanceTicker, binanceBookTicker, binanceOrderbookRaw, binanceTradesRaw, klines, usdtKrw] =
     await Promise.all([
       fetchBinanceTicker(coinMeta.pair),
@@ -358,7 +367,7 @@ async function getMarketSnapshot(symbol, options = {}) {
   const local = buildLocalSnapshot(symbol, bithumbTicker, bithumbOrderbook, usdtKrw, primaryPriceUsdt);
   const annotations = buildAnnotations(symbol, candles, orderbook, primaryPriceUsdt);
 
-  return {
+  const payload = {
     symbol,
     pair: coinMeta.pair,
     label: coinMeta.label,
@@ -392,6 +401,13 @@ async function getMarketSnapshot(symbol, options = {}) {
     annotations,
     candles
   };
+
+  snapshotCache.set(cacheKey, {
+    expiresAt: Date.now() + SNAPSHOT_CACHE_TTL_MS,
+    payload
+  });
+
+  return payload;
 }
 
 module.exports = {

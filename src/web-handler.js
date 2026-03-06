@@ -35,6 +35,22 @@ function summarizeAiSettings(profile) {
   };
 }
 
+function parseJsonColumn(value, fallback) {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
+  return value;
+}
+
 async function getAuthenticatedUser(request) {
   const sessionToken = getSessionTokenFromRequest(request);
 
@@ -82,6 +98,76 @@ async function getUserProfile(userId) {
   );
 
   return result.rows[0] || null;
+}
+
+async function insertAnalysisHistory(userId, payload) {
+  await query(
+    `
+      insert into analysis_history (
+        user_id,
+        symbol,
+        timeframe,
+        provider,
+        model,
+        manual_annotations,
+        ai_annotations,
+        snapshot,
+        context,
+        analysis
+      )
+      values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10)
+    `,
+    [
+      userId,
+      payload.symbol,
+      payload.timeframe,
+      payload.provider,
+      payload.model,
+      JSON.stringify(payload.manualAnnotations || []),
+      JSON.stringify(payload.aiAnnotations || []),
+      JSON.stringify(payload.snapshot || null),
+      JSON.stringify(payload.context || null),
+      payload.analysis || ""
+    ]
+  );
+}
+
+async function getAnalysisHistory(userId) {
+  const result = await query(
+    `
+      select
+        id,
+        symbol,
+        timeframe,
+        provider,
+        model,
+        manual_annotations,
+        ai_annotations,
+        snapshot,
+        context,
+        analysis,
+        created_at
+      from analysis_history
+      where user_id = $1
+      order by created_at desc
+      limit 30
+    `,
+    [userId]
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    symbol: row.symbol,
+    timeframe: row.timeframe,
+    provider: row.provider,
+    model: row.model,
+    manualAnnotations: parseJsonColumn(row.manual_annotations, []),
+    aiAnnotations: parseJsonColumn(row.ai_annotations, []),
+    snapshot: parseJsonColumn(row.snapshot, null),
+    context: parseJsonColumn(row.context, null),
+    analysis: row.analysis,
+    createdAt: row.created_at
+  }));
 }
 
 async function createUserSession(userId, request, response) {
@@ -361,6 +447,29 @@ app.post("/api/auth/delete-account", async (request, response) => {
   }
 });
 
+app.get("/api/history", async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+
+    if (!user) {
+      response.json({
+        ok: true,
+        items: []
+      });
+      return;
+    }
+
+    response.json({
+      ok: true,
+      items: await getAnalysisHistory(user.id)
+    });
+  } catch (error) {
+    response.status(400).json({
+      error: error.message
+    });
+  }
+});
+
 async function handleMarketRequest(request, response) {
   try {
     const symbol = String(request.params.symbol || request.query.symbol || "").toUpperCase();
@@ -434,6 +543,7 @@ app.post("/api/analyze", async (request, response) => {
     }
 
     const profile = await getUserProfile(user.id);
+    const manualAnnotations = Array.isArray(request.body.manualAnnotations) ? request.body.manualAnnotations : [];
     const context = await moduleContext.collect({
       symbol,
       label: await getCoinLabel(symbol),
@@ -442,8 +552,12 @@ app.post("/api/analyze", async (request, response) => {
       profile: request.body.profile,
       journal: request.body.journal
     });
-    const promptSections = moduleContext.buildPromptSections(context);
-    const result = await analyzeContext(context, promptSections, {
+    const analysisContext = {
+      ...context,
+      manualAnnotations
+    };
+    const promptSections = moduleContext.buildPromptSections(analysisContext);
+    const result = await analyzeContext(analysisContext, promptSections, {
       provider: request.body.provider,
       credentials: {
         provider: profile?.ai_provider,
@@ -455,12 +569,25 @@ app.post("/api/analyze", async (request, response) => {
       useEnvFallback: false
     });
     const marketModule = context.modules.find((module) => module.id === "market" && module.status === "ok");
-
-    response.json({
+    const responsePayload = {
       context,
       snapshot: marketModule?.data || null,
       ...result
+    };
+
+    await insertAnalysisHistory(user.id, {
+      symbol,
+      timeframe: String(request.body.timeframe || "1h").toLowerCase(),
+      provider: result.provider,
+      model: result.model,
+      manualAnnotations,
+      aiAnnotations: result.annotations,
+      snapshot: marketModule?.data || null,
+      context,
+      analysis: result.analysis
     });
+
+    response.json(responsePayload);
   } catch (error) {
     response.status(400).json({
       error: error.message

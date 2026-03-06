@@ -75,6 +75,22 @@
             </div>
           </header>
 
+          <aside id="floatingBriefingPanel" class="floating-briefing">
+            <div id="floatingBriefingHeader" class="floating-briefing-header">
+              <div class="floating-briefing-copy">
+                <strong>AI 브리핑</strong>
+                <span id="floatingBriefingMeta">고정 패널</span>
+              </div>
+              <div class="floating-briefing-actions">
+                <button id="floatingBriefingOpenButton" class="floating-action" type="button">화면</button>
+                <button id="floatingBriefingMinimizeButton" class="floating-action" type="button">접기</button>
+              </div>
+            </div>
+            <div id="floatingBriefingBody" class="floating-briefing-body">
+              <pre id="analysisFloatingOutput" class="analysis floating-analysis">먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre>
+            </div>
+          </aside>
+
           <section id="overviewView" class="view-panel is-active" data-view>
             <section class="metric-strip">
               <article class="metric-card">
@@ -168,6 +184,17 @@
                       <div id="timeframeShortcutList" class="shortcut-strip"></div>
                       <select id="timeframeSelect" hidden></select>
                     </div>
+                    <div class="quick-control full-width">
+                      <span class="quick-label">드로잉 도구</span>
+                      <div class="shortcut-strip" id="drawingToolList">
+                        <button class="shortcut-button is-active" data-drawing-tool="move" type="button">이동</button>
+                        <button class="shortcut-button" data-drawing-tool="line" type="button">선</button>
+                        <button class="shortcut-button" data-drawing-tool="zone" type="button">구간</button>
+                        <button class="shortcut-button" data-drawing-tool="marker" type="button">마커</button>
+                        <button class="shortcut-button" id="undoDrawingButton" type="button">마지막 삭제</button>
+                        <button class="shortcut-button" id="clearDrawingsButton" type="button">전체 삭제</button>
+                      </div>
+                    </div>
                     <div class="chart-actions">
                       <button id="resetChartViewButton" class="button chart-button" type="button">뷰 리셋</button>
                       <p id="chartInteractionHint" class="chart-hint">
@@ -184,9 +211,9 @@
                     </div>
                     <label class="overlay-toggle">
                       <input id="overlayToggle" type="checkbox" checked />
-                        <span>AI 오버레이</span>
-                      </label>
-                    </div>
+                      <span>AI 오버레이</span>
+                    </label>
+                  </div>
                   <div class="chart-stack">
                     <div class="chart-host">
                       <div id="chartCanvas" class="chart-canvas"></div>
@@ -274,6 +301,13 @@
                     ></textarea>
                   </label>
                 </div>
+              </article>
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>분석 히스토리</h2>
+                  <span id="historyMeta">최근 0건</span>
+                </div>
+                <div id="historyList" class="history-list">로그인 후 분석 기록이 여기에 쌓입니다.</div>
               </article>
             </section>
           </section>

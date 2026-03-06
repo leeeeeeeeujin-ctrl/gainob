@@ -10,6 +10,8 @@ const SYMBOL_QUERY_HINTS = {
   DOGE: "Dogecoin OR DOGE",
   ADA: "Cardano OR ADA"
 };
+const intelligenceCache = new Map();
+const INTELLIGENCE_CACHE_TTL_MS = 45_000;
 
 async function fetchJson(url) {
   const response = await fetch(url, {
@@ -150,6 +152,13 @@ function summarizeNews(articles) {
 }
 
 async function getIntelligenceSnapshot(symbol, label) {
+  const cacheKey = `${symbol}:${label || symbol}`;
+  const cachedSnapshot = intelligenceCache.get(cacheKey);
+
+  if (cachedSnapshot && cachedSnapshot.expiresAt > Date.now()) {
+    return cachedSnapshot.payload;
+  }
+
   const [binanceTickerResult, binanceKlinesResult, globalResult, newsResult] = await Promise.allSettled([
     fetchBinanceTicker(symbol),
     fetchBinanceKlines(symbol),
@@ -181,7 +190,7 @@ async function getIntelligenceSnapshot(symbol, label) {
   const globalPayload = globalResult.status === "fulfilled" ? globalResult.value : { data: {} };
   const newsArticles = newsResult.status === "fulfilled" ? newsResult.value : [];
 
-  return {
+  const payload = {
     fetchedAt: new Date().toISOString(),
     symbol,
     label,
@@ -190,6 +199,13 @@ async function getIntelligenceSnapshot(symbol, label) {
     newsStats: summarizeNews(newsArticles),
     errors
   };
+
+  intelligenceCache.set(cacheKey, {
+    expiresAt: Date.now() + INTELLIGENCE_CACHE_TTL_MS,
+    payload
+  });
+
+  return payload;
 }
 
 module.exports = {

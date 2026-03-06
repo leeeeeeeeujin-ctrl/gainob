@@ -4,11 +4,24 @@ const state = {
   modules: [],
   activeViewId: "overviewView",
   account: null,
+  history: [],
   coins: [],
   timeframes: [],
   marketSearchTerm: "",
+  latestMarketRequestId: 0,
   resizeObserver: null,
   aiAnnotations: [],
+  manualAnnotations: [],
+  drawingTool: "move",
+  pendingDrawing: null,
+  floatingPanel: {
+    x: null,
+    y: null,
+    minimized: false,
+    dragging: false,
+    offsetX: 0,
+    offsetY: 0
+  },
   chartGeometry: null,
   chartViewport: null
 };
@@ -33,6 +46,9 @@ const elements = {
   selectedMarketMeta: document.querySelector("#selectedMarketMeta"),
   selectedLocalMeta: document.querySelector("#selectedLocalMeta"),
   timeframeShortcutList: document.querySelector("#timeframeShortcutList"),
+  drawingToolList: document.querySelector("#drawingToolList"),
+  undoDrawingButton: document.querySelector("#undoDrawingButton"),
+  clearDrawingsButton: document.querySelector("#clearDrawingsButton"),
   resetChartViewButton: document.querySelector("#resetChartViewButton"),
   chartInteractionHint: document.querySelector("#chartInteractionHint"),
   moduleList: document.querySelector("#moduleList"),
@@ -53,6 +69,15 @@ const elements = {
   newsStatsOutput: document.querySelector("#newsStatsOutput"),
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
+  analysisFloatingOutput: document.querySelector("#analysisFloatingOutput"),
+  floatingBriefingPanel: document.querySelector("#floatingBriefingPanel"),
+  floatingBriefingHeader: document.querySelector("#floatingBriefingHeader"),
+  floatingBriefingBody: document.querySelector("#floatingBriefingBody"),
+  floatingBriefingMeta: document.querySelector("#floatingBriefingMeta"),
+  floatingBriefingOpenButton: document.querySelector("#floatingBriefingOpenButton"),
+  floatingBriefingMinimizeButton: document.querySelector("#floatingBriefingMinimizeButton"),
+  historyMeta: document.querySelector("#historyMeta"),
+  historyList: document.querySelector("#historyList"),
   orderbookOutput: document.querySelector("#orderbookOutput"),
   orderbookMeta: document.querySelector("#orderbookMeta"),
   tradesOutput: document.querySelector("#tradesOutput"),
@@ -178,6 +203,9 @@ function loadPersonalSettings() {
     elements.overlayToggle.checked = saved.overlayEnabled ?? true;
     state.activeViewId = saved.activeViewId || state.activeViewId;
     state.marketSearchTerm = saved.marketSearchTerm || "";
+    state.floatingPanel.x = Number.isFinite(saved.floatingX) ? saved.floatingX : null;
+    state.floatingPanel.y = Number.isFinite(saved.floatingY) ? saved.floatingY : null;
+    state.floatingPanel.minimized = Boolean(saved.floatingMinimized);
     elements.marketSearchInput.value = state.marketSearchTerm;
 
     if (saved.selectedCoin) {
@@ -207,7 +235,10 @@ function savePersonalSettings() {
       selectedCoin: elements.coinSelect.value || "BTC",
       selectedTimeframe: elements.timeframeSelect.value || "1h",
       marketSearchTerm: state.marketSearchTerm,
-      overlayEnabled: elements.overlayToggle.checked
+      overlayEnabled: elements.overlayToggle.checked,
+      floatingX: state.floatingPanel.x,
+      floatingY: state.floatingPanel.y,
+      floatingMinimized: state.floatingPanel.minimized
     })
   );
 }
@@ -215,10 +246,41 @@ function savePersonalSettings() {
 function setAnalysisMessage(message) {
   elements.analysisOutput.textContent = message;
   elements.analysisOutputMirror.textContent = message;
+  elements.analysisFloatingOutput.textContent = message;
 }
 
 function setAiSettingsStatus(message) {
   elements.aiSettingsStatus.textContent = message;
+}
+
+function renderHistory(items = state.history) {
+  state.history = items;
+  elements.historyMeta.textContent = `최근 ${formatNumber(items.length, 0)}건`;
+  elements.historyList.innerHTML = items.length
+    ? items
+        .map((item) => {
+          const snapshotPrice = item.snapshot?.primary?.priceUsdt;
+          const preview = String(item.analysis || "").trim().slice(0, 180);
+          return `
+            <article class="history-card">
+              <div class="history-card-head">
+                <strong>${escapeHtml(item.symbol)} · ${escapeHtml(item.timeframe || "-")}</strong>
+                <span>${escapeHtml(new Date(item.createdAt).toLocaleString("ko-KR"))}</span>
+              </div>
+              <div class="history-card-meta">
+                <span>${escapeHtml(item.provider || "AI")} ${escapeHtml(item.model || "")}</span>
+                <span>수동 ${formatNumber(item.manualAnnotations?.length || 0, 0)} / AI ${formatNumber(
+                  item.aiAnnotations?.length || 0,
+                  0
+                )}</span>
+                <span>${snapshotPrice ? `당시가 ${formatUsdt(snapshotPrice)}` : "당시 스냅샷 없음"}</span>
+              </div>
+              <p class="history-card-body">${escapeHtml(preview || "분석 내용 없음")}</p>
+            </article>
+          `;
+        })
+        .join("")
+    : "로그인 후 분석 기록이 여기에 쌓입니다.";
 }
 
 function renderFactsHtml(snapshot) {
@@ -301,6 +363,88 @@ function setChartHint(message) {
   elements.chartInteractionHint.textContent = message;
 }
 
+function updateFloatingBriefingState() {
+  elements.floatingBriefingPanel.classList.toggle("is-minimized", state.floatingPanel.minimized);
+  elements.floatingBriefingPanel.classList.toggle("is-dragging", state.floatingPanel.dragging);
+  elements.floatingBriefingMinimizeButton.textContent = state.floatingPanel.minimized ? "펼치기" : "접기";
+
+  if (Number.isFinite(state.floatingPanel.x) && Number.isFinite(state.floatingPanel.y)) {
+    elements.floatingBriefingPanel.style.right = "auto";
+    elements.floatingBriefingPanel.style.bottom = "auto";
+    elements.floatingBriefingPanel.style.left = `${state.floatingPanel.x}px`;
+    elements.floatingBriefingPanel.style.top = `${state.floatingPanel.y}px`;
+  } else {
+    elements.floatingBriefingPanel.style.left = "";
+    elements.floatingBriefingPanel.style.top = "";
+    elements.floatingBriefingPanel.style.right = "";
+    elements.floatingBriefingPanel.style.bottom = "";
+  }
+}
+
+function setFloatingBriefingMeta(message) {
+  elements.floatingBriefingMeta.textContent = message;
+}
+
+function clampFloatingPanelPosition(nextX, nextY) {
+  const panelWidth = elements.floatingBriefingPanel.offsetWidth || 420;
+  const panelHeight = elements.floatingBriefingPanel.offsetHeight || 280;
+
+  return {
+    x: clamp(nextX, 8, Math.max(window.innerWidth - panelWidth - 8, 8)),
+    y: clamp(nextY, 8, Math.max(window.innerHeight - panelHeight - 8, 8))
+  };
+}
+
+function ensureFloatingBriefingInteractions() {
+  if (!elements.floatingBriefingHeader || elements.floatingBriefingHeader.dataset.bound === "true") {
+    return;
+  }
+
+  const stopDrag = () => {
+    if (!state.floatingPanel.dragging) {
+      return;
+    }
+
+    state.floatingPanel.dragging = false;
+    updateFloatingBriefingState();
+    savePersonalSettings();
+  };
+
+  elements.floatingBriefingHeader.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) {
+      return;
+    }
+
+    const rect = elements.floatingBriefingPanel.getBoundingClientRect();
+    state.floatingPanel.dragging = true;
+    state.floatingPanel.offsetX = event.clientX - rect.left;
+    state.floatingPanel.offsetY = event.clientY - rect.top;
+    state.floatingPanel.x = rect.left;
+    state.floatingPanel.y = rect.top;
+    elements.floatingBriefingHeader.setPointerCapture?.(event.pointerId);
+    updateFloatingBriefingState();
+  });
+
+  elements.floatingBriefingHeader.addEventListener("pointermove", (event) => {
+    if (!state.floatingPanel.dragging) {
+      return;
+    }
+
+    const next = clampFloatingPanelPosition(
+      event.clientX - state.floatingPanel.offsetX,
+      event.clientY - state.floatingPanel.offsetY
+    );
+    state.floatingPanel.x = next.x;
+    state.floatingPanel.y = next.y;
+    updateFloatingBriefingState();
+  });
+
+  elements.floatingBriefingHeader.addEventListener("pointerup", stopDrag);
+  elements.floatingBriefingHeader.addEventListener("pointercancel", stopDrag);
+  elements.floatingBriefingHeader.addEventListener("pointerleave", stopDrag);
+  elements.floatingBriefingHeader.dataset.bound = "true";
+}
+
 function getDefaultVisibleCount(timeframe, totalCandles) {
   const defaults = {
     "15m": 72,
@@ -349,19 +493,17 @@ function getVisibleCandles(snapshot) {
 }
 
 function getActiveAnnotations() {
-  if (!elements.overlayToggle.checked) {
-    return [];
-  }
-
-  return state.aiAnnotations.length ? state.aiAnnotations : state.snapshot?.annotations || [];
+  const automated = elements.overlayToggle.checked ? state.aiAnnotations.length ? state.aiAnnotations : state.snapshot?.annotations || [] : [];
+  return [...state.manualAnnotations, ...automated];
 }
 
 function renderAnnotationList() {
   const annotations = getActiveAnnotations();
-  const sourceLabel = state.aiAnnotations.length ? "AI 주석" : "기본 주석";
+  const manualCount = state.manualAnnotations.length;
+  const automatedCount = Math.max(annotations.length - manualCount, 0);
 
   elements.annotationSummary.textContent = annotations.length
-    ? `${sourceLabel} ${annotations.length}개를 차트 위에 표시 중입니다.`
+    ? `수동 ${manualCount}개 / 자동 ${automatedCount}개를 차트 위에 표시 중입니다.`
     : "표시 가능한 주석이 없습니다.";
 
   elements.annotationList.innerHTML = annotations.length
@@ -371,7 +513,7 @@ function renderAnnotationList() {
             <div class="annotation-row">
               <strong>${escapeHtml(annotation.label || annotation.type)}</strong>
               <span>${escapeHtml(annotation.reason || "근거 없음")}</span>
-              <span>${escapeHtml(annotation.type)}</span>
+              <span>${escapeHtml(annotation.type)}${annotation.source ? ` · ${annotation.source}` : ""}</span>
             </div>
           `
         )
@@ -451,6 +593,12 @@ function renderTimeframeButtons() {
     .join("");
 }
 
+function renderDrawingTools() {
+  Array.from(elements.drawingToolList.querySelectorAll("[data-drawing-tool]")).forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.drawingTool === state.drawingTool);
+  });
+}
+
 function renderOrderbook(snapshot) {
   const totalDepth = Math.max(snapshot.orderbook.totalBidUnits, snapshot.orderbook.totalAskUnits, 0.0001);
   const asks = snapshot.orderbook.asks.slice().reverse().slice(0, 10);
@@ -522,7 +670,7 @@ function ensureChartInteractions() {
   };
 
   elements.chartHost.addEventListener("pointerdown", (event) => {
-    if (!state.snapshot || !state.chartViewport) {
+    if (!state.snapshot || !state.chartViewport || state.drawingTool !== "move") {
       return;
     }
 
@@ -534,7 +682,7 @@ function ensureChartInteractions() {
   });
 
   elements.chartHost.addEventListener("pointermove", (event) => {
-    if (!state.snapshot || !state.chartViewport?.isDragging || !state.chartGeometry?.candleGap) {
+    if (!state.snapshot || !state.chartViewport?.isDragging || !state.chartGeometry?.candleGap || state.drawingTool !== "move") {
       return;
     }
 
@@ -554,6 +702,10 @@ function ensureChartInteractions() {
     "wheel",
     (event) => {
       if (!state.snapshot || !state.chartViewport || !state.chartGeometry) {
+        return;
+      }
+
+      if (state.drawingTool !== "move") {
         return;
       }
 
@@ -587,7 +739,7 @@ function ensureChartInteractions() {
   );
 
   elements.chartHost.addEventListener("dblclick", () => {
-    if (!state.snapshot) {
+    if (!state.snapshot || state.drawingTool !== "move") {
       return;
     }
 
@@ -608,6 +760,113 @@ function ensureChartInteractions() {
     });
     state.resizeObserver.observe(elements.chartHost);
   }
+}
+
+function readChartPoint(clientX, clientY) {
+  if (!state.chartGeometry || !state.chartHost || !state.chartGeometry.candles?.length) {
+    return null;
+  }
+
+  const hostRect = elements.chartHost.getBoundingClientRect();
+  const relativeX = clamp(clientX - hostRect.left - state.chartGeometry.left, 0, state.chartGeometry.plotWidth);
+  const relativeY = clamp(
+    clientY - hostRect.top - state.chartGeometry.priceTop,
+    0,
+    state.chartGeometry.priceHeight
+  );
+  const index = clamp(
+    Math.round(relativeX / Math.max(state.chartGeometry.candleGap, 1) - 0.5),
+    0,
+    state.chartGeometry.candles.length - 1
+  );
+  const candle = state.chartGeometry.candles[index];
+  const priceRatio = 1 - relativeY / Math.max(state.chartGeometry.priceHeight, 1);
+  const price =
+    state.chartGeometry.minPrice + (state.chartGeometry.maxPrice - state.chartGeometry.minPrice) * priceRatio;
+
+  return {
+    time: candle.timestamp,
+    price: Number(price.toFixed(2))
+  };
+}
+
+function pushManualAnnotation(annotation) {
+  state.manualAnnotations.push({
+    ...annotation,
+    id: annotation.id || `manual-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    source: "manual"
+  });
+  state.pendingDrawing = null;
+  renderAnnotationList();
+  renderChartOverlay();
+  setChartHint("수동 드로잉을 추가했습니다. AI 분석 시 함께 전달됩니다.");
+}
+
+function handleDrawingClick(event) {
+  if (state.drawingTool === "move" || !state.snapshot || !state.chartGeometry) {
+    return;
+  }
+
+  const point = readChartPoint(event.clientX, event.clientY);
+
+  if (!point) {
+    return;
+  }
+
+  if (state.drawingTool === "marker") {
+    pushManualAnnotation({
+      type: "marker",
+      label: "사용자 마커",
+      reason: "사용자 수동 표시",
+      color: "#f59e0b",
+      time: point.time,
+      price: point.price
+    });
+    return;
+  }
+
+  if (!state.pendingDrawing) {
+    state.pendingDrawing = point;
+    setChartHint(state.drawingTool === "line" ? "끝점을 한 번 더 클릭하세요." : "구간의 반대쪽을 클릭하세요.");
+    return;
+  }
+
+  const start = state.pendingDrawing;
+  const end = point;
+
+  if (state.drawingTool === "line") {
+    pushManualAnnotation({
+      type: "line",
+      label: "사용자 선",
+      reason: "사용자 수동 추세선",
+      color: "#f59e0b",
+      from: start,
+      to: end
+    });
+    return;
+  }
+
+  if (state.drawingTool === "zone") {
+    pushManualAnnotation({
+      type: "zone",
+      label: "사용자 구간",
+      reason: "사용자 수동 구간",
+      color: "rgba(245, 158, 11, 0.14)",
+      lineColor: "#f59e0b",
+      startTime: Math.min(start.time, end.time),
+      endTime: Math.max(start.time, end.time),
+      minPrice: Math.min(start.price, end.price),
+      maxPrice: Math.max(start.price, end.price)
+    });
+  }
+}
+
+function clearManualAnnotations() {
+  state.manualAnnotations = [];
+  state.pendingDrawing = null;
+  renderAnnotationList();
+  renderChartOverlay();
+  setChartHint("수동 드로잉을 모두 비웠습니다.");
 }
 
 function renderChartOverlay() {
@@ -852,6 +1111,7 @@ function renderMarketWorkspace(snapshot) {
 
   renderOrderbook(snapshot);
   renderTrades(snapshot);
+  renderDrawingTools();
   renderAnnotationList();
   renderTimeframeButtons();
   renderMarketSymbolList();
@@ -994,6 +1254,7 @@ function buildAnalysisPayload() {
     symbol: elements.coinSelect.value,
     timeframe: elements.timeframeSelect.value,
     provider: elements.aiProviderSelect.value || "auto",
+    manualAnnotations: state.manualAnnotations,
     modules: getEnabledModules(),
     profile: {
       alias: elements.aliasInput.value,
@@ -1076,8 +1337,24 @@ async function loadAccount() {
   try {
     const payload = await fetchJson("/api/session");
     renderAccount(payload);
+    await loadHistory();
   } catch (_error) {
     renderAccount(null);
+    renderHistory([]);
+  }
+}
+
+async function loadHistory() {
+  if (!state.account?.authenticated) {
+    renderHistory([]);
+    return;
+  }
+
+  try {
+    const payload = await fetchJson("/api/history");
+    renderHistory(payload.items || []);
+  } catch (_error) {
+    renderHistory([]);
   }
 }
 
@@ -1139,6 +1416,7 @@ async function registerAccount() {
       user: payload.user,
       message: `${payload.user.display_name} 계정이 생성되고 로그인되었습니다.`
     });
+    await loadHistory();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1170,6 +1448,7 @@ async function loginAccount() {
       user: payload.user,
       message: `${payload.user.display_name} 계정으로 로그인되었습니다.`
     });
+    await loadHistory();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1197,6 +1476,7 @@ async function logoutAccount() {
       serverReady: true,
       message: "로그아웃되었습니다."
     });
+    renderHistory([]);
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1243,6 +1523,7 @@ async function deleteAccount() {
       serverReady: true,
       message: "계정이 삭제되었습니다."
     });
+    renderHistory([]);
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1254,22 +1535,52 @@ async function deleteAccount() {
 async function refreshMarket() {
   const symbol = elements.coinSelect.value;
   const timeframe = elements.timeframeSelect.value || "1h";
+  const requestId = state.latestMarketRequestId + 1;
+  state.latestMarketRequestId = requestId;
   state.aiAnnotations = [];
   state.chartGeometry = null;
   savePersonalSettings();
-  setAnalysisMessage("시세를 불러오는 중입니다...");
+  setAnalysisMessage("시세를 먼저 불러오는 중입니다...");
+  setFloatingBriefingMeta("시장 데이터 로딩 중");
 
   try {
-    const [snapshot, intelligence] = await Promise.all([
-      fetchJson(`/api/market?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
-      fetchJson(`/api/intelligence?symbol=${encodeURIComponent(symbol)}`)
-    ]);
+    const snapshot = await fetchJson(
+      `/api/market?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+    );
+
+    if (requestId !== state.latestMarketRequestId) {
+      return;
+    }
+
     renderSnapshot(snapshot);
-    renderIntelligence(intelligence);
     renderModuleStatus(null);
-    setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
+    elements.macroStatsOutput.innerHTML = renderStatRows([["불러오는 중", "시장 통계 대기"]]);
+    elements.newsStatsOutput.innerHTML = renderStatRows([["불러오는 중", "뉴스 통계 대기"]]);
+    setAnalysisMessage("차트는 준비되었습니다. 뉴스와 매크로 통계를 이어서 불러오는 중입니다.");
+    setFloatingBriefingMeta(`${snapshot.symbol} · ${snapshot.timeframe} 준비됨`);
+
+    fetchJson(`/api/intelligence?symbol=${encodeURIComponent(symbol)}`)
+      .then((intelligence) => {
+        if (requestId !== state.latestMarketRequestId) {
+          return;
+        }
+
+        renderIntelligence(intelligence);
+        setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
+        setFloatingBriefingMeta(`${snapshot.symbol} · intelligence ready`);
+      })
+      .catch((error) => {
+        if (requestId !== state.latestMarketRequestId) {
+          return;
+        }
+
+        elements.macroStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
+        elements.newsStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
+        setFloatingBriefingMeta(`${snapshot.symbol} · 일부 통계 지연`);
+      });
   } catch (error) {
     setAnalysisMessage(error.message);
+    setFloatingBriefingMeta("시장 데이터 로드 실패");
   }
 }
 
@@ -1295,9 +1606,12 @@ async function analyze() {
     renderChartOverlay();
     renderModuleStatus(payload.context);
     setAnalysisMessage(`${formatAiHeading(payload.provider, payload.model)}\n\n${payload.analysis}`);
+    setFloatingBriefingMeta(payload.provider ? `${payload.provider} · ${payload.model || "default"}` : "AI 분석");
+    await loadHistory();
     setActiveView("briefingView");
   } catch (error) {
     setAnalysisMessage(error.message);
+    setFloatingBriefingMeta("AI 분석 실패");
   }
 }
 
@@ -1313,6 +1627,15 @@ elements.resetChartViewButton.addEventListener("click", () => {
   renderChart(state.snapshot);
   renderChartOverlay();
 });
+elements.floatingBriefingOpenButton.addEventListener("click", () => {
+  setActiveView("briefingView");
+});
+elements.floatingBriefingMinimizeButton.addEventListener("click", () => {
+  state.floatingPanel.minimized = !state.floatingPanel.minimized;
+  updateFloatingBriefingState();
+  savePersonalSettings();
+});
+elements.chartHost.addEventListener("click", handleDrawingClick);
 elements.marketSearchInput.addEventListener("input", (event) => {
   state.marketSearchTerm = event.target.value;
   savePersonalSettings();
@@ -1325,6 +1648,7 @@ elements.marketSymbolList.addEventListener("click", (event) => {
     return;
   }
 
+  clearManualAnnotations();
   elements.coinSelect.value = button.dataset.symbolRow;
   renderMarketSymbolList();
   refreshMarket();
@@ -1336,10 +1660,35 @@ elements.timeframeShortcutList.addEventListener("click", (event) => {
     return;
   }
 
+  clearManualAnnotations();
   elements.timeframeSelect.value = button.dataset.shortcutTimeframe;
   renderTimeframeButtons();
   refreshMarket();
 });
+elements.drawingToolList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-drawing-tool]");
+
+  if (!button) {
+    return;
+  }
+
+  state.drawingTool = button.dataset.drawingTool;
+  state.pendingDrawing = null;
+  renderDrawingTools();
+  setChartHint(
+    state.drawingTool === "move"
+      ? "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화"
+      : `${button.textContent.trim()} 도구 선택됨. 차트 위를 클릭해 표시하세요.`
+  );
+});
+elements.undoDrawingButton.addEventListener("click", () => {
+  state.manualAnnotations.pop();
+  state.pendingDrawing = null;
+  renderAnnotationList();
+  renderChartOverlay();
+  setChartHint("마지막 수동 드로잉을 제거했습니다.");
+});
+elements.clearDrawingsButton.addEventListener("click", clearManualAnnotations);
 elements.overlayToggle.addEventListener("change", () => {
   savePersonalSettings();
   renderAnnotationList();
@@ -1369,6 +1718,8 @@ elements.navButtons.forEach((button) => {
 });
 
 loadPersonalSettings();
+updateFloatingBriefingState();
+ensureFloatingBriefingInteractions();
 
 Promise.all([loadCoins(), loadModules(), loadAccount()])
   .then(() => {
