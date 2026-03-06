@@ -555,6 +555,16 @@ async function getMarketSnapshot(symbol, options = {}) {
       openInterest: futuresOpenInterestRaw ? toNumber(futuresOpenInterestRaw.openInterest) : null,
       fundingRate: fundingRateRaw ? toNumber(fundingRateRaw.fundingRate) : null
     },
+    // convenience top-level fields for quick parsing
+    openInterest: futuresOpenInterestRaw ? toNumber(futuresOpenInterestRaw.openInterest) : null,
+    fundingRate: fundingRateRaw ? toNumber(fundingRateRaw.fundingRate) : null,
+    fundingRateSign: fundingRateRaw
+      ? toNumber(fundingRateRaw.fundingRate) > 0
+        ? "positive"
+        : toNumber(fundingRateRaw.fundingRate) < 0
+        ? "negative"
+        : "zero"
+      : null,
     local,
     comparison: {
       localSupported: local.available,
