@@ -14,7 +14,7 @@ const {
 const { getDatabaseStatus, query } = require("./db");
 const { getIntelligenceSnapshot } = require("./intelligence");
 const { createModuleContext } = require("./core/module-context");
-const { getMarketSnapshot, getSupportedCoins, getSupportedTimeframes } = require("./market");
+const { getMarketSnapshot, getMultiTimeframeMarketPacket, getSupportedCoins, getSupportedTimeframes } = require("./market");
 const modules = require("./modules");
 
 const moduleContext = createModuleContext(modules);
@@ -100,6 +100,33 @@ function buildPublicEndpointDocs(baseUrl = "") {
         },
         returns:
           "바이낸스 메인 시세, 빗썸 비교가, 호가/매물벽 요약, 매크로/뉴스 요약, 차트 주석이 포함된 공개 브리핑"
+      },
+      {
+        path: `${baseUrl}/api/public/market?symbol=BTC&timeframe=1h`,
+        method: "GET",
+        query: {
+          symbol: "조회할 심볼. 예: BTC, ETH, SOL",
+          timeframe: "15m | 1h | 4h | 1d | 1w",
+          concise: "true|false (기본 true; 긴 배열을 축소하여 반환)",
+          start: "시작 시각(ISO 또는 epoch ms) - 이 시점 이후의 캔들/거래만 반환",
+          end: "종료 시각(ISO 또는 epoch ms) - 이 시점 이전의 캔들/거래만 반환",
+          orderbookDepth: "호가 배열 길이 제한 (기본 20)",
+          candles: "반환할 캔들 개수 (기본 24)",
+          trades: "반환할 최근 거래 개수 (기본 20)"
+        },
+        returns: "간결한 마켓 스냅샷 (가격, 요약 캔들, 호가 요약 등)"
+      },
+      {
+        path: `${baseUrl}/api/public/liquidity?symbol=BTC`,
+        method: "GET",
+        query: { symbol: "조회할 심볼. 예: BTC" },
+        returns: "호가/유동성 요약 (스프레드, 매물벽, 불균형 등)"
+      },
+      {
+        path: `${baseUrl}/api/public/structure?symbol=BTC`,
+        method: "GET",
+        query: { symbol: "조회할 심볼. 예: BTC" },
+        returns: "다중 타임프레임 요약 및 차트 주석(간결화)"
       }
     ]
   };
@@ -364,6 +391,148 @@ async function handlePublicBriefingRequest(request, response) {
 
 app.get("/api/public/briefing", handlePublicBriefingRequest);
 app.get("/api/public/briefing/:symbol", handlePublicBriefingRequest);
+
+async function buildConciseMarketSnapshot(snapshot, options = {}) {
+  function parseTime(val) {
+    if (val === undefined || val === null || val === "") return null;
+    const n = Number(val);
+    if (!Number.isNaN(n) && String(val).match(/^\d+$/)) return Number(val);
+    const parsed = Date.parse(String(val));
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  const concise = {
+    symbol: snapshot.symbol,
+    label: snapshot.label,
+    fetchedAt: snapshot.fetchedAt,
+    serverTime: snapshot.serverTime || Math.floor(Date.now() / 1000),
+    timeframe: snapshot.timeframe,
+    primary: snapshot.primary,
+    local: snapshot.local,
+    comparison: snapshot.comparison,
+    orderbook: {
+      bestBid: snapshot.orderbook.bestBid,
+      bestAsk: snapshot.orderbook.bestAsk,
+      spreadUsdt: snapshot.orderbook.spreadUsdt,
+      totalBidValueUsdt: snapshot.orderbook.totalBidValueUsdt,
+      totalAskValueUsdt: snapshot.orderbook.totalAskValueUsdt,
+      imbalancePct: snapshot.orderbook.imbalancePct,
+      wallPressure: snapshot.orderbook.wallPressure,
+      bidWall: snapshot.orderbook.bidWall,
+      askWall: snapshot.orderbook.askWall
+    },
+    annotations: snapshot.annotations || []
+  };
+
+  const conciseCandles = Number(options.candles || 24);
+  const conciseTrades = Number(options.trades || 20);
+  const orderbookDepth = Number(options.orderbookDepth || 20);
+
+  const startTs = parseTime(options.start);
+  const endTs = parseTime(options.end);
+
+  let candles = (snapshot.candles || []).slice();
+  let trades = (snapshot.recentTrades || []).slice();
+
+  if (startTs || endTs) {
+    if (startTs) candles = candles.filter((c) => c.timestamp >= startTs);
+    if (endTs) candles = candles.filter((c) => c.timestamp <= endTs);
+    if (startTs) trades = trades.filter((t) => new Date(t.timestamp).getTime() >= startTs);
+    if (endTs) trades = trades.filter((t) => new Date(t.timestamp).getTime() <= endTs);
+  }
+
+  // limit arrays to avoid overly long payloads
+  concise.candles = candles.slice(-conciseCandles);
+  concise.recentTrades = trades.slice(-conciseTrades);
+
+  // limit orderbook depth
+  concise.orderbook.bids = (snapshot.orderbook?.bids || []).slice(0, orderbookDepth);
+  concise.orderbook.asks = (snapshot.orderbook?.asks || []).slice(0, orderbookDepth);
+
+  return concise;
+}
+
+app.get("/api/public/market", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const conciseFlag = String(request.query.concise || "true").toLowerCase() !== "false";
+    const snapshot = await getMarketSnapshot(symbol, { timeframe });
+
+    if (!conciseFlag) {
+      response.json(snapshot);
+      return;
+    }
+
+    const candles = Number(request.query.candles || 24);
+    const trades = Number(request.query.trades || 20);
+    const orderbookDepth = Number(request.query.orderbookDepth || 20);
+    const start = request.query.start;
+    const end = request.query.end;
+    const payload = await buildConciseMarketSnapshot(snapshot, { candles, trades, orderbookDepth, start, end });
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/liquidity", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const snapshot = await getMarketSnapshot(symbol, { timeframe });
+    const orderbookDepth = Number(request.query.orderbookDepth || 20);
+    const ob = snapshot.orderbook || {};
+
+    response.json({
+      symbol: snapshot.symbol,
+      timeframe: snapshot.timeframe,
+      bestBid: ob.bestBid,
+      bestAsk: ob.bestAsk,
+      spreadUsdt: ob.spreadUsdt,
+      totalBidUnits: ob.totalBidUnits,
+      totalAskUnits: ob.totalAskUnits,
+      totalBidValueUsdt: ob.totalBidValueUsdt,
+      totalAskValueUsdt: ob.totalAskValueUsdt,
+      imbalancePct: ob.imbalancePct,
+      wallPressure: ob.wallPressure,
+      bidWall: ob.bidWall,
+      askWall: ob.askWall,
+      bids: (ob.bids || []).slice(0, orderbookDepth),
+      asks: (ob.asks || []).slice(0, orderbookDepth)
+    });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/structure", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const packet = await getMultiTimeframeMarketPacket(symbol, { timeframe });
+
+    const recentLimit = Number(request.query.recent || 12);
+    const multi = (packet.multiTimeframes || []).map((m) => ({
+      timeframe: m.timeframe,
+      label: m.label,
+      candleCount: m.candleCount,
+      changePct: m.changePct,
+      trend: m.trend,
+      recentCandles: (m.recentCandles || []).slice(-recentLimit)
+    }));
+
+    response.json({
+      symbol: packet.symbol,
+      label: packet.label,
+      fetchedAt: packet.fetchedAt,
+      annotations: packet.annotations || [],
+      multiTimeframes: multi
+    });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
 
 app.get("/api/session", async (request, response) => {
   const database = await getDatabaseStatus();

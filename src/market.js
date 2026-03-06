@@ -1,5 +1,6 @@
 const BITHUMB_BASE_URL = "https://api.bithumb.com/public";
 const BINANCE_BASE_URL = "https://data-api.binance.vision/api/v3";
+const BINANCE_FUTURES_BASE = "https://fapi.binance.com";
 
 const DEFAULT_COINS = [
   { symbol: "BTC", pair: "BTCUSDT", label: "BTC", localSupported: true },
@@ -75,6 +76,17 @@ async function fetchBinanceKlines(pair, timeframe) {
   return fetchJson(
     `${BINANCE_BASE_URL}/klines?symbol=${pair}&interval=${timeframe.binanceInterval}&limit=${timeframe.candleLimit}`
   );
+}
+
+async function fetchBinanceFuturesOpenInterest(pair) {
+  // pair should be like BTCUSDT
+  return fetchJson(`${BINANCE_FUTURES_BASE}/fapi/v1/openInterest?symbol=${pair}`);
+}
+
+async function fetchBinanceFundingRate(pair) {
+  // fetch most recent funding rate entry
+  const items = await fetchJson(`${BINANCE_FUTURES_BASE}/fapi/v1/fundingRate?symbol=${pair}&limit=1`);
+  return Array.isArray(items) && items[0] ? items[0] : null;
 }
 
 async function fetchBithumbTicker(symbol) {
@@ -462,15 +474,38 @@ async function getMarketSnapshot(symbol, options = {}) {
     return cachedSnapshot.payload;
   }
 
-  const [binanceTicker, binanceBookTicker, binanceOrderbookRaw, binanceTradesRaw, klines, usdtKrw] =
-    await Promise.all([
-      fetchBinanceTicker(coinMeta.pair),
-      fetchBinanceBookTicker(coinMeta.pair),
-      fetchBinanceOrderbook(coinMeta.pair),
-      fetchBinanceTrades(coinMeta.pair),
-      fetchBinanceKlines(coinMeta.pair, timeframe),
-      fetchUsdtKrwRate()
-    ]);
+  const [
+    binanceTicker,
+    binanceBookTicker,
+    binanceOrderbookRaw,
+    binanceTradesRaw,
+    klines,
+    usdtKrw,
+    futuresOpenInterestRaw,
+    fundingRateRaw
+  ] = await Promise.all([
+    fetchBinanceTicker(coinMeta.pair),
+    fetchBinanceBookTicker(coinMeta.pair),
+    fetchBinanceOrderbook(coinMeta.pair),
+    fetchBinanceTrades(coinMeta.pair),
+    fetchBinanceKlines(coinMeta.pair, timeframe),
+    fetchUsdtKrwRate(),
+    // futures data may fail for some symbols; handle in try/catch below
+    (async () => {
+      try {
+        return await fetchBinanceFuturesOpenInterest(coinMeta.pair);
+      } catch (_err) {
+        return null;
+      }
+    })(),
+    (async () => {
+      try {
+        return await fetchBinanceFundingRate(coinMeta.pair);
+      } catch (_err) {
+        return null;
+      }
+    })()
+  ]);
 
   let bithumbTicker = null;
   let bithumbOrderbook = null;
@@ -497,6 +532,7 @@ async function getMarketSnapshot(symbol, options = {}) {
     pair: coinMeta.pair,
     label: coinMeta.label,
     fetchedAt: new Date().toISOString(),
+    serverTime: Math.floor(Date.now() / 1000),
     timeframe: timeframe.id,
     availableTimeframes: getSupportedTimeframes(),
     usdtKrw,
@@ -513,6 +549,11 @@ async function getMarketSnapshot(symbol, options = {}) {
       tradeCount24h: toNumber(binanceTicker.count),
       bidUsdt: toNumber(binanceBookTicker.bidPrice),
       askUsdt: toNumber(binanceBookTicker.askPrice)
+    },
+    // attach futures market indicators when available
+    futures: {
+      openInterest: futuresOpenInterestRaw ? toNumber(futuresOpenInterestRaw.openInterest) : null,
+      fundingRate: fundingRateRaw ? toNumber(fundingRateRaw.fundingRate) : null
     },
     local,
     comparison: {
