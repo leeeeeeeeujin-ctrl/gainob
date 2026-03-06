@@ -20,6 +20,36 @@ const modules = require("./modules");
 const moduleContext = createModuleContext(modules);
 const app = express();
 
+// simple in-memory cache for intelligence (macro) to reduce latency on /api/public/market
+const macroCache = new Map();
+const MACRO_CACHE_TTL_MS = 15_000; // keep macro stats for 15s
+
+async function fetchAndCacheIntelligence(symbol, label) {
+  const key = String(symbol).toUpperCase();
+  try {
+    const payload = await getIntelligenceSnapshot(symbol, label);
+    macroCache.set(key, {
+      value: payload,
+      expiresAt: Date.now() + MACRO_CACHE_TTL_MS
+    });
+    return payload;
+  } catch (err) {
+    // on error, clear or keep existing stale value
+    const existing = macroCache.get(key);
+    if (existing && existing.expiresAt > Date.now() - MACRO_CACHE_TTL_MS * 2) {
+      return existing.value;
+    }
+    throw err;
+  }
+}
+
+function getCachedIntelligence(symbol) {
+  const key = String(symbol).toUpperCase();
+  const entry = macroCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) return entry.value;
+  return null;
+}
+
 async function getCoinLabel(symbol) {
   const coins = await getSupportedCoins();
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
@@ -464,11 +494,23 @@ app.get("/api/public/market", async (request, response) => {
       return;
     }
     // attach macro stats (btc/eth dominance, total marketcap) for convenience
-    let intelligence = null;
-    try {
-      intelligence = await getIntelligenceSnapshot(symbol, await getCoinLabel(symbol));
-    } catch (_err) {
-      intelligence = null;
+    const label = await getCoinLabel(symbol);
+    let intelligence = getCachedIntelligence(symbol);
+    if (!intelligence) {
+      // if no cached value, fetch synchronously (first request for this symbol)
+      try {
+        intelligence = await fetchAndCacheIntelligence(symbol, label);
+      } catch (_err) {
+        intelligence = null;
+      }
+    } else {
+      // if cached but expired soon, refresh in background
+      const key = String(symbol).toUpperCase();
+      const entry = macroCache.get(key);
+      if (entry && entry.expiresAt <= Date.now()) {
+        // start background refresh without awaiting
+        fetchAndCacheIntelligence(symbol, label).catch(() => {});
+      }
     }
 
     const macroFields = intelligence
