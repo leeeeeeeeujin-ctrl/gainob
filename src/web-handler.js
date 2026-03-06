@@ -1161,6 +1161,54 @@ app.get("/api/market/:symbol", handleMarketRequest);
 app.get("/api/intelligence", handleIntelligenceRequest);
 app.get("/api/intelligence/:symbol", handleIntelligenceRequest);
 
+// Crawler-friendly scan endpoint: summary for many symbols with pagination
+app.get("/api/scan", async (request, response) => {
+  try {
+    const symbolsParam = String(request.query.symbols || request.query.s || "").trim();
+    const limit = Math.min(Number(request.query.limit || 50), 200);
+    const offset = Math.max(Number(request.query.offset || 0), 0);
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+
+    let symbols = [];
+
+    if (symbolsParam) {
+      symbols = symbolsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    } else {
+      const coins = await getSupportedCoins();
+      symbols = coins.map((c) => c.symbol).slice(offset, offset + limit);
+    }
+
+    const results = [];
+    for (const sym of symbols) {
+      try {
+        const snap = await getMarketSnapshot(sym, { timeframe });
+        results.push({
+          symbol: snap.symbol,
+          label: snap.label,
+          pair: snap.pair,
+          fetchedAt: snap.fetchedAt,
+          serverTime: snap.serverTime,
+          timeframe: snap.timeframe,
+          priceUsdt: snap.primary?.priceUsdt || null,
+          change24hPct: snap.primary?.change24hPct || null,
+          spreadUsdt: snap.orderbook?.spreadUsdt || null,
+          totalBidValueUsdt: snap.orderbook?.totalBidValueUsdt || null,
+          totalAskValueUsdt: snap.orderbook?.totalAskValueUsdt || null,
+          openInterest: snap.openInterest || null,
+          fundingRate: snap.fundingRate || null,
+          localSupported: snap.comparison?.localSupported || false
+        });
+      } catch (_err) {
+        results.push({ symbol: sym, error: "failed" });
+      }
+    }
+
+    response.json({ ok: true, count: results.length, results });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/context", async (request, response) => {
   try {
     const symbol = String(request.body.symbol || "").toUpperCase();
