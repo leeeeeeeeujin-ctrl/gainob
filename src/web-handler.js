@@ -1,7 +1,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { analyzeContext } = require("./ai");
+const { analyzeContext, requestAiText } = require("./ai");
 const {
   buildExpiredSessionCookie,
   buildSessionCookie,
@@ -76,15 +76,230 @@ async function getCoinLabel(symbol) {
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
 }
 
+const SYMBOL_ALIASES = {
+  비트코인: 'BTC',
+  비트: 'BTC',
+  이더리움: 'ETH',
+  이더: 'ETH',
+  리플: 'XRP',
+  솔라나: 'SOL',
+  솔: 'SOL',
+  도지: 'DOGE',
+  에이다: 'ADA'
+};
+
 async function inferSymbolFromText(text, fallbackSymbol = "") {
-  const raw = String(text || "").toUpperCase();
+  const symbols = await inferSymbolsFromText(text, fallbackSymbol ? [fallbackSymbol] : []);
+  return symbols[0] || fallbackSymbol;
+}
+
+async function inferSymbolsFromText(text, fallbackSymbols = []) {
+  const raw = String(text || '');
   if (!raw) {
-    return fallbackSymbol;
+    return fallbackSymbols;
   }
 
+  const rawUpper = raw.toUpperCase();
   const coins = await getSupportedCoins();
-  const matched = coins.find((coin) => raw.includes(String(coin.symbol || "").toUpperCase()));
-  return matched?.symbol || fallbackSymbol;
+  const found = new Set();
+
+  for (const coin of coins) {
+    const symbol = String(coin.symbol || '').toUpperCase();
+    if (symbol && rawUpper.includes(symbol)) {
+      found.add(symbol);
+    }
+  }
+
+  for (const [alias, symbol] of Object.entries(SYMBOL_ALIASES)) {
+    if (raw.includes(alias)) {
+      found.add(symbol);
+    }
+  }
+
+  for (const symbol of fallbackSymbols) {
+    if (symbol) {
+      found.add(String(symbol).toUpperCase());
+    }
+  }
+
+  return Array.from(found);
+}
+
+function isMacroPrompt(text) {
+  const raw = String(text || '').toLowerCase();
+  return [
+    '도미넌스',
+    'dominance',
+    'btc dominance',
+    'eth dominance',
+    '시총',
+    'market cap',
+    '시장 전체',
+    '알트장',
+    '비트 도미',
+    '거시'
+  ].some((keyword) => raw.includes(keyword));
+}
+
+function normalizeConversationTimeframe(value, fallbackTimeframe = '1h') {
+  const raw = String(value || '').toLowerCase();
+  return ['15m', '1h', '4h', '1d', '1w'].includes(raw) ? raw : fallbackTimeframe;
+}
+
+function extractJsonObject(text) {
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  const fencedMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fencedMatch ? fencedMatch[1].trim() : raw;
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(candidate.slice(firstBrace, lastBrace + 1));
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function normalizeRequestedSymbols(symbols, fallbackSymbols = []) {
+  const coins = await getSupportedCoins();
+  const supported = new Set(coins.map((coin) => String(coin.symbol || '').toUpperCase()));
+  const merged = [...(Array.isArray(symbols) ? symbols : []), ...fallbackSymbols];
+  const normalized = [];
+
+  for (const symbol of merged) {
+    const value = String(symbol || '').toUpperCase().trim();
+    if (!value || !supported.has(value) || normalized.includes(value)) {
+      continue;
+    }
+    normalized.push(value);
+    if (normalized.length >= 4) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
+function buildConversationPlannerPrompt({
+  content,
+  chatHistory,
+  conversationSymbol,
+  timeframe,
+  inferredSymbols,
+  wantsMacro
+}) {
+  const recentHistory = (Array.isArray(chatHistory) ? chatHistory : [])
+    .slice(-6)
+    .map((item) => `- ${item.sender === 'ai' ? 'AI' : 'USER'}: ${item.content || ''}`)
+    .join('\n');
+  const supportedSymbols = ['BTC', 'ETH', 'XRP', 'SOL', 'DOGE', 'ADA'].join(', ');
+
+  return `
+너는 암호화폐 채팅용 데이터 요청 플래너다.
+목표는 최종 답변을 쓰는 것이 아니라, 답변 전에 서버가 어떤 데이터를 먼저 가져와야 하는지 결정하는 것이다.
+반드시 JSON 객체만 반환하고 설명, 코드블록, 마크다운은 쓰지 마라.
+
+반환 형식:
+{"needMacro":true,"symbols":["BTC","ETH"],"timeframe":"4h","focus":"비교 포인트 한 줄"}
+
+규칙:
+- needMacro는 도미넌스, 시총, 시장 전체 흐름, 알트장, 거시 질문이면 true.
+- symbols에는 실제로 조회가 필요한 종목만 넣어라. 최대 4개.
+- 사용자가 여러 종목을 비교하면 모두 포함해라.
+- 종목이 명시되지 않았지만 대화 문맥상 현재 종목이 유력하면 conversationSymbol을 써도 된다.
+- timeframe은 15m, 1h, 4h, 1d, 1w 중 하나만 써라.
+- 지원 종목 예시: ${supportedSymbols}
+- 종목이 전혀 필요 없는 완전한 매크로 질문이면 symbols는 빈 배열로 둘 수 있다.
+
+[현재 대화 기본값]
+- conversationSymbol: ${conversationSymbol || '없음'}
+- timeframe: ${timeframe}
+- inferredSymbols: ${(inferredSymbols || []).join(', ') || '없음'}
+- heuristicMacro: ${wantsMacro ? 'true' : 'false'}
+
+[최근 대화]
+${recentHistory || '- 없음'}
+
+[이번 사용자 메시지]
+${content}
+`.trim();
+}
+
+async function planConversationDataRequests({
+  content,
+  chatHistory,
+  conversationSymbol,
+  timeframe,
+  inferredSymbols,
+  wantsMacro,
+  aiOptions
+}) {
+  const fallbackSymbols = await normalizeRequestedSymbols(inferredSymbols, conversationSymbol ? [conversationSymbol] : []);
+  const fallbackPlan = {
+    needMacro: wantsMacro,
+    symbols: fallbackSymbols,
+    timeframe: normalizeConversationTimeframe(timeframe, '1h'),
+    focus: ''
+  };
+
+  const plannerPrompt = buildConversationPlannerPrompt({
+    content,
+    chatHistory,
+    conversationSymbol,
+    timeframe,
+    inferredSymbols: fallbackSymbols,
+    wantsMacro
+  });
+  const plannerResult = await requestAiText(plannerPrompt, aiOptions);
+
+  if (!plannerResult.ok || !plannerResult.text) {
+    return fallbackPlan;
+  }
+
+  const parsed = extractJsonObject(plannerResult.text);
+  if (!parsed || typeof parsed !== 'object') {
+    return fallbackPlan;
+  }
+
+  const requestedSymbols = await normalizeRequestedSymbols(parsed.symbols, fallbackSymbols);
+
+  return {
+    needMacro: Boolean(parsed.needMacro) || wantsMacro,
+    symbols: requestedSymbols,
+    timeframe: normalizeConversationTimeframe(parsed.timeframe, fallbackPlan.timeframe),
+    focus: String(parsed.focus || '').trim()
+  };
+}
+
+function buildMacroPromptSection(macroSnapshot) {
+  return `
+[시장 전체 매크로]
+- BTC 도미넌스(%): ${macroSnapshot.macroStats.btcDominancePct}
+- ETH 도미넌스(%): ${macroSnapshot.macroStats.ethDominancePct}
+- 전체 시총(USD): ${macroSnapshot.macroStats.totalMarketCapUsd}
+- 전체 거래대금(USD): ${macroSnapshot.macroStats.totalVolumeUsd}
+- 시총 변화 24h(%): ${macroSnapshot.macroStats.marketCapChange24hUsd}
+`.trim();
+}
+
+function buildComparisonPromptSection(comparisonSnapshots) {
+  return `
+[다중 종목 비교]
+${comparisonSnapshots
+  .map(
+    (snapshot) =>
+      `- ${snapshot.symbol}: 가격 ${snapshot.primary.priceUsdt} USDT | 24h ${snapshot.primary.change24hPct}% | 거래대금 ${snapshot.primary.quoteVolume24hUsdt} USDT | 스프레드 ${snapshot.orderbook.spreadUsdt}`
+  )
+  .join('\n')}
+`.trim();
 }
 
 function inferTimeframeFromText(text, fallbackTimeframe = "1h") {
@@ -250,6 +465,74 @@ function parseJsonColumn(value, fallback) {
   }
 
   return value;
+}
+
+function normalizeFocusRegionPayload(input) {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const startTime = Number(input.startTime);
+  const endTime = Number(input.endTime);
+  const minPrice = Number(input.minPrice);
+  const maxPrice = Number(input.maxPrice);
+
+  if (![startTime, endTime, minPrice, maxPrice].every(Number.isFinite)) {
+    return null;
+  }
+
+  return {
+    id: String(input.id || "focus-region"),
+    label: String(input.label || "질문 구간"),
+    reason: String(input.reason || "사용자가 지정한 관심 구간"),
+    startTime: Math.min(startTime, endTime),
+    endTime: Math.max(startTime, endTime),
+    minPrice: Math.min(minPrice, maxPrice),
+    maxPrice: Math.max(minPrice, maxPrice)
+  };
+}
+
+function buildFocusRegionPromptSection(snapshot, focusRegion) {
+  if (!snapshot || !focusRegion) {
+    return "";
+  }
+
+  const candles = Array.isArray(snapshot.candles) ? snapshot.candles : [];
+  const regionCandles = candles.filter(
+    (candle) => Number(candle.timestamp) >= focusRegion.startTime && Number(candle.timestamp) <= focusRegion.endTime
+  );
+
+  if (!regionCandles.length) {
+    return `
+[질문 구간 요약]
+- 레이블: ${focusRegion.label}
+- 시간 범위: ${focusRegion.startTime}~${focusRegion.endTime}
+- 가격 범위: ${focusRegion.minPrice}~${focusRegion.maxPrice}
+- 상태: 현재 보이는 캔들 범위와 겹치는 데이터가 충분하지 않음
+`.trim();
+  }
+
+  const firstCandle = regionCandles[0];
+  const lastCandle = regionCandles[regionCandles.length - 1];
+  const highest = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
+  const lowest = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
+  const totalVolume = regionCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0);
+  const changePct = ((Number(lastCandle.close || 0) - Number(firstCandle.open || 0)) / Math.max(Number(firstCandle.open || 1), 1)) * 100;
+  const currentPrice = Number(snapshot.primary?.priceUsdt || 0);
+  const location = currentPrice > focusRegion.maxPrice ? "구간 상단 위" : currentPrice < focusRegion.minPrice ? "구간 하단 아래" : "구간 내부";
+
+  return `
+[질문 구간 요약]
+- 레이블: ${focusRegion.label}
+- 요청 이유: ${focusRegion.reason}
+- 포함 캔들 수: ${regionCandles.length}
+- 구간 시작/종료 시가-종가: ${firstCandle.open} -> ${lastCandle.close}
+- 구간 고점/저점: ${highest} / ${lowest}
+- 구간 변화율(%): ${changePct}
+- 구간 거래량 합: ${totalVolume}
+- 현재가의 구간 위치: ${location}
+- 사용자가 지정한 가격 범위: ${focusRegion.minPrice}~${focusRegion.maxPrice}
+`.trim();
 }
 
 async function getAuthenticatedUser(request) {
@@ -1166,6 +1449,7 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
     const id = String(request.params.id || '');
     const content = String(request.body.content || '').trim();
     const askAi = Boolean(request.body.askAi);
+    const focusRegion = normalizeFocusRegionPayload(request.body.focusRegion);
 
     const conv = await query(`select id, title, symbol, timeframe from conversations where id = $1 and user_id = $2 limit 1`, [id, user.id]);
     if (!conv.rows[0]) return response.status(404).json({ error: 'not_found' });
@@ -1173,7 +1457,7 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
     // store user message
     const inserted = await query(
       `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
-      [id, 'user', content, null]
+      [id, 'user', content, JSON.stringify({ focusRegion })]
     );
 
     const currentTitle = String(conv.rows[0].title || '').trim();
@@ -1187,11 +1471,22 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
 
     if (askAi) {
       try {
-        // build context and call analyze flow similar to /api/analyze
-        const symbol = await inferSymbolFromText(content, conv.rows[0].symbol || request.body.symbol || '');
-        const timeframe = inferTimeframeFromText(content, conv.rows[0].timeframe || request.body.timeframe || '1h');
-        const normalizedSymbol = String(symbol || '').toUpperCase();
+        // Let the AI first decide what internal data should be fetched for this turn.
+        const inferredSymbols = await inferSymbolsFromText(content, [conv.rows[0].symbol || request.body.symbol || ''].filter(Boolean));
+        const heuristicTimeframe = inferTimeframeFromText(content, conv.rows[0].timeframe || request.body.timeframe || '1h');
+        const wantsMacro = isMacroPrompt(content);
         const profile = await getUserProfile(user.id);
+        const aiOptions = {
+          provider: request.body.provider,
+          credentials: {
+            provider: profile?.ai_provider,
+            openAiKey: profile?.openai_api_key,
+            openAiModel: profile?.openai_model,
+            geminiKey: profile?.gemini_api_key,
+            geminiModel: profile?.gemini_model
+          },
+          useEnvFallback: false
+        };
         const recentMessages = await query(
           `select sender, content, created_at from conversation_messages where conversation_id = $1 order by created_at desc limit 12`,
           [id]
@@ -1205,13 +1500,31 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
             createdAt: row.created_at
           }));
 
+        const plan = await planConversationDataRequests({
+          content,
+          chatHistory,
+          conversationSymbol: conv.rows[0].symbol || request.body.symbol || '',
+          timeframe: heuristicTimeframe,
+          inferredSymbols,
+          wantsMacro,
+          aiOptions
+        });
+        const plannedSymbols = Array.isArray(plan.symbols) ? plan.symbols : [];
+        const symbol = plannedSymbols[0] || inferredSymbols[0] || '';
+        const timeframe = normalizeConversationTimeframe(plan.timeframe, heuristicTimeframe);
+        const normalizedSymbol = String(symbol || '').toUpperCase();
+
         if (!normalizedSymbol) {
-          throw new Error('대화에서 종목을 찾지 못했습니다. 종목 심볼 예: BTC, ETH, SOL 을 포함해 주세요.');
+          if (!plan.needMacro) {
+            throw new Error('대화에서 종목을 찾지 못했습니다. 종목 심볼 예: BTC, ETH, SOL 을 포함해 주세요.');
+          }
         }
 
+        const primarySymbol = normalizedSymbol || 'BTC';
+
         const context = await moduleContext.collect({
-          symbol: normalizedSymbol,
-          label: await getCoinLabel(normalizedSymbol),
+          symbol: primarySymbol,
+          label: await getCoinLabel(primarySymbol),
           timeframe: String(timeframe).toLowerCase(),
           moduleIds: request.body.modules,
           profile: request.body.profile,
@@ -1219,27 +1532,64 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
         });
         context.userMessage = content;
         context.chatHistory = chatHistory;
+        context.focusRegion = focusRegion;
 
-        const promptSections = moduleContext.buildPromptSections({ ...context, manualAnnotations: [] });
-        const result = await analyzeContext(context, promptSections, {
-          provider: request.body.provider,
-          credentials: {
-            provider: profile?.ai_provider,
-            openAiKey: profile?.openai_api_key,
-            openAiModel: profile?.openai_model,
-            geminiKey: profile?.gemini_api_key,
-            geminiModel: profile?.gemini_model
-          },
-          useEnvFallback: false
-        });
+        const extraSections = [];
+        const marketModule = context.modules.find((module) => module.id === 'market' && module.status === 'ok');
+
+        if (focusRegion && marketModule?.data) {
+          extraSections.push(buildFocusRegionPromptSection(marketModule.data, focusRegion));
+        }
+
+        if (plan.needMacro) {
+          try {
+            const macroSnapshot = await getIntelligenceSnapshot('BTC', 'BTC');
+            extraSections.push(buildMacroPromptSection(macroSnapshot));
+          } catch (_macroError) {
+            // ignore macro fetch failure
+          }
+        }
+
+        const comparisonSymbols = plannedSymbols.slice(0, 4);
+        if (comparisonSymbols.length > 1) {
+          try {
+            const comparisonSnapshots = await Promise.all(
+              comparisonSymbols.map(async (comparisonSymbol) => getMarketSnapshot(comparisonSymbol, { timeframe }))
+            );
+            extraSections.push(buildComparisonPromptSection(comparisonSnapshots));
+          } catch (_comparisonError) {
+            // ignore comparison fetch failure
+          }
+        }
+
+        if (plan.focus) {
+          extraSections.push(`[이번 턴 데이터 요청 의도]\n- ${plan.focus}`);
+        }
+
+        const promptSections = [moduleContext.buildPromptSections({ ...context, manualAnnotations: [] }), ...extraSections]
+          .filter(Boolean)
+          .join('\n\n');
+        const result = await analyzeContext(context, promptSections, aiOptions);
 
         // store AI response
         const aiInserted = await query(
           `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
-          [id, 'ai', result.analysis || result.analysisText || JSON.stringify(result), JSON.stringify({ provider: result.provider, model: result.model, annotations: result.annotations })]
+          [
+            id,
+            'ai',
+            result.analysis || result.analysisText || JSON.stringify(result),
+            JSON.stringify({ provider: result.provider, model: result.model, annotations: result.annotations, toolPlan: plan, focusRegion })
+          ]
         );
 
-        aiMessage = { id: aiInserted.rows[0].id, sender: 'ai', content: result.analysis || result.analysisText || result.analysis || '', createdAt: aiInserted.rows[0].created_at };
+        aiMessage = {
+          id: aiInserted.rows[0].id,
+          sender: 'ai',
+          content: result.analysis || result.analysisText || result.analysis || '',
+          createdAt: aiInserted.rows[0].created_at,
+          annotations: result.annotations,
+          meta: { provider: result.provider, model: result.model, annotations: result.annotations, toolPlan: plan, focusRegion }
+        };
       } catch (aiError) {
         const failureText = `AI 응답 생성에 실패했습니다: ${aiError.message}`;
         const aiInserted = await query(
@@ -1532,6 +1882,7 @@ app.post("/api/analyze", async (request, response) => {
 
     const profile = await getUserProfile(user.id);
     const manualAnnotations = Array.isArray(request.body.manualAnnotations) ? request.body.manualAnnotations : [];
+    const focusRegion = normalizeFocusRegionPayload(request.body.focusRegion);
     const context = await moduleContext.collect({
       symbol,
       label: await getCoinLabel(symbol),
@@ -1542,9 +1893,15 @@ app.post("/api/analyze", async (request, response) => {
     });
     const analysisContext = {
       ...context,
-      manualAnnotations
+      manualAnnotations,
+      focusRegion
     };
-    const promptSections = moduleContext.buildPromptSections(analysisContext);
+    const extraSections = [];
+    const marketModule = context.modules.find((module) => module.id === "market" && module.status === "ok");
+    if (focusRegion && marketModule?.data) {
+      extraSections.push(buildFocusRegionPromptSection(marketModule.data, focusRegion));
+    }
+    const promptSections = [moduleContext.buildPromptSections(analysisContext), ...extraSections].filter(Boolean).join("\n\n");
     const result = await analyzeContext(analysisContext, promptSections, {
       provider: request.body.provider,
       credentials: {
@@ -1556,7 +1913,6 @@ app.post("/api/analyze", async (request, response) => {
       },
       useEnvFallback: false
     });
-    const marketModule = context.modules.find((module) => module.id === "market" && module.status === "ok");
     const responsePayload = {
       context,
       snapshot: marketModule?.data || null,
