@@ -24,6 +24,10 @@ function buildPrompt(context, promptSections) {
         .map((item) => `- ${item.sender === "ai" ? "AI" : "사용자"}: ${item.content || ""}`)
         .join("\n")}`
     : "";
+  const focusRegion = context.focusRegion;
+  const focusRegionSection = focusRegion
+    ? `\n\n[질문 구간]\n- 레이블: ${focusRegion.label || "질문 구간"}\n- 시간 범위: ${focusRegion.startTime}~${focusRegion.endTime}\n- 가격 범위: ${focusRegion.minPrice}~${focusRegion.maxPrice}\n- 요청 이유: ${focusRegion.reason || "사용자가 지정한 관심 구간"}`
+    : "";
   const userMessageSection = context.userMessage ? `\n\n[이번 요청]\n${context.userMessage}` : "";
 
   return `
@@ -55,7 +59,7 @@ JSON 형식:
 ${moduleSummary}
 
 [수집 컨텍스트]
-${promptSections}${drawingSection}${chatSection}${userMessageSection}
+${promptSections}${drawingSection}${focusRegionSection}${chatSection}${userMessageSection}
 `.trim();
 }
 
@@ -244,8 +248,7 @@ async function requestGemini(prompt, apiKey, model) {
   return extractGeminiText(payload);
 }
 
-async function analyzeContext(context, promptSections, options = {}) {
-  const prompt = buildPrompt(context, promptSections);
+async function requestAiText(prompt, options = {}) {
   const config = resolveProviderConfig(options.provider, options.credentials, {
     useEnvFallback: options.useEnvFallback
   });
@@ -255,26 +258,52 @@ async function analyzeContext(context, promptSections, options = {}) {
       ok: false,
       provider: config.provider,
       model: null,
-      analysis: `${config.missing}가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다.`,
-      annotations: []
+      text: ""
     };
   }
 
-  const outputText =
+  const text =
     config.provider === "gemini"
       ? await requestGemini(prompt, config.apiKey, config.model)
       : await requestOpenAi(prompt, config.apiKey, config.model);
-  const parsed = extractChartAnnotations(outputText);
 
   return {
     ok: true,
     provider: config.provider,
     model: config.model,
+    text
+  };
+}
+
+async function analyzeContext(context, promptSections, options = {}) {
+  const prompt = buildPrompt(context, promptSections);
+  const result = await requestAiText(prompt, options);
+
+  if (!result.ok) {
+    const config = resolveProviderConfig(options.provider, options.credentials, {
+      useEnvFallback: options.useEnvFallback
+    });
+    return {
+      ok: false,
+      provider: config.provider,
+      model: null,
+      analysis: `${config.missing}가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다.`,
+      annotations: []
+    };
+  }
+
+  const parsed = extractChartAnnotations(result.text);
+
+  return {
+    ok: true,
+    provider: result.provider,
+    model: result.model,
     analysis: parsed.analysis,
     annotations: parsed.annotations
   };
 }
 
 module.exports = {
-  analyzeContext
+  analyzeContext,
+  requestAiText
 };
