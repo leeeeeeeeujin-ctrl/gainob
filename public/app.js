@@ -4,10 +4,12 @@ const state = {
   modules: [],
   activeViewId: "overviewView",
   account: null,
+  coins: [],
   timeframes: [],
   resizeObserver: null,
   aiAnnotations: [],
-  chartGeometry: null
+  chartGeometry: null,
+  chartViewport: null
 };
 
 const elements = {
@@ -22,6 +24,10 @@ const elements = {
   noteInput: document.querySelector("#noteInput"),
   focusQuestionInput: document.querySelector("#focusQuestionInput"),
   overlayToggle: document.querySelector("#overlayToggle"),
+  symbolShortcutList: document.querySelector("#symbolShortcutList"),
+  timeframeShortcutList: document.querySelector("#timeframeShortcutList"),
+  resetChartViewButton: document.querySelector("#resetChartViewButton"),
+  chartInteractionHint: document.querySelector("#chartInteractionHint"),
   moduleList: document.querySelector("#moduleList"),
   moduleStatus: document.querySelector("#moduleStatus"),
   bithumbPrice: document.querySelector("#bithumbPrice"),
@@ -126,6 +132,57 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function getDefaultVisibleCount(timeframe, totalCandles) {
+  const defaults = {
+    "5m": 48,
+    "30m": 42,
+    "1h": 36,
+    "6h": 24
+  };
+
+  return clamp(defaults[timeframe] || 30, 12, Math.max(totalCandles, 12));
+}
+
+function resetChartViewport(snapshot) {
+  if (!snapshot?.candles?.length) {
+    state.chartViewport = null;
+    return;
+  }
+
+  const visibleCount = getDefaultVisibleCount(snapshot.timeframe, snapshot.candles.length);
+  state.chartViewport = {
+    startIndex: Math.max(snapshot.candles.length - visibleCount, 0),
+    visibleCount,
+    isDragging: false,
+    dragOriginX: 0,
+    dragStartIndex: 0
+  };
+}
+
+function getVisibleCandles(snapshot) {
+  if (!snapshot?.candles?.length) {
+    return [];
+  }
+
+  if (!state.chartViewport) {
+    resetChartViewport(snapshot);
+  }
+
+  const maxVisibleCount = snapshot.candles.length;
+  const visibleCount = clamp(state.chartViewport.visibleCount, 12, maxVisibleCount);
+  const maxStartIndex = Math.max(maxVisibleCount - visibleCount, 0);
+  const startIndex = clamp(state.chartViewport.startIndex, 0, maxStartIndex);
+
+  state.chartViewport.startIndex = startIndex;
+  state.chartViewport.visibleCount = visibleCount;
+
+  return snapshot.candles.slice(startIndex, startIndex + visibleCount);
+}
+
+function setChartHint(message) {
+  elements.chartInteractionHint.textContent = message;
+}
+
 function loadPersonalSettings() {
   try {
     const raw = localStorage.getItem("coin-ai-briefing:personal-settings");
@@ -163,6 +220,7 @@ function savePersonalSettings() {
       note: elements.noteInput.value,
       focusQuestion: elements.focusQuestionInput.value,
       activeViewId: state.activeViewId,
+      selectedCoin: elements.coinSelect.value || "BTC",
       selectedTimeframe: elements.timeframeSelect.value || "1h",
       overlayEnabled: elements.overlayToggle.checked
     })
@@ -254,6 +312,36 @@ function renderIntelligence(intelligence) {
 
   elements.macroStatsOutput.innerHTML = renderStatRows(macroRows);
   elements.newsStatsOutput.innerHTML = renderStatRows(newsRows);
+}
+
+function renderShortcutButtons() {
+  elements.symbolShortcutList.innerHTML = state.coins
+    .map(
+      (coin) => `
+        <button
+          class="shortcut-button ${coin.symbol === elements.coinSelect.value ? "is-active" : ""}"
+          data-shortcut-symbol="${coin.symbol}"
+          type="button"
+        >
+          ${escapeHtml(coin.symbol)}
+        </button>
+      `
+    )
+    .join("");
+
+  elements.timeframeShortcutList.innerHTML = state.timeframes
+    .map(
+      (timeframe) => `
+        <button
+          class="shortcut-button ${timeframe.id === elements.timeframeSelect.value ? "is-active" : ""}"
+          data-shortcut-timeframe="${timeframe.id}"
+          type="button"
+        >
+          ${escapeHtml(timeframe.label)}
+        </button>
+      `
+    )
+    .join("");
 }
 
 function getActiveAnnotations() {
@@ -350,6 +438,92 @@ function ensureChart() {
     return;
   }
 
+  elements.chartHost.addEventListener("pointerdown", (event) => {
+    if (!state.snapshot || !state.chartViewport) {
+      return;
+    }
+
+    state.chartViewport.isDragging = true;
+    state.chartViewport.dragOriginX = event.clientX;
+    state.chartViewport.dragStartIndex = state.chartViewport.startIndex;
+    elements.chartHost.classList.add("is-dragging");
+    elements.chartHost.setPointerCapture?.(event.pointerId);
+  });
+
+  elements.chartHost.addEventListener("pointermove", (event) => {
+    if (!state.snapshot || !state.chartViewport?.isDragging || !state.chartGeometry?.candleGap) {
+      return;
+    }
+
+    const deltaCandles = Math.round((event.clientX - state.chartViewport.dragOriginX) / state.chartGeometry.candleGap);
+    const maxStartIndex = Math.max(state.snapshot.candles.length - state.chartViewport.visibleCount, 0);
+    state.chartViewport.startIndex = clamp(state.chartViewport.dragStartIndex - deltaCandles, 0, maxStartIndex);
+    setChartHint(`이동 중 · 시작 ${state.chartViewport.startIndex + 1} / ${state.snapshot.candles.length}`);
+    renderChart(state.snapshot);
+    renderChartOverlay();
+  });
+
+  const releaseDrag = () => {
+    if (!state.chartViewport) {
+      return;
+    }
+
+    state.chartViewport.isDragging = false;
+    elements.chartHost.classList.remove("is-dragging");
+    setChartHint("드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
+  };
+
+  elements.chartHost.addEventListener("pointerup", releaseDrag);
+  elements.chartHost.addEventListener("pointerleave", releaseDrag);
+  elements.chartHost.addEventListener("pointercancel", releaseDrag);
+
+  elements.chartHost.addEventListener(
+    "wheel",
+    (event) => {
+      if (!state.snapshot || !state.chartViewport || !state.chartGeometry) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const direction = event.deltaY > 0 ? 1 : -1;
+      const currentCount = state.chartViewport.visibleCount;
+      const nextCount = clamp(currentCount + direction * 4, 12, state.snapshot.candles.length);
+
+      if (nextCount === currentCount) {
+        return;
+      }
+
+      const hostRect = elements.chartHost.getBoundingClientRect();
+      const relativeX = clamp(event.clientX - hostRect.left - state.chartGeometry.left, 0, state.chartGeometry.plotWidth);
+      const focusRatio = relativeX / Math.max(state.chartGeometry.plotWidth, 1);
+      const focusIndex = state.chartViewport.startIndex + Math.round(focusRatio * (currentCount - 1));
+      const nextStartIndex = clamp(
+        Math.round(focusIndex - focusRatio * (nextCount - 1)),
+        0,
+        Math.max(state.snapshot.candles.length - nextCount, 0)
+      );
+
+      state.chartViewport.visibleCount = nextCount;
+      state.chartViewport.startIndex = nextStartIndex;
+      setChartHint(`줌 ${nextCount}봉 표시 중`);
+      renderChart(state.snapshot);
+      renderChartOverlay();
+    },
+    { passive: false }
+  );
+
+  elements.chartHost.addEventListener("dblclick", () => {
+    if (!state.snapshot) {
+      return;
+    }
+
+    resetChartViewport(state.snapshot);
+    setChartHint("차트 뷰를 기본값으로 초기화했습니다.");
+    renderChart(state.snapshot);
+    renderChartOverlay();
+  });
+
   if (typeof ResizeObserver === "function") {
     state.resizeObserver = new ResizeObserver(() => {
       if (!state.snapshot || state.activeViewId !== "marketView") {
@@ -411,7 +585,7 @@ function renderChartOverlay() {
 
         return `
           <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="2.25" />
-          <text x="${x2 + 6}" y="${Math.max(y2 - 6, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "line")}</text>
+          <text x="${clamp(x2 + 6, 12, width - 120)}" y="${Math.max(y2 - 6, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "line")}</text>
         `;
       }
 
@@ -446,7 +620,7 @@ function renderChartOverlay() {
 
         return `
           <circle cx="${x}" cy="${y}" r="5" fill="${escapeHtml(annotation.color || "#0ea5a0")}" />
-          <text x="${x + 8}" y="${Math.max(y - 8, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
+          <text x="${clamp(x + 8, 12, width - 120)}" y="${Math.max(y - 8, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
         `;
       }
 
@@ -481,17 +655,19 @@ function renderChart(snapshot) {
     return;
   }
 
+  const visibleCandles = getVisibleCandles(snapshot);
+
   const padding = { top: 16, right: 74, bottom: 28, left: 14 };
   const plotWidth = Math.max(hostWidth - padding.left - padding.right, 40);
   const plotHeight = Math.max(hostHeight - padding.top - padding.bottom, 40);
-  const lows = snapshot.candles.map((candle) => candle.low);
-  const highs = snapshot.candles.map((candle) => candle.high);
+  const lows = visibleCandles.map((candle) => candle.low);
+  const highs = visibleCandles.map((candle) => candle.high);
   const minLow = Math.min(...lows);
   const maxHigh = Math.max(...highs);
   const pricePadding = (maxHigh - minLow || snapshot.bithumb.priceKrw * 0.02 || 1) * 0.12;
   const minPrice = Math.max(minLow - pricePadding, 0);
   const maxPrice = maxHigh + pricePadding;
-  const candleGap = plotWidth / Math.max(snapshot.candles.length, 1);
+  const candleGap = plotWidth / Math.max(visibleCandles.length, 1);
   const candleWidth = Math.max(Math.min(candleGap * 0.56, 12), 3);
   const yForPrice = (price) => {
     const ratio = (price - minPrice) / Math.max(maxPrice - minPrice, 1);
@@ -509,17 +685,17 @@ function renderChart(snapshot) {
     `;
   }).join("");
 
-  const timeLabels = snapshot.candles
-    .filter((_, index) => index === 0 || index === snapshot.candles.length - 1 || index % Math.max(Math.floor(snapshot.candles.length / 4), 1) === 0)
+  const timeLabels = visibleCandles
+    .filter((_, index) => index === 0 || index === visibleCandles.length - 1 || index % Math.max(Math.floor(visibleCandles.length / 4), 1) === 0)
     .map((candle, index, collection) => {
-      const candleIndex = snapshot.candles.findIndex((entry) => entry.timestamp === candle.timestamp);
+      const candleIndex = visibleCandles.findIndex((entry) => entry.timestamp === candle.timestamp);
       const x = xForIndex(candleIndex);
       const anchor = index === 0 ? "start" : index === collection.length - 1 ? "end" : "middle";
       return `<text x="${x}" y="${padding.top + plotHeight + 18}" text-anchor="${anchor}" fill="#96a7b5" font-size="11">${escapeHtml(formatShortTime(candle.timestamp))}</text>`;
     })
     .join("");
 
-  const candleSvg = snapshot.candles
+  const candleSvg = visibleCandles
     .map((candle, index) => {
       const x = xForIndex(index);
       const openY = yForPrice(candle.open);
@@ -555,13 +731,14 @@ function renderChart(snapshot) {
   `;
 
   state.chartGeometry = {
-    candles: snapshot.candles,
+    candles: visibleCandles,
     left: padding.left,
     top: padding.top,
     plotWidth,
     plotHeight,
     minPrice,
-    maxPrice
+    maxPrice,
+    candleGap
   };
   window.requestAnimationFrame(renderChartOverlay);
 }
@@ -580,6 +757,7 @@ function renderMarketWorkspace(snapshot) {
 
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
+  resetChartViewport(snapshot);
   const factsHtml = renderFactsHtml(snapshot);
 
   elements.bithumbPrice.textContent = formatKrw(snapshot.bithumb.priceKrw);
@@ -718,9 +896,10 @@ function buildAuthPayload() {
 
 async function loadCoins() {
   const payload = await fetchJson("/api/coins");
+  state.coins = payload.coins || [];
   state.timeframes = payload.timeframes || [];
 
-  elements.coinSelect.innerHTML = payload.coins
+  elements.coinSelect.innerHTML = state.coins
     .map((coin) => `<option value="${coin.symbol}">${coin.symbol} · ${coin.label}</option>`)
     .join("");
 
@@ -733,6 +912,8 @@ async function loadCoins() {
   if (state.timeframes.some((timeframe) => timeframe.id === initialTimeframe)) {
     elements.timeframeSelect.value = initialTimeframe;
   }
+
+  renderShortcutButtons();
 }
 
 async function loadModules() {
@@ -884,6 +1065,7 @@ async function refreshMarket() {
   const symbol = elements.coinSelect.value;
   const timeframe = elements.timeframeSelect.value || "1h";
   state.aiAnnotations = [];
+  state.chartGeometry = null;
   savePersonalSettings();
   setAnalysisMessage("시세를 불러오는 중입니다...");
 
@@ -894,6 +1076,7 @@ async function refreshMarket() {
     ]);
     renderSnapshot(snapshot);
     renderIntelligence(intelligence);
+    renderShortcutButtons();
     renderModuleStatus(null);
     setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
   } catch (error) {
@@ -931,12 +1114,44 @@ async function analyze() {
 
 elements.refreshButton.addEventListener("click", refreshMarket);
 elements.analyzeButton.addEventListener("click", analyze);
+elements.resetChartViewButton.addEventListener("click", () => {
+  if (!state.snapshot) {
+    return;
+  }
+
+  resetChartViewport(state.snapshot);
+  setChartHint("차트 뷰를 기본값으로 초기화했습니다.");
+  renderChart(state.snapshot);
+  renderChartOverlay();
+});
 elements.registerButton.addEventListener("click", registerAccount);
 elements.loginButton.addEventListener("click", loginAccount);
 elements.logoutButton.addEventListener("click", logoutAccount);
 elements.deleteAccountButton.addEventListener("click", deleteAccount);
 elements.coinSelect.addEventListener("change", refreshMarket);
 elements.timeframeSelect.addEventListener("change", refreshMarket);
+elements.symbolShortcutList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-shortcut-symbol]");
+
+  if (!button) {
+    return;
+  }
+
+  elements.coinSelect.value = button.dataset.shortcutSymbol;
+  renderShortcutButtons();
+  refreshMarket();
+});
+elements.timeframeShortcutList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-shortcut-timeframe]");
+
+  if (!button) {
+    return;
+  }
+
+  elements.timeframeSelect.value = button.dataset.shortcutTimeframe;
+  renderShortcutButtons();
+  refreshMarket();
+});
 elements.overlayToggle.addEventListener("change", () => {
   savePersonalSettings();
   renderAnnotationList();
