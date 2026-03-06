@@ -1,10 +1,19 @@
 const state = {
   snapshot: null,
-  modules: []
+  intelligence: null,
+  modules: [],
+  activeViewId: "overviewView",
+  account: null,
+  timeframes: [],
+  chart: null,
+  candleSeries: null,
+  resizeObserver: null,
+  aiAnnotations: []
 };
 
 const elements = {
   coinSelect: document.querySelector("#coinSelect"),
+  timeframeSelect: document.querySelector("#timeframeSelect"),
   refreshButton: document.querySelector("#refreshButton"),
   analyzeButton: document.querySelector("#analyzeButton"),
   aliasInput: document.querySelector("#aliasInput"),
@@ -13,6 +22,7 @@ const elements = {
   watchItemsInput: document.querySelector("#watchItemsInput"),
   noteInput: document.querySelector("#noteInput"),
   focusQuestionInput: document.querySelector("#focusQuestionInput"),
+  overlayToggle: document.querySelector("#overlayToggle"),
   moduleList: document.querySelector("#moduleList"),
   moduleStatus: document.querySelector("#moduleStatus"),
   bithumbPrice: document.querySelector("#bithumbPrice"),
@@ -23,16 +33,61 @@ const elements = {
   usdtKrw: document.querySelector("#usdtKrw"),
   fetchedAt: document.querySelector("#fetchedAt"),
   marketDetails: document.querySelector("#marketDetails"),
+  marketDetailsMirror: document.querySelector("#marketDetailsMirror"),
+  macroStatsOutput: document.querySelector("#macroStatsOutput"),
+  newsStatsOutput: document.querySelector("#newsStatsOutput"),
   candlesOutput: document.querySelector("#candlesOutput"),
-  analysisOutput: document.querySelector("#analysisOutput")
+  analysisOutput: document.querySelector("#analysisOutput"),
+  analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
+  orderbookOutput: document.querySelector("#orderbookOutput"),
+  tradesOutput: document.querySelector("#tradesOutput"),
+  annotationList: document.querySelector("#annotationList"),
+  annotationSummary: document.querySelector("#annotationSummary"),
+  chartCanvas: document.querySelector("#chartCanvas"),
+  chartOverlay: document.querySelector("#chartOverlay"),
+  chartMeta: document.querySelector("#chartMeta"),
+  chartSymbolChip: document.querySelector("#chartSymbolChip"),
+  chartTimeframeChip: document.querySelector("#chartTimeframeChip"),
+  chartPriceChip: document.querySelector("#chartPriceChip"),
+  accountStatus: document.querySelector("#accountStatus"),
+  authUsernameInput: document.querySelector("#authUsernameInput"),
+  authDisplayNameInput: document.querySelector("#authDisplayNameInput"),
+  authPasswordInput: document.querySelector("#authPasswordInput"),
+  deletePasswordInput: document.querySelector("#deletePasswordInput"),
+  registerButton: document.querySelector("#registerButton"),
+  loginButton: document.querySelector("#loginButton"),
+  logoutButton: document.querySelector("#logoutButton"),
+  deleteAccountButton: document.querySelector("#deleteAccountButton"),
+  viewTitle: document.querySelector("#viewTitle"),
+  navButtons: Array.from(document.querySelectorAll("[data-view-target]")),
+  views: Array.from(document.querySelectorAll("[data-view]"))
 };
+
+const viewTitles = {
+  overviewView: "전체 요약",
+  marketView: "시장 화면",
+  briefingView: "AI 브리핑",
+  journalView: "저널",
+  contextView: "개인 설정",
+  settingsView: "설정",
+  accountView: "계정"
+};
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function formatKrw(value) {
   return new Intl.NumberFormat("ko-KR", {
     style: "currency",
     currency: "KRW",
     maximumFractionDigits: 0
-  }).format(value);
+  }).format(Number(value || 0));
 }
 
 function formatUsdt(value) {
@@ -41,18 +96,30 @@ function formatUsdt(value) {
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
-  }).format(value);
+  }).format(Number(value || 0));
 }
 
 function formatNumber(value, maximumFractionDigits = 2) {
   return new Intl.NumberFormat("ko-KR", {
     maximumFractionDigits
-  }).format(value);
+  }).format(Number(value || 0));
 }
 
 function formatPct(value) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${formatNumber(value, 2)}%`;
+  const numeric = Number(value || 0);
+  const prefix = numeric > 0 ? "+" : "";
+  return `${prefix}${formatNumber(numeric, 2)}%`;
+}
+
+function formatShortTime(value) {
+  return new Date(value).toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function toChartTime(timestamp) {
+  return Math.floor(Number(timestamp) / 1000);
 }
 
 function loadPersonalSettings() {
@@ -70,6 +137,12 @@ function loadPersonalSettings() {
     elements.watchItemsInput.value = saved.watchItems || "";
     elements.noteInput.value = saved.note || "";
     elements.focusQuestionInput.value = saved.focusQuestion || "";
+    elements.overlayToggle.checked = saved.overlayEnabled ?? true;
+    state.activeViewId = saved.activeViewId || state.activeViewId;
+
+    if (saved.selectedTimeframe) {
+      elements.timeframeSelect.dataset.initialValue = saved.selectedTimeframe;
+    }
   } catch (_error) {
     localStorage.removeItem("coin-ai-briefing:personal-settings");
   }
@@ -84,37 +157,44 @@ function savePersonalSettings() {
       riskRule: elements.riskRuleInput.value,
       watchItems: elements.watchItemsInput.value,
       note: elements.noteInput.value,
-      focusQuestion: elements.focusQuestionInput.value
+      focusQuestion: elements.focusQuestionInput.value,
+      activeViewId: state.activeViewId,
+      selectedTimeframe: elements.timeframeSelect.value || "1h",
+      overlayEnabled: elements.overlayToggle.checked
     })
   );
 }
 
-function setLoading(message) {
+function setAnalysisMessage(message) {
   elements.analysisOutput.textContent = message;
+  elements.analysisOutputMirror.textContent = message;
 }
 
-function renderFacts(snapshot) {
+function renderFactsHtml(snapshot) {
   const rows = [
+    ["차트 타임프레임", snapshot.timeframe],
     ["빗썸 고가", formatKrw(snapshot.bithumb.high24hKrw)],
     ["빗썸 저가", formatKrw(snapshot.bithumb.low24hKrw)],
     ["빗썸 24h 거래량", formatNumber(snapshot.bithumb.volume24h, 4)],
     ["빗썸 24h 거래대금", formatKrw(snapshot.bithumb.value24hKrw)],
     ["빗썸 호가", `${formatKrw(snapshot.bithumb.bidKrw)} / ${formatKrw(snapshot.bithumb.askKrw)}`],
+    ["호가 스프레드", formatKrw(snapshot.orderbook.spreadKrw)],
+    [
+      "호가 잔량 합계",
+      `${formatNumber(snapshot.orderbook.totalBidUnits, 4)} / ${formatNumber(snapshot.orderbook.totalAskUnits, 4)}`
+    ],
     ["바이낸스 24h 고가", formatUsdt(snapshot.benchmark.high24hUsdt)],
     ["바이낸스 24h 저가", formatUsdt(snapshot.benchmark.low24hUsdt)],
     ["바이낸스 24h 거래량", formatNumber(snapshot.benchmark.volume24h, 4)],
-    [
-      "바이낸스 호가",
-      `${formatUsdt(snapshot.benchmark.bidUsdt)} / ${formatUsdt(snapshot.benchmark.askUsdt)}`
-    ]
+    ["바이낸스 호가", `${formatUsdt(snapshot.benchmark.bidUsdt)} / ${formatUsdt(snapshot.benchmark.askUsdt)}`]
   ];
 
-  elements.marketDetails.innerHTML = rows
+  return rows
     .map(
       ([label, value]) => `
         <div class="fact-row">
-          <dt>${label}</dt>
-          <dd>${value}</dd>
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
         </div>
       `
     )
@@ -132,8 +212,322 @@ function renderCandles(snapshot) {
     : "캔들 데이터를 불러오지 못했습니다.";
 }
 
+function renderStatRows(rows) {
+  return rows
+    .map(
+      ([label, value]) => `
+        <div class="fact-row">
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function renderIntelligence(intelligence) {
+  state.intelligence = intelligence;
+
+  const macroRows = [
+    ["BTC 도미넌스", `${formatNumber(intelligence.macroStats.btcDominancePct, 2)}%`],
+    ["ETH 도미넌스", `${formatNumber(intelligence.macroStats.ethDominancePct, 2)}%`],
+    ["바이낸스 24h 거래대금", formatUsdt(intelligence.binanceStats.quoteVolume24hUsdt)],
+    ["평균 체결 금액", formatUsdt(intelligence.binanceStats.avgTradeValueUsdt)],
+    ["6h 모멘텀", formatPct(intelligence.binanceStats.momentum6hPct)],
+    ["24h 모멘텀", formatPct(intelligence.binanceStats.momentum24hPct)]
+  ];
+  const newsRows = [
+    ["총 기사 수", `${formatNumber(intelligence.newsStats.articleCount, 0)}건`],
+    ["24시간 기사 수", `${formatNumber(intelligence.newsStats.recent24hCount, 0)}건`],
+    ["72시간 기사 수", `${formatNumber(intelligence.newsStats.recent72hCount, 0)}건`],
+    ["평균 톤", formatNumber(intelligence.newsStats.averageTone, 2)],
+    ["최신 기사", intelligence.newsStats.latestHeadline || "-"],
+    [
+      "주요 출처",
+      intelligence.newsStats.topDomains.map((item) => `${item.domain}(${item.count})`).join(", ") || "-"
+    ]
+  ];
+
+  elements.macroStatsOutput.innerHTML = renderStatRows(macroRows);
+  elements.newsStatsOutput.innerHTML = renderStatRows(newsRows);
+}
+
+function getActiveAnnotations() {
+  if (!elements.overlayToggle.checked) {
+    return [];
+  }
+
+  return state.aiAnnotations.length ? state.aiAnnotations : state.snapshot?.annotations || [];
+}
+
+function renderOrderbook(snapshot) {
+  const totalDepth = Math.max(snapshot.orderbook.totalBidUnits, snapshot.orderbook.totalAskUnits, 0.0001);
+  const asks = snapshot.orderbook.asks.slice().reverse();
+  const bids = snapshot.orderbook.bids.slice(0, 8);
+
+  const spreadHtml = `
+    <div class="orderbook-spread">
+      <strong>${formatKrw(snapshot.orderbook.spreadKrw)} spread</strong>
+      <span>매수 ${formatNumber(snapshot.orderbook.totalBidUnits, 4)} / 매도 ${formatNumber(snapshot.orderbook.totalAskUnits, 4)}</span>
+    </div>
+  `;
+
+  const sideHtml = (title, side, levels) => `
+    <div class="orderbook-side">
+      <div class="orderbook-label">
+        <span>${escapeHtml(title)}</span>
+        <span>${levels.length} levels</span>
+      </div>
+      ${levels
+        .map((level) => {
+          const share = (level.quantity / totalDepth) * 100;
+          return `
+            <div class="orderbook-row ${side}" style="--depth:${share.toFixed(2)}%">
+              <span class="orderbook-price">${formatNumber(level.price, 0)}</span>
+              <span class="orderbook-quantity">${formatNumber(level.quantity, 4)}</span>
+              <span class="orderbook-share">${formatNumber(share, 1)}%</span>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+
+  elements.orderbookOutput.innerHTML = [
+    spreadHtml,
+    sideHtml("ASK", "ask", asks.slice(0, 8)),
+    sideHtml("BID", "bid", bids)
+  ].join("");
+}
+
+function renderTrades(snapshot) {
+  const trades = snapshot.recentTrades.slice(0, 16);
+
+  elements.tradesOutput.innerHTML = trades.length
+    ? trades
+        .map(
+          (trade) => `
+            <div class="trade-row ${trade.side}">
+              <span class="trade-time">${escapeHtml(formatShortTime(trade.timestamp))}</span>
+              <span class="trade-size">${formatNumber(trade.quantity, 4)}</span>
+              <span class="trade-price">${formatNumber(trade.priceKrw, 0)}</span>
+            </div>
+          `
+        )
+        .join("")
+    : "최근 체결 데이터를 불러오지 못했습니다.";
+}
+
+function renderAnnotationList() {
+  const annotations = getActiveAnnotations();
+  const sourceLabel = state.aiAnnotations.length ? "AI 주석" : "기본 주석";
+
+  elements.annotationSummary.textContent = annotations.length
+    ? `${sourceLabel} ${annotations.length}개를 차트 위에 표시 중입니다.`
+    : "표시 가능한 주석이 없습니다.";
+
+  elements.annotationList.innerHTML = annotations.length
+    ? annotations
+        .map(
+          (annotation) => `
+            <div class="annotation-row">
+              <strong>${escapeHtml(annotation.label || annotation.type)}</strong>
+              <span>${escapeHtml(annotation.reason || "근거 없음")}</span>
+              <span>${escapeHtml(annotation.type)}</span>
+            </div>
+          `
+        )
+        .join("")
+    : "AI가 차트 위에 그릴 선/구간/마커가 아직 없습니다.";
+}
+
+function ensureChart() {
+  if (state.chart || !window.LightweightCharts || !elements.chartCanvas) {
+    return;
+  }
+
+  state.chart = window.LightweightCharts.createChart(elements.chartCanvas, {
+    width: elements.chartCanvas.clientWidth,
+    height: elements.chartCanvas.clientHeight || 420,
+    layout: {
+      background: { color: "transparent" },
+      textColor: "#d7e2eb"
+    },
+    grid: {
+      vertLines: { color: "rgba(255,255,255,0.05)" },
+      horzLines: { color: "rgba(255,255,255,0.05)" }
+    },
+    rightPriceScale: {
+      borderColor: "rgba(255,255,255,0.08)"
+    },
+    timeScale: {
+      borderColor: "rgba(255,255,255,0.08)",
+      timeVisible: true
+    },
+    crosshair: {
+      vertLine: { color: "rgba(14, 165, 160, 0.4)" },
+      horzLine: { color: "rgba(14, 165, 160, 0.4)" }
+    }
+  });
+
+  state.candleSeries = state.chart.addCandlestickSeries({
+    upColor: "#0ea5a0",
+    downColor: "#d2483f",
+    borderVisible: false,
+    wickUpColor: "#0ea5a0",
+    wickDownColor: "#d2483f"
+  });
+
+  if (typeof ResizeObserver === "function") {
+    state.resizeObserver = new ResizeObserver(() => {
+      if (!state.chart) {
+        return;
+      }
+
+      state.chart.applyOptions({
+        width: elements.chartCanvas.clientWidth,
+        height: elements.chartCanvas.clientHeight || 420
+      });
+      renderChartOverlay();
+    });
+    state.resizeObserver.observe(elements.chartCanvas);
+  }
+
+  const timeScale = state.chart.timeScale();
+
+  if (typeof timeScale.subscribeVisibleLogicalRangeChange === "function") {
+    timeScale.subscribeVisibleLogicalRangeChange(() => {
+      window.requestAnimationFrame(renderChartOverlay);
+    });
+  }
+}
+
+function renderChartOverlay() {
+  const annotations = getActiveAnnotations();
+
+  if (
+    state.activeViewId !== "marketView" ||
+    !state.chart ||
+    !state.candleSeries ||
+    !state.snapshot ||
+    !annotations.length
+  ) {
+    elements.chartOverlay.innerHTML = "";
+    return;
+  }
+
+  const width = elements.chartCanvas.clientWidth;
+  const height = elements.chartCanvas.clientHeight;
+  elements.chartOverlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  const priceToY = (price) => state.candleSeries.priceToCoordinate(Number(price));
+  const timeToX = (time) => state.chart.timeScale().timeToCoordinate(toChartTime(time));
+
+  const shapes = annotations
+    .map((annotation) => {
+      if (annotation.type === "line" && annotation.from && annotation.to) {
+        const x1 = timeToX(annotation.from.time);
+        const x2 = timeToX(annotation.to.time);
+        const y1 = priceToY(annotation.from.price);
+        const y2 = priceToY(annotation.to.price);
+
+        if ([x1, x2, y1, y2].some((value) => value === null || value === undefined)) {
+          return "";
+        }
+
+        return `
+          <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="2.25" />
+          <text x="${x2 + 6}" y="${Math.max(y2 - 6, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "line")}</text>
+        `;
+      }
+
+      if (annotation.type === "zone") {
+        const startX = timeToX(annotation.startTime);
+        const endX = timeToX(annotation.endTime);
+        const minY = priceToY(annotation.maxPrice);
+        const maxY = priceToY(annotation.minPrice);
+
+        if ([startX, endX, minY, maxY].some((value) => value === null || value === undefined)) {
+          return "";
+        }
+
+        const x = Math.min(startX, endX);
+        const y = Math.min(minY, maxY);
+        const rectWidth = Math.abs(endX - startX);
+        const rectHeight = Math.abs(maxY - minY);
+
+        return `
+          <rect x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="1.5" rx="6" ry="6" />
+          <text x="${x + 6}" y="${Math.max(y + 14, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
+        `;
+      }
+
+      if (annotation.type === "marker") {
+        const x = timeToX(annotation.time);
+        const y = priceToY(annotation.price);
+
+        if ([x, y].some((value) => value === null || value === undefined)) {
+          return "";
+        }
+
+        return `
+          <circle cx="${x}" cy="${y}" r="5" fill="${escapeHtml(annotation.color || "#0ea5a0")}" />
+          <text x="${x + 8}" y="${Math.max(y - 8, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
+        `;
+      }
+
+      return "";
+    })
+    .join("");
+
+  elements.chartOverlay.innerHTML = shapes;
+}
+
+function renderChart(snapshot) {
+  if (!window.LightweightCharts) {
+    elements.annotationSummary.textContent = "차트 라이브러리를 불러오지 못했습니다.";
+    return;
+  }
+
+  if (state.activeViewId !== "marketView") {
+    return;
+  }
+
+  ensureChart();
+
+  if (!snapshot.candles.length) {
+    elements.chartOverlay.innerHTML = "";
+    return;
+  }
+
+  const candleData = snapshot.candles.map((candle) => ({
+    time: toChartTime(candle.timestamp),
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close
+  }));
+
+  state.candleSeries.setData(candleData);
+  state.chart.timeScale().fitContent();
+  window.requestAnimationFrame(renderChartOverlay);
+}
+
+function renderMarketWorkspace(snapshot) {
+  elements.chartMeta.textContent = `${snapshot.bithumb.exchange} ${snapshot.timeframe} candles · AI overlay ready`;
+  elements.chartSymbolChip.textContent = `${snapshot.symbol} / KRW`;
+  elements.chartTimeframeChip.textContent = snapshot.timeframe;
+  elements.chartPriceChip.textContent = formatKrw(snapshot.bithumb.priceKrw);
+
+  renderOrderbook(snapshot);
+  renderTrades(snapshot);
+  renderAnnotationList();
+  renderChart(snapshot);
+}
+
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
+  const factsHtml = renderFactsHtml(snapshot);
 
   elements.bithumbPrice.textContent = formatKrw(snapshot.bithumb.priceKrw);
   elements.bithumbChange.textContent = `24h ${formatPct(snapshot.bithumb.change24hPct)}`;
@@ -143,9 +537,11 @@ function renderSnapshot(snapshot) {
   elements.premium.className = snapshot.premiumPct >= 0 ? "positive" : "negative";
   elements.usdtKrw.textContent = `USDT/KRW ${formatKrw(snapshot.usdtKrw)}`;
   elements.fetchedAt.textContent = new Date(snapshot.fetchedAt).toLocaleString("ko-KR");
+  elements.marketDetails.innerHTML = factsHtml;
+  elements.marketDetailsMirror.innerHTML = factsHtml;
 
-  renderFacts(snapshot);
   renderCandles(snapshot);
+  renderMarketWorkspace(snapshot);
 }
 
 function renderModules(modules) {
@@ -160,8 +556,8 @@ function renderModules(modules) {
             ${module.defaultEnabled ? "checked" : ""}
             ${module.required ? "disabled" : ""}
           />
-          <span>${module.label}</span>
-          <small>${module.description}</small>
+          <span>${escapeHtml(module.label)}</span>
+          <small>${escapeHtml(module.description)}</small>
         </label>
       `
     )
@@ -177,9 +573,49 @@ function renderModuleStatus(context) {
   elements.moduleStatus.innerHTML = context.modules
     .map((module) => {
       const message = module.error || module.summary || module.status;
-      return `<div class="module-result ${module.status}"><strong>${module.label}</strong><span>${message}</span></div>`;
+      return `<div class="module-result ${module.status}"><strong>${escapeHtml(module.label)}</strong><span>${escapeHtml(message)}</span></div>`;
     })
     .join("");
+}
+
+function renderAccount(account) {
+  state.account = account;
+
+  if (!account) {
+    elements.accountStatus.textContent = "계정 상태를 불러오지 못했습니다.";
+    return;
+  }
+
+  elements.accountStatus.innerHTML = `
+    <strong>${account.authenticated ? "로그인됨" : "로그인 전"}</strong>
+    <span>${escapeHtml(account.message)}</span>
+    <span>서버 준비 상태: ${account.serverReady ? "ready" : "pending"}</span>
+    <span>연결 제공자: ${escapeHtml(account.provider || "미설정")}</span>
+  `;
+
+  if (account.user?.username) {
+    elements.authUsernameInput.value = account.user.username;
+    elements.authDisplayNameInput.value = account.user.display_name || "";
+  }
+}
+
+function setActiveView(viewId) {
+  state.activeViewId = viewId;
+  elements.views.forEach((view) => {
+    const isActive = view.id === viewId;
+    view.hidden = !isActive;
+    view.classList.toggle("is-active", isActive);
+  });
+  elements.navButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.viewTarget === viewId);
+  });
+  elements.viewTitle.textContent = viewTitles[viewId] || "Gainob";
+  savePersonalSettings();
+
+  if (viewId === "marketView" && state.snapshot) {
+    renderMarketWorkspace(state.snapshot);
+    window.requestAnimationFrame(renderChartOverlay);
+  }
 }
 
 function getEnabledModules() {
@@ -191,6 +627,7 @@ function getEnabledModules() {
 function buildAnalysisPayload() {
   return {
     symbol: elements.coinSelect.value,
+    timeframe: elements.timeframeSelect.value,
     modules: getEnabledModules(),
     profile: {
       alias: elements.aliasInput.value,
@@ -216,12 +653,31 @@ async function fetchJson(url, options) {
   return payload;
 }
 
+function buildAuthPayload() {
+  return {
+    username: elements.authUsernameInput.value,
+    displayName: elements.authDisplayNameInput.value,
+    password: elements.authPasswordInput.value
+  };
+}
+
 async function loadCoins() {
   const payload = await fetchJson("/api/coins");
+  state.timeframes = payload.timeframes || [];
 
   elements.coinSelect.innerHTML = payload.coins
     .map((coin) => `<option value="${coin.symbol}">${coin.symbol} · ${coin.label}</option>`)
     .join("");
+
+  elements.timeframeSelect.innerHTML = state.timeframes
+    .map((timeframe) => `<option value="${timeframe.id}">${timeframe.label}</option>`)
+    .join("");
+
+  const initialTimeframe = elements.timeframeSelect.dataset.initialValue || "1h";
+
+  if (state.timeframes.some((timeframe) => timeframe.id === initialTimeframe)) {
+    elements.timeframeSelect.value = initialTimeframe;
+  }
 }
 
 async function loadModules() {
@@ -229,23 +685,170 @@ async function loadModules() {
   renderModules(payload.modules);
 }
 
-async function refreshMarket() {
-  const symbol = elements.coinSelect.value;
-  setLoading("시세를 불러오는 중입니다...");
+async function loadAccount() {
+  try {
+    const payload = await fetchJson("/api/session");
+    renderAccount(payload);
+  } catch (_error) {
+    renderAccount(null);
+  }
+}
+
+async function registerAccount() {
+  try {
+    const payload = await fetchJson("/api/auth/register", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(buildAuthPayload())
+    });
+
+    elements.authPasswordInput.value = "";
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: true,
+      provider: "internal",
+      serverReady: true,
+      user: payload.user,
+      message: `${payload.user.display_name} 계정이 생성되고 로그인되었습니다.`
+    });
+  } catch (error) {
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: false,
+      user: null,
+      message: error.message,
+      serverReady: state.account?.serverReady || false,
+      provider: "internal"
+    });
+  }
+}
+
+async function loginAccount() {
+  try {
+    const payload = await fetchJson("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(buildAuthPayload())
+    });
+
+    elements.authPasswordInput.value = "";
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: true,
+      provider: "internal",
+      serverReady: true,
+      user: payload.user,
+      message: `${payload.user.display_name} 계정으로 로그인되었습니다.`
+    });
+  } catch (error) {
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: false,
+      user: null,
+      message: error.message,
+      serverReady: state.account?.serverReady || false,
+      provider: "internal"
+    });
+  }
+}
+
+async function logoutAccount() {
+  try {
+    await fetchJson("/api/auth/logout", {
+      method: "POST"
+    });
+
+    elements.authPasswordInput.value = "";
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: false,
+      user: null,
+      provider: "internal",
+      serverReady: true,
+      message: "로그아웃되었습니다."
+    });
+  } catch (error) {
+    renderAccount({
+      ...(state.account || {}),
+      message: error.message
+    });
+  }
+}
+
+async function deleteAccount() {
+  if (!state.account?.authenticated || !state.account?.user?.username) {
+    renderAccount({
+      ...(state.account || {}),
+      message: "먼저 로그인한 뒤 탈퇴할 수 있습니다."
+    });
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `${state.account.user.username} 계정을 삭제합니다. 저장된 프로필과 저널도 함께 삭제됩니다. 계속할까요?`
+  );
+
+  if (!confirmed) {
+    return;
+  }
 
   try {
-    const snapshot = await fetchJson(`/api/market/${symbol}`);
-    renderSnapshot(snapshot);
-    renderModuleStatus(null);
-    elements.analysisOutput.textContent = "AI 분석을 요청하면 여기에 결과가 표시됩니다.";
+    await fetchJson("/api/auth/delete-account", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        password: elements.deletePasswordInput.value
+      })
+    });
+
+    elements.authPasswordInput.value = "";
+    elements.deletePasswordInput.value = "";
+    renderAccount({
+      ...(state.account || {}),
+      authenticated: false,
+      user: null,
+      provider: "internal",
+      serverReady: true,
+      message: "계정이 삭제되었습니다."
+    });
   } catch (error) {
-    elements.analysisOutput.textContent = error.message;
+    renderAccount({
+      ...(state.account || {}),
+      message: error.message
+    });
+  }
+}
+
+async function refreshMarket() {
+  const symbol = elements.coinSelect.value;
+  const timeframe = elements.timeframeSelect.value || "1h";
+  state.aiAnnotations = [];
+  savePersonalSettings();
+  setAnalysisMessage("시세를 불러오는 중입니다...");
+
+  try {
+    const [snapshot, intelligence] = await Promise.all([
+      fetchJson(`/api/market/${symbol}?timeframe=${encodeURIComponent(timeframe)}`),
+      fetchJson(`/api/intelligence/${symbol}`)
+    ]);
+    renderSnapshot(snapshot);
+    renderIntelligence(intelligence);
+    renderModuleStatus(null);
+    setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
+  } catch (error) {
+    setAnalysisMessage(error.message);
   }
 }
 
 async function analyze() {
   savePersonalSettings();
-  setLoading("AI에 데이터를 보내 분석 중입니다...");
+  setAnalysisMessage("AI에 데이터를 보내 분석 중입니다...");
 
   try {
     const payload = await fetchJson("/api/analyze", {
@@ -260,15 +863,35 @@ async function analyze() {
       renderSnapshot(payload.snapshot);
     }
 
+    state.aiAnnotations = Array.isArray(payload.annotations) ? payload.annotations : [];
+    renderAnnotationList();
+    renderChartOverlay();
     renderModuleStatus(payload.context);
-    elements.analysisOutput.textContent = payload.analysis;
+    setAnalysisMessage(payload.analysis);
+    setActiveView("briefingView");
   } catch (error) {
-    elements.analysisOutput.textContent = error.message;
+    setAnalysisMessage(error.message);
   }
 }
 
 elements.refreshButton.addEventListener("click", refreshMarket);
 elements.analyzeButton.addEventListener("click", analyze);
+elements.registerButton.addEventListener("click", registerAccount);
+elements.loginButton.addEventListener("click", loginAccount);
+elements.logoutButton.addEventListener("click", logoutAccount);
+elements.deleteAccountButton.addEventListener("click", deleteAccount);
+elements.coinSelect.addEventListener("change", refreshMarket);
+elements.timeframeSelect.addEventListener("change", refreshMarket);
+elements.overlayToggle.addEventListener("change", () => {
+  savePersonalSettings();
+  renderAnnotationList();
+  renderChartOverlay();
+});
+elements.navButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveView(button.dataset.viewTarget);
+  });
+});
 
 [
   elements.aliasInput,
@@ -283,8 +906,11 @@ elements.analyzeButton.addEventListener("click", analyze);
 
 loadPersonalSettings();
 
-Promise.all([loadCoins(), loadModules()])
-  .then(refreshMarket)
+Promise.all([loadCoins(), loadModules(), loadAccount()])
+  .then(() => {
+    setActiveView(state.activeViewId);
+    return refreshMarket();
+  })
   .catch((error) => {
-    elements.analysisOutput.textContent = error.message;
+    setAnalysisMessage(error.message);
   });

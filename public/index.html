@@ -13,159 +13,359 @@
           <div class="brand-block">
             <p class="eyebrow">PERSONAL OVERLAY AI</p>
             <h1>Gainob</h1>
-            <p class="sidebar-copy">
-              왼쪽에서 컨텍스트를 고르고, 오른쪽에서 시장과 AI 응답을 같이 봅니다.
-            </p>
+            <p class="sidebar-copy">왼쪽은 이동, 오른쪽은 현재 작업 화면입니다.</p>
           </div>
 
-          <section class="sidebar-card">
-            <div class="section-head">
-              <h2>세션 제어</h2>
-              <span>Live</span>
-            </div>
-            <label class="field">
-              <span>코인</span>
-              <select id="coinSelect"></select>
-            </label>
-            <label class="field">
-              <span>내 AI 별칭</span>
-              <input id="aliasInput" type="text" placeholder="예: swing-helper" />
-            </label>
-            <div class="button-row">
-              <button id="refreshButton" class="button ghost">시세 새로고침</button>
-              <button id="analyzeButton" class="button accent">AI 분석 요청</button>
-            </div>
-          </section>
+          <nav class="menu-block" aria-label="Primary">
+            <button class="nav-button is-active" data-view-target="overviewView" type="button">
+              <strong>Overview</strong>
+              <span>전체 요약</span>
+            </button>
+            <button class="nav-button" data-view-target="marketView" type="button">
+              <strong>Market</strong>
+              <span>시세와 비교</span>
+            </button>
+            <button class="nav-button" data-view-target="briefingView" type="button">
+              <strong>AI Briefing</strong>
+              <span>분석 결과</span>
+            </button>
+            <button class="nav-button" data-view-target="journalView" type="button">
+              <strong>Journal</strong>
+              <span>세션 메모</span>
+            </button>
+          </nav>
 
-          <section class="sidebar-card">
-            <div class="section-head">
-              <h2>활성 모듈</h2>
-              <span>Optional</span>
-            </div>
-            <div id="moduleList" class="module-list"></div>
-          </section>
-
-          <section class="sidebar-card status-card">
-            <div class="section-head">
-              <h2>모듈 상태</h2>
-              <span>Runtime</span>
-            </div>
-            <div id="moduleStatus" class="module-status">아직 수집 전입니다.</div>
-          </section>
+          <div class="sidebar-footer">
+            <button class="utility-button" data-view-target="contextView" type="button">
+              <span class="utility-icon">P</span>
+              <span>개인 설정</span>
+            </button>
+            <button class="utility-button" data-view-target="settingsView" type="button">
+              <span class="utility-icon">&#9881;</span>
+              <span>설정</span>
+            </button>
+            <button class="utility-button" data-view-target="accountView" type="button">
+              <span class="utility-icon">A</span>
+              <span>계정</span>
+            </button>
+          </div>
         </aside>
 
         <section class="main-panel">
-          <header class="hero-card">
-            <div>
+          <header class="topbar panel-card">
+            <div class="topbar-copy">
               <p class="eyebrow muted-eye">BITHUMB + BINANCE</p>
-              <h2>시장 데이터 위에 개인 컨텍스트를 올리는 오버레이</h2>
+              <h2 id="viewTitle">전체 요약</h2>
             </div>
-            <p class="hero-copy">
-              빗썸 시세와 글로벌 기준 가격을 나란히 보고, 메모와 리스크 원칙을 함께 묶어 AI에
-              전달합니다.
-            </p>
+            <div class="topbar-controls">
+              <label class="compact-field">
+                <span>코인</span>
+                <select id="coinSelect"></select>
+              </label>
+              <label class="compact-field">
+                <span>차트</span>
+                <select id="timeframeSelect"></select>
+              </label>
+              <label class="compact-field">
+                <span>내 AI</span>
+                <input id="aliasInput" type="text" placeholder="swing-helper" />
+              </label>
+              <button id="refreshButton" class="button ghost" type="button">새로고침</button>
+              <button id="analyzeButton" class="button accent" type="button">AI 분석</button>
+            </div>
           </header>
 
-          <section class="metric-strip">
-            <article class="metric-card">
-              <p class="label">빗썸 현재가</p>
-              <h3 id="bithumbPrice">-</h3>
-              <p id="bithumbChange" class="muted">-</p>
-            </article>
+          <section id="overviewView" class="view-panel is-active" data-view>
+            <section class="metric-strip">
+              <article class="metric-card">
+                <p class="label">빗썸 현재가</p>
+                <h3 id="bithumbPrice">-</h3>
+                <p id="bithumbChange" class="muted">-</p>
+              </article>
+              <article class="metric-card">
+                <p class="label">글로벌 환산가</p>
+                <h3 id="benchmarkPrice">-</h3>
+                <p id="benchmarkChange" class="muted">-</p>
+              </article>
+              <article class="metric-card accent-card">
+                <p class="label">가격 차이</p>
+                <h3 id="premium">-</h3>
+                <p id="usdtKrw" class="muted">-</p>
+              </article>
+            </section>
 
-            <article class="metric-card">
-              <p class="label">글로벌 환산가</p>
-              <h3 id="benchmarkPrice">-</h3>
-              <p id="benchmarkChange" class="muted">-</p>
-            </article>
+            <section class="workspace-grid overview-grid">
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>시장 비교</h2>
+                  <span id="fetchedAt">-</span>
+                </div>
+                <dl id="marketDetails" class="facts"></dl>
+              </article>
 
-            <article class="metric-card accent-card">
-              <p class="label">가격 차이</p>
-              <h3 id="premium">-</h3>
-              <p id="usdtKrw" class="muted">-</p>
-            </article>
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>바이낸스 통계</h2>
+                  <span>Stats</span>
+                </div>
+                <dl id="macroStatsOutput" class="facts"></dl>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>뉴스 통계</h2>
+                  <span>GDELT</span>
+                </div>
+                <dl id="newsStatsOutput" class="facts"></dl>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>모듈 상태</h2>
+                  <span>Runtime</span>
+                </div>
+                <div id="moduleStatus" class="module-status">아직 수집 전입니다.</div>
+              </article>
+
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>AI 분석 미리보기</h2>
+                  <span>Preview</span>
+                </div>
+                <pre id="analysisOutput" class="analysis">먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre>
+              </article>
+            </section>
           </section>
 
-          <section class="workspace-grid">
-            <article class="panel-card form-card">
-              <div class="section-head">
-                <h2>개인 컨텍스트</h2>
-                <span>Local</span>
-              </div>
-              <div class="form-grid">
-                <label class="field">
-                  <span>투자 스타일</span>
-                  <textarea
-                    id="styleInput"
-                    rows="3"
-                    placeholder="예: 단기 스윙 위주, 거래량과 추세 우선"
-                  ></textarea>
-                </label>
-                <label class="field">
-                  <span>리스크 원칙</span>
-                  <textarea
-                    id="riskRuleInput"
-                    rows="3"
-                    placeholder="예: 손절은 -3% 이내, 급등 추격 금지"
-                  ></textarea>
-                </label>
-                <label class="field">
-                  <span>주시 항목</span>
-                  <textarea
-                    id="watchItemsInput"
-                    rows="3"
-                    placeholder="예: 거래대금 급증, 해외 가격 괴리, 호가 비대칭"
-                  ></textarea>
-                </label>
-                <label class="field">
-                  <span>당일 메모</span>
-                  <textarea
-                    id="noteInput"
-                    rows="4"
-                    placeholder="예: 오늘 급등 후 눌림이 나오는지, 빗썸 가격이 과열인지 보고 싶음"
-                  ></textarea>
-                </label>
-                <label class="field full-span">
-                  <span>지금 확인하고 싶은 질문</span>
-                  <textarea
-                    id="focusQuestionInput"
-                    rows="3"
-                    placeholder="예: 지금은 추격 구간인지, 관망 구간인지"
-                  ></textarea>
-                </label>
-              </div>
-            </article>
+          <section id="marketView" class="view-panel" data-view hidden>
+            <section class="market-layout">
+              <article class="panel-card chart-panel">
+                <div class="section-head">
+                  <h2>차트 워크스테이션</h2>
+                  <span id="chartMeta">Bithumb Candles</span>
+                </div>
+                <div class="chart-toolbar">
+                  <div class="chip-strip">
+                    <span class="chip" id="chartSymbolChip">-</span>
+                    <span class="chip" id="chartTimeframeChip">-</span>
+                    <span class="chip" id="chartPriceChip">-</span>
+                  </div>
+                  <label class="overlay-toggle">
+                    <input id="overlayToggle" type="checkbox" checked />
+                    <span>AI 오버레이 표시</span>
+                  </label>
+                </div>
+                <div class="chart-stack">
+                  <div class="chart-host">
+                    <div id="chartCanvas" class="chart-canvas"></div>
+                    <svg id="chartOverlay" class="chart-overlay" aria-hidden="true"></svg>
+                  </div>
+                  <div id="annotationSummary" class="annotation-summary">
+                    차트 위 주석 레이어를 준비 중입니다.
+                  </div>
+                </div>
+              </article>
 
-            <article class="panel-card">
-              <div class="section-head">
-                <h2>시장 비교</h2>
-                <span id="fetchedAt">-</span>
-              </div>
-              <dl id="marketDetails" class="facts"></dl>
-            </article>
+              <aside class="market-side">
+                <article class="panel-card side-panel">
+                  <div class="section-head">
+                    <h2>호가창</h2>
+                    <span id="orderbookMeta">Top 15</span>
+                  </div>
+                  <div id="orderbookOutput" class="orderbook-panel">-</div>
+                </article>
 
-            <article class="panel-card wide-panel">
-              <div class="section-head">
-                <h2>최근 1시간봉 24개</h2>
-                <span>빗썸 기준</span>
-              </div>
-              <pre id="candlesOutput" class="code-block">-</pre>
-            </article>
+                <article class="panel-card side-panel">
+                  <div class="section-head">
+                    <h2>최근 체결</h2>
+                    <span id="tradeMeta">25 prints</span>
+                  </div>
+                  <div id="tradesOutput" class="trade-panel-output">-</div>
+                </article>
+              </aside>
 
-            <article class="panel-card wide-panel analysis-card">
-              <div class="section-head">
-                <h2>AI 분석</h2>
-                <span>OpenAI + Modules</span>
-              </div>
-              <pre id="analysisOutput" class="analysis">
-먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre
-              >
-            </article>
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>시장 비교</h2>
+                  <span>Detail</span>
+                </div>
+                <dl class="facts dense-facts" id="marketDetailsMirror"></dl>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>AI 드로잉 지시</h2>
+                  <span>Annotation JSON</span>
+                </div>
+                <div id="annotationList" class="annotation-list">-</div>
+              </article>
+
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>캔들 원본</h2>
+                  <span>Audit</span>
+                </div>
+                <pre id="candlesOutput" class="code-block">-</pre>
+              </article>
+            </section>
+          </section>
+
+          <section id="briefingView" class="view-panel" data-view hidden>
+            <section class="workspace-grid">
+              <article class="panel-card wide-panel analysis-card">
+                <div class="section-head">
+                  <h2>AI 분석</h2>
+                  <span>OpenAI + Modules</span>
+                </div>
+                <pre id="analysisOutputMirror" class="analysis">분석 결과가 여기에 표시됩니다.</pre>
+              </article>
+            </section>
+          </section>
+
+          <section id="journalView" class="view-panel" data-view hidden>
+            <section class="workspace-grid">
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>세션 메모</h2>
+                  <span>Journal</span>
+                </div>
+                <div class="form-grid single-column">
+                  <label class="field">
+                    <span>당일 메모</span>
+                    <textarea
+                      id="noteInput"
+                      rows="6"
+                      placeholder="예: 오늘 급등 후 눌림이 나오는지, 빗썸 가격이 과열인지 보고 싶음"
+                    ></textarea>
+                  </label>
+                  <label class="field">
+                    <span>지금 확인하고 싶은 질문</span>
+                    <textarea
+                      id="focusQuestionInput"
+                      rows="4"
+                      placeholder="예: 지금은 추격 구간인지, 관망 구간인지"
+                    ></textarea>
+                  </label>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section id="contextView" class="view-panel" data-view hidden>
+            <section class="workspace-grid">
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>개인 설정</h2>
+                  <span>Profile</span>
+                </div>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>투자 스타일</span>
+                    <textarea
+                      id="styleInput"
+                      rows="4"
+                      placeholder="예: 단기 스윙 위주, 거래량과 추세 우선"
+                    ></textarea>
+                  </label>
+                  <label class="field">
+                    <span>리스크 원칙</span>
+                    <textarea
+                      id="riskRuleInput"
+                      rows="4"
+                      placeholder="예: 손절은 -3% 이내, 급등 추격 금지"
+                    ></textarea>
+                  </label>
+                  <label class="field full-span">
+                    <span>주시 항목</span>
+                    <textarea
+                      id="watchItemsInput"
+                      rows="4"
+                      placeholder="예: 거래대금 급증, 해외 가격 괴리, 호가 비대칭"
+                    ></textarea>
+                  </label>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section id="settingsView" class="view-panel" data-view hidden>
+            <section class="workspace-grid">
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>활성 모듈</h2>
+                  <span>Optional</span>
+                </div>
+                <div id="moduleList" class="module-list"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>환경 설정</h2>
+                  <span>Local</span>
+                </div>
+                <div class="settings-summary">
+                  <p>현재 설정은 브라우저 로컬 저장소에 저장됩니다.</p>
+                  <p>서버 저장, 사용자별 동기화, 팀 공유는 추후 계정 서버 추가 후 연결합니다.</p>
+                </div>
+              </article>
+            </section>
+          </section>
+
+          <section id="accountView" class="view-panel" data-view hidden>
+            <section class="workspace-grid">
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>계정 상태</h2>
+                  <span>Server Ready</span>
+                </div>
+                <div id="accountStatus" class="account-card">계정 상태를 불러오는 중입니다.</div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-head">
+                  <h2>인증</h2>
+                  <span>Internal</span>
+                </div>
+                <div class="form-grid single-column">
+                  <label class="field">
+                    <span>아이디</span>
+                    <input id="authUsernameInput" type="text" placeholder="예: yujin" />
+                  </label>
+                  <label class="field">
+                    <span>표시 이름</span>
+                    <input id="authDisplayNameInput" type="text" placeholder="예: Yujin" />
+                  </label>
+                  <label class="field">
+                    <span>비밀번호</span>
+                    <input id="authPasswordInput" type="password" placeholder="6자 이상" />
+                  </label>
+                  <div class="button-stack">
+                    <button id="registerButton" class="button accent" type="button">회원가입</button>
+                    <button id="loginButton" class="button ghost" type="button">로그인</button>
+                    <button id="logoutButton" class="button" type="button">로그아웃</button>
+                  </div>
+                </div>
+                <div class="danger-zone">
+                  <div class="section-head">
+                    <h2>탈퇴</h2>
+                    <span>Confirm</span>
+                  </div>
+                  <label class="field">
+                    <span>비밀번호 재입력</span>
+                    <input id="deletePasswordInput" type="password" placeholder="현재 비밀번호" />
+                  </label>
+                  <button id="deleteAccountButton" class="button danger" type="button">
+                    계정 삭제
+                  </button>
+                </div>
+              </article>
+            </section>
           </section>
         </section>
       </section>
     </main>
 
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

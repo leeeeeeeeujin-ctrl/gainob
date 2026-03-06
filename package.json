@@ -6,12 +6,16 @@
   "scripts": {
     "start": "node src/dev-runner.js",
     "dev": "node --watch src/dev-runner.js",
-    "smoke": "node scripts/smoke-test.js"
+    "smoke": "node scripts/smoke-test.js",
+    "db:init": "node scripts/db-init.js"
   },
   "engines": {
     "node": "22.x"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
     "express": "^5.1.0"
+    ,
+    "pg": "^8.16.3"
   }
 }

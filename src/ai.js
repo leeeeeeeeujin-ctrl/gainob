@@ -15,6 +15,11 @@ function buildPrompt(context, promptSections) {
 4. 주의할 리스크 2개
 5. 다음 행동 후보 2개
 
+답변 마지막에는 반드시 `[CHART_ANNOTATIONS_JSON]` 헤더를 쓰고, 그 아래 한 줄 JSON 객체를 넣어라.
+JSON 형식:
+{"annotations":[{"type":"line|zone|marker","label":"문구","reason":"근거","color":"#hex 또는 rgba","from":{"time":1710000000000,"price":1},"to":{"time":1710003600000,"price":1},"startTime":1710000000000,"endTime":1710003600000,"minPrice":1,"maxPrice":2,"time":1710000000000,"price":1}]}
+불확실하면 annotations는 빈 배열로 반환하라.
+
 [분석 메타]
 - 종목: ${context.symbol || "미지정"}
 - 수집 시각: ${context.fetchedAt}
@@ -26,6 +31,35 @@ ${promptSections}
 `.trim();
 }
 
+function extractChartAnnotations(analysisText) {
+  const marker = "[CHART_ANNOTATIONS_JSON]";
+  const markerIndex = analysisText.indexOf(marker);
+
+  if (markerIndex === -1) {
+    return {
+      analysis: analysisText.trim(),
+      annotations: []
+    };
+  }
+
+  const summaryText = analysisText.slice(0, markerIndex).trim();
+  const jsonText = analysisText.slice(markerIndex + marker.length).trim().split("\n")[0].trim();
+
+  try {
+    const payload = JSON.parse(jsonText);
+
+    return {
+      analysis: summaryText,
+      annotations: Array.isArray(payload.annotations) ? payload.annotations : []
+    };
+  } catch (_error) {
+    return {
+      analysis: summaryText || analysisText.trim(),
+      annotations: []
+    };
+  }
+}
+
 async function analyzeContext(context, promptSections) {
   const apiKey = process.env.OPENAI_API_KEY;
 
@@ -33,7 +67,8 @@ async function analyzeContext(context, promptSections) {
     return {
       ok: false,
       analysis:
-        "OPENAI_API_KEY가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다."
+        "OPENAI_API_KEY가 설정되지 않았습니다. 현재는 모듈 수집과 시세 비교까지만 동작하며 AI 분석은 비활성화되어 있습니다.",
+      annotations: []
     };
   }
 
@@ -65,10 +100,12 @@ async function analyzeContext(context, promptSections) {
   }
 
   const payload = await response.json();
+  const parsed = extractChartAnnotations(payload.output_text || "");
 
   return {
     ok: true,
-    analysis: payload.output_text || ""
+    analysis: parsed.analysis,
+    annotations: parsed.annotations
   };
 }
 

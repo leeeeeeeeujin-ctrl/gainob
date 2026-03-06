@@ -1,7 +1,10 @@
+require("dotenv").config({ path: ".env", override: false });
+
 const { spawn } = require("node:child_process");
 
-const port = Number(process.env.PORT || 3310);
+const port = Number(process.env.SMOKE_PORT || 3310);
 const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
+let sessionCookie = "";
 
 function delay(ms) {
   return new Promise((resolve) => {
@@ -10,7 +13,19 @@ function delay(ms) {
 }
 
 async function fetchJson(path) {
-  const response = await fetch(`${baseUrl}${path}`);
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: sessionCookie
+      ? {
+          Cookie: sessionCookie
+        }
+      : undefined
+  });
+  const setCookie = response.headers.getSetCookie?.()?.[0];
+
+  if (setCookie) {
+    sessionCookie = setCookie.split(";")[0];
+  }
+
   const payload = await response.json();
 
   if (!response.ok) {
@@ -24,10 +39,21 @@ async function postJson(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(sessionCookie
+        ? {
+            Cookie: sessionCookie
+          }
+        : {})
     },
     body: JSON.stringify(body)
   });
+  const setCookie = response.headers.getSetCookie?.()?.[0];
+
+  if (setCookie) {
+    sessionCookie = setCookie.split(";")[0];
+  }
+
   const payload = await response.json();
 
   if (!response.ok) {
@@ -66,10 +92,18 @@ async function main() {
     const health = await fetchJson("/api/health");
     const coins = await fetchJson("/api/coins");
     const modules = await fetchJson("/api/modules");
+    const username = `smoke_${Date.now()}`;
+    const register = await postJson("/api/auth/register", {
+      username,
+      displayName: "Smoke User",
+      password: "smoke123"
+    });
+    const session = await fetchJson("/api/session");
     const market = await fetchJson("/api/market/BTC");
+    const intelligence = await fetchJson("/api/intelligence/BTC");
     const analyze = await postJson("/api/analyze", {
       symbol: "BTC",
-      modules: ["market", "profile", "journal"],
+      modules: ["market", "macro", "news", "profile", "journal"],
       profile: {
         alias: "smoke-user",
         style: "거래량 기반 단기 스윙",
@@ -81,6 +115,10 @@ async function main() {
         focusQuestion: "과열 여부 확인"
       }
     });
+    await postJson("/api/auth/delete-account", {
+      password: "smoke123"
+    });
+    const sessionAfterDelete = await fetchJson("/api/session");
 
     console.log(
       JSON.stringify(
@@ -88,11 +126,26 @@ async function main() {
           health,
           coinsCount: coins.coins.length,
           modules: modules.modules.map((module) => module.id),
+          registeredUser: register.user.username,
+          session: {
+            authenticated: session.authenticated,
+            serverReady: session.serverReady,
+            username: session.user?.username || null
+          },
+          sessionAfterDelete: {
+            authenticated: sessionAfterDelete.authenticated,
+            username: sessionAfterDelete.user?.username || null
+          },
           market: {
             symbol: market.symbol,
             premiumPct: market.premiumPct,
             bithumbPriceKrw: market.bithumb.priceKrw,
             benchmarkPriceKrw: market.benchmark.priceKrw
+          },
+          intelligence: {
+            btcDominancePct: intelligence.macroStats.btcDominancePct,
+            newsCount: intelligence.newsStats.articleCount,
+            recent24hNewsCount: intelligence.newsStats.recent24hCount
           },
           analyzeOk: analyze.ok,
           contextModules: analyze.context.modules.map((module) => ({
