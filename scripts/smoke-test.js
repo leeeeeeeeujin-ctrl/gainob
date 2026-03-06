@@ -51,7 +51,7 @@ async function waitForServer() {
 }
 
 async function main() {
-  const child = spawn(process.execPath, ["src/server.js"], {
+  const child = spawn(process.execPath, ["src/dev-runner.js"], {
     cwd: process.cwd(),
     env: {
       ...process.env,

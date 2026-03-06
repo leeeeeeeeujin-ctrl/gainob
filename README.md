@@ -41,6 +41,7 @@ npm run smoke
 
 - 루트 디렉터리는 프로젝트 루트 그대로 `d:\\aass\\gainob`
 - API는 [api/[...route].js](d:/aass/gainob/api/[...route].js) 를 통해 서버리스 함수로 배포됩니다.
+- 실제 Express 앱 엔트리는 [src/web-handler.js](d:/aass/gainob/src/web-handler.js) 입니다.
 - 정적 파일은 `public/`에서 그대로 서빙됩니다.
 - Vercel 환경변수에 `OPENAI_API_KEY`, 필요하면 `OPENAI_MODEL`을 넣으면 됩니다.
 

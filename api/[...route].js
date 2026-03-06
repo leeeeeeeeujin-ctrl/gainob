@@ -1,5 +1,3 @@
-const { createApp } = require("../src/server");
-
-const app = createApp();
+const app = require("../src/web-handler");
 
 module.exports = app;

@@ -2,10 +2,10 @@
   "name": "coin-ai-briefing",
   "version": "0.1.0",
   "description": "Personal dashboard that compares Bithumb prices with a global benchmark and sends context to AI.",
-  "main": "src/server.js",
+  "main": "src/web-handler.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node src/dev-runner.js",
+    "dev": "node --watch src/dev-runner.js",
     "smoke": "node scripts/smoke-test.js"
   },
   "engines": {
