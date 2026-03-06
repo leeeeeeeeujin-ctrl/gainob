@@ -1186,54 +1186,74 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
     let aiMessage = null;
 
     if (askAi) {
-      // build context and call analyze flow similar to /api/analyze
-      const symbol = await inferSymbolFromText(content, conv.rows[0].symbol || request.body.symbol || '');
-      const timeframe = inferTimeframeFromText(content, conv.rows[0].timeframe || request.body.timeframe || '1h');
-      const profile = await getUserProfile(user.id);
-      const recentMessages = await query(
-        `select sender, content, created_at from conversation_messages where conversation_id = $1 order by created_at desc limit 12`,
-        [id]
-      );
-      const chatHistory = recentMessages.rows
-        .slice()
-        .reverse()
-        .map((row) => ({
-          sender: row.sender,
-          content: row.content,
-          createdAt: row.created_at
-        }));
+      try {
+        // build context and call analyze flow similar to /api/analyze
+        const symbol = await inferSymbolFromText(content, conv.rows[0].symbol || request.body.symbol || '');
+        const timeframe = inferTimeframeFromText(content, conv.rows[0].timeframe || request.body.timeframe || '1h');
+        const normalizedSymbol = String(symbol || '').toUpperCase();
+        const profile = await getUserProfile(user.id);
+        const recentMessages = await query(
+          `select sender, content, created_at from conversation_messages where conversation_id = $1 order by created_at desc limit 12`,
+          [id]
+        );
+        const chatHistory = recentMessages.rows
+          .slice()
+          .reverse()
+          .map((row) => ({
+            sender: row.sender,
+            content: row.content,
+            createdAt: row.created_at
+          }));
 
-      const context = await moduleContext.collect({
-        symbol: String(symbol).toUpperCase(),
-        label: await getCoinLabel(String(symbol).toUpperCase()),
-        timeframe: String(timeframe).toLowerCase(),
-        moduleIds: request.body.modules,
-        profile: request.body.profile,
-        journal: request.body.journal
-      });
-      context.userMessage = content;
-      context.chatHistory = chatHistory;
+        if (!normalizedSymbol) {
+          throw new Error('대화에서 종목을 찾지 못했습니다. 종목 심볼 예: BTC, ETH, SOL 을 포함해 주세요.');
+        }
 
-      const promptSections = moduleContext.buildPromptSections({ ...context, manualAnnotations: [] });
-      const result = await analyzeContext(context, promptSections, {
-        provider: request.body.provider,
-        credentials: {
-          provider: profile?.ai_provider,
-          openAiKey: profile?.openai_api_key,
-          openAiModel: profile?.openai_model,
-          geminiKey: profile?.gemini_api_key,
-          geminiModel: profile?.gemini_model
-        },
-        useEnvFallback: false
-      });
+        const context = await moduleContext.collect({
+          symbol: normalizedSymbol,
+          label: await getCoinLabel(normalizedSymbol),
+          timeframe: String(timeframe).toLowerCase(),
+          moduleIds: request.body.modules,
+          profile: request.body.profile,
+          journal: request.body.journal
+        });
+        context.userMessage = content;
+        context.chatHistory = chatHistory;
 
-      // store AI response
-      const aiInserted = await query(
-        `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
-        [id, 'ai', result.analysis || result.analysisText || JSON.stringify(result), JSON.stringify({ provider: result.provider, model: result.model, annotations: result.annotations })]
-      );
+        const promptSections = moduleContext.buildPromptSections({ ...context, manualAnnotations: [] });
+        const result = await analyzeContext(context, promptSections, {
+          provider: request.body.provider,
+          credentials: {
+            provider: profile?.ai_provider,
+            openAiKey: profile?.openai_api_key,
+            openAiModel: profile?.openai_model,
+            geminiKey: profile?.gemini_api_key,
+            geminiModel: profile?.gemini_model
+          },
+          useEnvFallback: false
+        });
 
-      aiMessage = { id: aiInserted.rows[0].id, sender: 'ai', content: result.analysis || result.analysisText || result.analysis || '', createdAt: aiInserted.rows[0].created_at };
+        // store AI response
+        const aiInserted = await query(
+          `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
+          [id, 'ai', result.analysis || result.analysisText || JSON.stringify(result), JSON.stringify({ provider: result.provider, model: result.model, annotations: result.annotations })]
+        );
+
+        aiMessage = { id: aiInserted.rows[0].id, sender: 'ai', content: result.analysis || result.analysisText || result.analysis || '', createdAt: aiInserted.rows[0].created_at };
+      } catch (aiError) {
+        const failureText = `AI 응답 생성에 실패했습니다: ${aiError.message}`;
+        const aiInserted = await query(
+          `insert into conversation_messages(conversation_id, sender, content, meta) values ($1,$2,$3,$4) returning id, created_at`,
+          [id, 'ai', failureText, JSON.stringify({ error: true, message: aiError.message })]
+        );
+        aiMessage = {
+          id: aiInserted.rows[0].id,
+          sender: 'ai',
+          content: failureText,
+          createdAt: aiInserted.rows[0].created_at,
+          error: true
+        };
+      }
     }
 
     response.json({ ok: true, messageId: inserted.rows[0].id, ai: aiMessage });

@@ -557,7 +557,7 @@ async function sendChatMessage(source = "main") {
       state.chatMessages.push({ sender: "ai", content: payload.ai.content, created_at: payload.ai.createdAt });
       renderChatMessages();
       setAnalysisMessage(payload.ai.content || "AI 응답이 생성되었습니다.");
-      setFloatingBriefingMeta("AI 응답 완료");
+      setFloatingBriefingMeta(payload.ai.error ? "AI 응답 실패" : "AI 응답 완료");
     }
   } catch (error) {
     setAnalysisMessage(error.message);
