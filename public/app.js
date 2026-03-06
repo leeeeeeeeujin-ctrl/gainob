@@ -14,6 +14,9 @@ const state = {
   manualAnnotations: [],
   drawingTool: "move",
   pendingDrawing: null,
+  currentConversationId: null,
+  chatMessages: [],
+  chatBusy: false,
   floatingPanel: {
     x: null,
     y: null,
@@ -70,6 +73,11 @@ const elements = {
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
   analysisFloatingOutput: document.querySelector("#analysisFloatingOutput"),
+  chatContextMeta: document.querySelector("#chatContextMeta"),
+  chatMessageList: document.querySelector("#chatMessageList"),
+  chatPromptInput: document.querySelector("#chatPromptInput"),
+  sendChatButton: document.querySelector("#sendChatButton"),
+  newConversationButton: document.querySelector("#newConversationButton"),
   floatingBriefingPanel: document.querySelector("#floatingBriefingPanel"),
   floatingBriefingHeader: document.querySelector("#floatingBriefingHeader"),
   floatingBriefingBody: document.querySelector("#floatingBriefingBody"),
@@ -94,10 +102,11 @@ const elements = {
   chartComparisonChip: document.querySelector("#chartComparisonChip"),
   accountStatus: document.querySelector("#accountStatus"),
   accountAiProviderSelect: document.querySelector("#accountAiProviderSelect"),
-  accountOpenAiModelInput: document.querySelector("#accountOpenAiModelInput"),
   accountOpenAiKeyInput: document.querySelector("#accountOpenAiKeyInput"),
-  accountGeminiModelInput: document.querySelector("#accountGeminiModelInput"),
   accountGeminiKeyInput: document.querySelector("#accountGeminiKeyInput"),
+  storedKeySummary: document.querySelector("#storedKeySummary"),
+  deleteOpenAiKeyButton: document.querySelector("#deleteOpenAiKeyButton"),
+  deleteGeminiKeyButton: document.querySelector("#deleteGeminiKeyButton"),
   saveAiSettingsButton: document.querySelector("#saveAiSettingsButton"),
   aiSettingsStatus: document.querySelector("#aiSettingsStatus"),
   authUsernameInput: document.querySelector("#authUsernameInput"),
@@ -116,7 +125,7 @@ const elements = {
 const viewTitles = {
   overviewView: "전체 요약",
   marketView: "시장 화면",
-  briefingView: "AI 브리핑",
+  briefingView: "AI 채팅",
   journalView: "저널",
   contextView: "개인 설정",
   settingsView: "설정",
@@ -251,6 +260,209 @@ function setAnalysisMessage(message) {
 
 function setAiSettingsStatus(message) {
   elements.aiSettingsStatus.textContent = message;
+}
+
+function setStoredKeySummary(message) {
+  if (elements.storedKeySummary) {
+    elements.storedKeySummary.textContent = message;
+  }
+}
+
+async function loadStoredKeys() {
+  if (!state.account?.authenticated) {
+    setStoredKeySummary("로그인 후 저장된 키 목록을 확인할 수 있습니다.");
+    return;
+  }
+
+  try {
+    const payload = await fetchJson("/api/account/keys");
+    const openAi = payload.keys?.openai;
+    const gemini = payload.keys?.gemini;
+    setStoredKeySummary(
+      `저장된 키 · GPT ${openAi?.present ? openAi.masked : "없음"} / Gemini ${
+        gemini?.present ? gemini.masked : "없음"
+      }`
+    );
+  } catch (_error) {
+    setStoredKeySummary("저장된 키 상태를 불러오지 못했습니다.");
+  }
+}
+
+function updateChatContextMeta() {
+  if (!elements.chatContextMeta) {
+    return;
+  }
+
+  const symbol = elements.coinSelect?.value || "BTC";
+  const timeframe = elements.timeframeSelect?.value || "1h";
+  elements.chatContextMeta.textContent = `현재 대화 기준: ${symbol} · ${timeframe}. 대화 중 AI는 이 종목 컨텍스트와 최근 대화를 함께 사용합니다.`;
+}
+
+function renderChatMessages() {
+  if (!elements.chatMessageList) {
+    return;
+  }
+
+  if (!state.chatMessages.length) {
+    elements.chatMessageList.innerHTML = "대화를 시작하면 메시지가 여기에 표시됩니다.";
+    return;
+  }
+
+  elements.chatMessageList.innerHTML = state.chatMessages
+    .map(
+      (message) => `
+        <article class="chat-message ${message.sender === "ai" ? "is-ai" : "is-user"}">
+          <header>
+            <strong>${message.sender === "ai" ? "AI" : "나"}</strong>
+            <span>${message.created_at ? formatShortTime(message.created_at) : "방금"}</span>
+          </header>
+          <div class="chat-message-body">${escapeHtml(message.content || "")}</div>
+        </article>
+      `
+    )
+    .join("");
+
+  elements.chatMessageList.scrollTop = elements.chatMessageList.scrollHeight;
+}
+
+async function loadConversation(conversationId) {
+  const payload = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}`);
+  state.currentConversationId = conversationId;
+  state.chatMessages = payload.messages || [];
+  renderChatMessages();
+}
+
+async function loadConversations() {
+  if (!state.account?.authenticated) {
+    state.currentConversationId = null;
+    state.chatMessages = [];
+    renderChatMessages();
+    return;
+  }
+
+  try {
+    const payload = await fetchJson("/api/conversations");
+    const firstConversation = (payload.conversations || [])[0];
+    if (firstConversation?.id) {
+      await loadConversation(firstConversation.id);
+    } else {
+      state.currentConversationId = null;
+      state.chatMessages = [];
+      renderChatMessages();
+    }
+  } catch (_error) {
+    state.currentConversationId = null;
+    state.chatMessages = [];
+    renderChatMessages();
+  }
+}
+
+async function ensureConversation() {
+  if (state.currentConversationId) {
+    return state.currentConversationId;
+  }
+
+  const symbol = elements.coinSelect.value || "BTC";
+  const timeframe = elements.timeframeSelect.value || "1h";
+  const title = `${symbol} ${timeframe} 대화`;
+  const payload = await fetchJson("/api/conversations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ title, symbol, timeframe })
+  });
+  state.currentConversationId = payload.conversation.id;
+  state.chatMessages = [];
+  renderChatMessages();
+  return state.currentConversationId;
+}
+
+async function sendChatMessage() {
+  if (!state.account?.authenticated) {
+    setAnalysisMessage("로그인 후 AI 채팅을 사용할 수 있습니다.");
+    setActiveView("accountView");
+    return;
+  }
+
+  const content = String(elements.chatPromptInput.value || "").trim();
+  if (!content || state.chatBusy) {
+    return;
+  }
+
+  state.chatBusy = true;
+  elements.sendChatButton.disabled = true;
+
+  try {
+    const conversationId = await ensureConversation();
+    state.chatMessages.push({ sender: "user", content, created_at: new Date().toISOString() });
+    renderChatMessages();
+    elements.chatPromptInput.value = "";
+    setFloatingBriefingMeta("AI 응답 생성 중");
+
+    const payload = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        content,
+        askAi: true,
+        provider: elements.aiProviderSelect.value || "auto",
+        symbol: elements.coinSelect.value,
+        timeframe: elements.timeframeSelect.value,
+        modules: getEnabledModules(),
+        profile: {
+          alias: elements.aliasInput.value,
+          style: elements.styleInput.value,
+          riskRule: elements.riskRuleInput.value,
+          watchItems: elements.watchItemsInput.value
+        },
+        journal: {
+          note: elements.noteInput.value,
+          focusQuestion: elements.focusQuestionInput.value
+        }
+      })
+    });
+
+    if (payload.ai) {
+      state.chatMessages.push({ sender: "ai", content: payload.ai.content, created_at: payload.ai.createdAt });
+      renderChatMessages();
+      setAnalysisMessage(payload.ai.content || "AI 응답이 생성되었습니다.");
+      setFloatingBriefingMeta("AI 응답 완료");
+    }
+  } catch (error) {
+    setAnalysisMessage(error.message);
+    setFloatingBriefingMeta("AI 채팅 실패");
+  } finally {
+    state.chatBusy = false;
+    elements.sendChatButton.disabled = false;
+  }
+}
+
+async function createNewConversation() {
+  state.currentConversationId = null;
+  state.chatMessages = [];
+  renderChatMessages();
+  updateChatContextMeta();
+  elements.chatPromptInput?.focus();
+}
+
+async function deleteStoredKey(provider) {
+  if (!state.account?.authenticated) {
+    setAiSettingsStatus("로그인 후 키를 삭제할 수 있습니다.");
+    return;
+  }
+
+  try {
+    await fetchJson(`/api/account/keys?provider=${encodeURIComponent(provider)}`, {
+      method: "DELETE"
+    });
+    await loadAccount();
+    setAiSettingsStatus(`${provider === "openai" ? "GPT" : "Gemini"} 키를 삭제했습니다.`);
+  } catch (error) {
+    setAiSettingsStatus(error.message);
+  }
 }
 
 function renderHistory(items = state.history) {
@@ -1206,13 +1418,16 @@ function renderAccount(account) {
   };
 
   elements.accountAiProviderSelect.value = aiSettings.provider || "auto";
-  elements.accountOpenAiModelInput.value = aiSettings.openAiModel || "gpt-4.1-mini";
-  elements.accountGeminiModelInput.value = aiSettings.geminiModel || "gemini-2.5-flash";
   elements.accountOpenAiKeyInput.value = "";
   elements.accountGeminiKeyInput.value = "";
   if (account.authenticated) {
     elements.aiProviderSelect.value = aiSettings.provider || "auto";
   }
+  setStoredKeySummary(
+    `저장 상태 · GPT ${aiSettings.hasOpenAiKey ? "있음" : "없음"} (${aiSettings.openAiModel || "기본"}) / Gemini ${
+      aiSettings.hasGeminiKey ? "있음" : "없음"
+    } (${aiSettings.geminiModel || "기본"})`
+  );
   setAiSettingsStatus(
     account.authenticated
       ? `저장 상태 · GPT 키 ${aiSettings.hasOpenAiKey ? "있음" : "없음"} / Gemini 키 ${
@@ -1338,9 +1553,12 @@ async function loadAccount() {
     const payload = await fetchJson("/api/session");
     renderAccount(payload);
     await loadHistory();
+    await loadStoredKeys();
+    await loadConversations();
   } catch (_error) {
     renderAccount(null);
     renderHistory([]);
+    renderChatMessages();
   }
 }
 
@@ -1372,9 +1590,7 @@ async function saveAiSettings() {
       },
       body: JSON.stringify({
         provider: elements.accountAiProviderSelect.value || "auto",
-        openAiModel: elements.accountOpenAiModelInput.value,
         openAiKey: elements.accountOpenAiKeyInput.value,
-        geminiModel: elements.accountGeminiModelInput.value,
         geminiKey: elements.accountGeminiKeyInput.value
       })
     });
@@ -1416,7 +1632,7 @@ async function registerAccount() {
       user: payload.user,
       message: `${payload.user.display_name} 계정이 생성되고 로그인되었습니다.`
     });
-    await loadHistory();
+    await loadAccount();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1448,7 +1664,7 @@ async function loginAccount() {
       user: payload.user,
       message: `${payload.user.display_name} 계정으로 로그인되었습니다.`
     });
-    await loadHistory();
+    await loadAccount();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1477,6 +1693,7 @@ async function logoutAccount() {
       message: "로그아웃되었습니다."
     });
     renderHistory([]);
+    await loadAccount();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1524,6 +1741,7 @@ async function deleteAccount() {
       message: "계정이 삭제되었습니다."
     });
     renderHistory([]);
+    await loadAccount();
   } catch (error) {
     renderAccount({
       ...(state.account || {}),
@@ -1537,6 +1755,7 @@ async function refreshMarket() {
   const timeframe = elements.timeframeSelect.value || "1h";
   const requestId = state.latestMarketRequestId + 1;
   state.latestMarketRequestId = requestId;
+  updateChatContextMeta();
   state.aiAnnotations = [];
   state.chartGeometry = null;
   savePersonalSettings();
@@ -1586,33 +1805,13 @@ async function refreshMarket() {
 
 async function analyze() {
   savePersonalSettings();
-  setAnalysisMessage("AI에 데이터를 보내 분석 중입니다...");
-
-  try {
-    const payload = await fetchJson("/api/analyze", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(buildAnalysisPayload())
-    });
-
-    if (payload.snapshot) {
-      renderSnapshot(payload.snapshot);
-    }
-
-    state.aiAnnotations = Array.isArray(payload.annotations) ? payload.annotations : [];
-    renderAnnotationList();
-    renderChartOverlay();
-    renderModuleStatus(payload.context);
-    setAnalysisMessage(`${formatAiHeading(payload.provider, payload.model)}\n\n${payload.analysis}`);
-    setFloatingBriefingMeta(payload.provider ? `${payload.provider} · ${payload.model || "default"}` : "AI 분석");
-    await loadHistory();
-    setActiveView("briefingView");
-  } catch (error) {
-    setAnalysisMessage(error.message);
-    setFloatingBriefingMeta("AI 분석 실패");
+  setActiveView("briefingView");
+  updateChatContextMeta();
+  if (!elements.chatPromptInput.value.trim()) {
+    elements.chatPromptInput.value = `${elements.coinSelect.value} ${elements.timeframeSelect.value} 기준으로 지금 상태를 내 투자 스타일과 메모를 반영해서 설명해줘.`;
   }
+  elements.chatPromptInput.focus();
+  setFloatingBriefingMeta("대화 입력 대기 중");
 }
 
 elements.refreshButton.addEventListener("click", refreshMarket);
@@ -1699,6 +1898,16 @@ elements.loginButton.addEventListener("click", loginAccount);
 elements.logoutButton.addEventListener("click", logoutAccount);
 elements.deleteAccountButton.addEventListener("click", deleteAccount);
 elements.saveAiSettingsButton.addEventListener("click", saveAiSettings);
+elements.sendChatButton?.addEventListener("click", sendChatMessage);
+elements.newConversationButton?.addEventListener("click", createNewConversation);
+elements.deleteOpenAiKeyButton?.addEventListener("click", () => deleteStoredKey("openai"));
+elements.deleteGeminiKeyButton?.addEventListener("click", () => deleteStoredKey("gemini"));
+elements.chatPromptInput?.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    sendChatMessage();
+  }
+});
 elements.navButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveView(button.dataset.viewTarget);
@@ -1724,6 +1933,7 @@ ensureFloatingBriefingInteractions();
 Promise.all([loadCoins(), loadModules(), loadAccount()])
   .then(() => {
     setActiveView(state.activeViewId);
+    updateChatContextMeta();
     return refreshMarket();
   })
   .catch((error) => {

@@ -193,6 +193,28 @@ function summarizeAiSettings(profile) {
   };
 }
 
+function inferProviderFromKey(value) {
+  const key = String(value || "").trim();
+
+  if (!key) {
+    return null;
+  }
+
+  if (key.startsWith("sk-") || key.startsWith("sk-proj-")) {
+    return "openai";
+  }
+
+  if (key.startsWith("AIza")) {
+    return "gemini";
+  }
+
+  return null;
+}
+
+function getDefaultModelForProvider(provider) {
+  return provider === "gemini" ? "gemini-2.5-flash" : "gpt-4.1-mini";
+}
+
 function parseJsonColumn(value, fallback) {
   if (value === null || value === undefined) {
     return fallback;
@@ -969,11 +991,21 @@ app.post("/api/account/ai-settings", async (request, response) => {
       throw new Error("로그인된 계정이 없습니다.");
     }
 
-    const provider = String(request.body.provider || "auto").trim().toLowerCase();
-    const openAiModel = String(request.body.openAiModel || "").trim();
-    const geminiModel = String(request.body.geminiModel || "").trim();
+    const requestedProvider = String(request.body.provider || "auto").trim().toLowerCase();
     const openAiKey = String(request.body.openAiKey || "").trim();
     const geminiKey = String(request.body.geminiKey || "").trim();
+    const detectedOpenAi = inferProviderFromKey(openAiKey) === "openai";
+    const detectedGemini = inferProviderFromKey(geminiKey) === "gemini";
+    const provider =
+      requestedProvider !== "auto"
+        ? requestedProvider
+        : detectedOpenAi
+          ? "openai"
+          : detectedGemini
+            ? "gemini"
+            : "auto";
+    const openAiModel = String(request.body.openAiModel || getDefaultModelForProvider("openai")).trim();
+    const geminiModel = String(request.body.geminiModel || getDefaultModelForProvider("gemini")).trim();
 
     await query(
       `
@@ -1130,6 +1162,18 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
       const symbol = conv.rows[0].symbol || request.body.symbol || '';
       const timeframe = conv.rows[0].timeframe || request.body.timeframe || '1h';
       const profile = await getUserProfile(user.id);
+      const recentMessages = await query(
+        `select sender, content, created_at from conversation_messages where conversation_id = $1 order by created_at desc limit 12`,
+        [id]
+      );
+      const chatHistory = recentMessages.rows
+        .slice()
+        .reverse()
+        .map((row) => ({
+          sender: row.sender,
+          content: row.content,
+          createdAt: row.created_at
+        }));
 
       const context = await moduleContext.collect({
         symbol: String(symbol).toUpperCase(),
@@ -1139,6 +1183,8 @@ app.post('/api/conversations/:id/messages', async (request, response) => {
         profile: request.body.profile,
         journal: request.body.journal
       });
+      context.userMessage = content;
+      context.chatHistory = chatHistory;
 
       const promptSections = moduleContext.buildPromptSections({ ...context, manualAnnotations: [] });
       const result = await analyzeContext(context, promptSections, {

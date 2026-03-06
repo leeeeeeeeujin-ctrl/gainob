@@ -18,11 +18,19 @@ function buildPrompt(context, promptSections) {
         })
         .join("\n")}`
     : "";
+  const chatHistory = Array.isArray(context.chatHistory) ? context.chatHistory : [];
+  const chatSection = chatHistory.length
+    ? `\n\n[최근 대화]\n${chatHistory
+        .map((item) => `- ${item.sender === "ai" ? "AI" : "사용자"}: ${item.content || ""}`)
+        .join("\n")}`
+    : "";
+  const userMessageSection = context.userMessage ? `\n\n[이번 요청]\n${context.userMessage}` : "";
 
   return `
 당신은 사용자의 개인 분석 AI다.
 시장 데이터만 기계적으로 요약하지 말고, 개인 프로필과 세션 메모가 있으면 함께 반영하라.
 사용자가 직접 차트에 그린 드로잉이 있으면 그 의도를 우선 반영하라.
+사용자의 최근 대화 맥락이 있으면 그것을 우선 이어받아 답하라.
 확신이 없는 내용은 단정하지 말고, 관찰과 가설을 분리해서 표현하라.
 반드시 아래 형식으로 한국어로 답하라.
 
@@ -44,7 +52,7 @@ JSON 형식:
 ${moduleSummary}
 
 [수집 컨텍스트]
-${promptSections}${drawingSection}
+${promptSections}${drawingSection}${chatSection}${userMessageSection}
 `.trim();
 }
 

@@ -26,8 +26,8 @@
               <span>시세와 비교</span>
             </button>
             <button class="nav-button" data-view-target="briefingView" type="button">
-              <strong>AI Briefing</strong>
-              <span>분석 결과</span>
+              <strong>AI Chat</strong>
+              <span>대화형 분석</span>
             </button>
             <button class="nav-button" data-view-target="journalView" type="button">
               <strong>Journal</strong>
@@ -71,14 +71,14 @@
                 <input id="aliasInput" type="text" placeholder="swing-helper" />
               </label>
               <button id="refreshButton" class="button ghost" type="button">새로고침</button>
-              <button id="analyzeButton" class="button accent" type="button">AI 분석</button>
+              <button id="analyzeButton" class="button accent" type="button">AI 채팅</button>
             </div>
           </header>
 
           <aside id="floatingBriefingPanel" class="floating-briefing">
             <div id="floatingBriefingHeader" class="floating-briefing-header">
               <div class="floating-briefing-copy">
-                <strong>AI 브리핑</strong>
+                <strong>AI 채팅</strong>
                 <span id="floatingBriefingMeta">고정 패널</span>
               </div>
               <div class="floating-briefing-actions">
@@ -145,7 +145,7 @@
 
               <article class="panel-card wide-panel">
                 <div class="section-head">
-                  <h2>AI 분석 미리보기</h2>
+                  <h2>AI 응답 미리보기</h2>
                   <span>Preview</span>
                 </div>
                 <pre id="analysisOutput" class="analysis">먼저 시세를 불러오고 필요하면 AI 분석을 요청하세요.</pre>
@@ -268,10 +268,25 @@
             <section class="workspace-grid">
               <article class="panel-card wide-panel analysis-card">
                 <div class="section-head">
-                  <h2>AI 분석</h2>
-                  <span>OpenAI + Modules</span>
+                  <h2>AI 채팅</h2>
+                  <span>Conversation</span>
                 </div>
-                <pre id="analysisOutputMirror" class="analysis">분석 결과가 여기에 표시됩니다.</pre>
+                <div class="chat-shell">
+                  <div class="chat-toolbar">
+                    <div id="chatContextMeta" class="settings-summary">현재 코인 기준 새 대화를 시작할 수 있습니다.</div>
+                    <div class="button-stack inline-stack">
+                      <button id="newConversationButton" class="button ghost" type="button">새 대화</button>
+                    </div>
+                  </div>
+                  <div id="chatMessageList" class="chat-message-list">대화를 시작하면 메시지가 여기에 표시됩니다.</div>
+                  <div class="chat-input-bar">
+                    <textarea id="chatPromptInput" rows="4" placeholder="예: 지금 BTC 흐름을 내 스타일 기준으로 설명해줘. 돌파/눌림 관점도 같이 봐줘."></textarea>
+                    <div class="button-stack inline-stack">
+                      <button id="sendChatButton" class="button accent" type="button">보내기</button>
+                    </div>
+                  </div>
+                </div>
+                <pre id="analysisOutputMirror" class="analysis" hidden>분석 결과가 여기에 표시됩니다.</pre>
               </article>
             </section>
           </section>
@@ -424,7 +439,7 @@
               <article class="panel-card">
                 <div class="section-head">
                   <h2>AI 키 저장</h2>
-                  <span>Account Scope</span>
+                  <span>Auto Detect</span>
                 </div>
                 <div class="form-grid single-column">
                   <label class="field">
@@ -436,21 +451,20 @@
                     </select>
                   </label>
                   <label class="field">
-                    <span>GPT 모델</span>
-                    <input id="accountOpenAiModelInput" type="text" placeholder="gpt-4.1-mini" />
-                  </label>
-                  <label class="field">
                     <span>GPT API Key</span>
-                    <input id="accountOpenAiKeyInput" type="password" placeholder="입력 시 서버 계정에 저장" />
-                  </label>
-                  <label class="field">
-                    <span>Gemini 모델</span>
-                    <input id="accountGeminiModelInput" type="text" placeholder="gemini-2.5-flash" />
+                    <input id="accountOpenAiKeyInput" type="password" placeholder="sk-... 키를 붙여넣으면 기본 GPT 모델을 자동 선택합니다." />
                   </label>
                   <label class="field">
                     <span>Gemini API Key</span>
-                    <input id="accountGeminiKeyInput" type="password" placeholder="입력 시 서버 계정에 저장" />
+                    <input id="accountGeminiKeyInput" type="password" placeholder="AIza... 키를 붙여넣으면 기본 Gemini 모델을 자동 선택합니다." />
                   </label>
+                  <div id="storedKeySummary" class="settings-summary">
+                    저장된 키 상태를 불러오는 중입니다.
+                  </div>
+                  <div class="button-stack inline-stack">
+                    <button id="deleteOpenAiKeyButton" class="button ghost" type="button">GPT 키 삭제</button>
+                    <button id="deleteGeminiKeyButton" class="button ghost" type="button">Gemini 키 삭제</button>
+                  </div>
                   <div class="button-stack">
                     <button id="saveAiSettingsButton" class="button accent" type="button">AI 설정 저장</button>
                   </div>
