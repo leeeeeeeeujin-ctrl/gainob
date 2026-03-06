@@ -615,6 +615,68 @@ app.get("/api/public/market", async (request, response) => {
   }
 });
 
+// New alias endpoint that returns the same market snapshot payload but named `snapshot` for clarity
+app.get("/api/public/snapshot", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const conciseFlag = String(request.query.concise || "true").toLowerCase() !== "false";
+    const snapshot = await getMarketSnapshot(symbol, { timeframe });
+
+    // attach macro stats (btc/eth dominance, total marketcap) for convenience
+    const label = await getCoinLabel(symbol);
+    let intelligence = getCachedIntelligence(symbol);
+    if (!intelligence) {
+      try {
+        intelligence = await fetchAndCacheIntelligence(symbol, label);
+      } catch (_err) {
+        intelligence = null;
+      }
+    } else {
+      const key = String(symbol).toUpperCase();
+      const entry = macroCache.get(key);
+      if (entry && entry.expiresAt <= Date.now()) {
+        fetchAndCacheIntelligence(symbol, label).catch(() => {});
+      }
+    }
+
+    const readmePath = path.join(__dirname, "..", "README.md");
+    let readmeContent = null;
+    try {
+      readmeContent = fs.readFileSync(readmePath, "utf8");
+    } catch (_e) {
+      readmeContent = null;
+    }
+
+    const macroFields = intelligence
+      ? {
+          btc_dominance: intelligence.macroStats.btcDominancePct,
+          eth_dominance: intelligence.macroStats.ethDominancePct,
+          total_marketcap_usd: intelligence.macroStats.totalMarketCapUsd
+        }
+      : { btc_dominance: null, eth_dominance: null, total_marketcap_usd: null };
+
+    if (!conciseFlag) {
+      Object.assign(snapshot, macroFields);
+      snapshot.readme = readmeContent;
+      response.json(snapshot);
+      return;
+    }
+
+    const candles = Number(request.query.candles || 24);
+    const trades = Number(request.query.trades || 20);
+    const orderbookDepth = Number(request.query.orderbookDepth || 20);
+    const start = request.query.start;
+    const end = request.query.end;
+    const payload = await buildConciseMarketSnapshot(snapshot, { candles, trades, orderbookDepth, start, end });
+    Object.assign(payload, macroFields);
+    payload.readme = readmeContent;
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
 app.get("/api/public/liquidity", async (request, response) => {
   try {
     const symbol = String(request.query.symbol || "BTC").toUpperCase();
