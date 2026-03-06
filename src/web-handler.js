@@ -1009,6 +1009,52 @@ app.post("/api/account/ai-settings", async (request, response) => {
   }
 });
 
+function maskKey(key) {
+  if (!key) return null;
+  const s = String(key);
+  if (s.length <= 8) return '****' + s.slice(-4);
+  return s.slice(0, 4) + '...' + s.slice(-4);
+}
+
+app.get('/api/account/keys', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+
+    const profile = await getUserProfile(user.id);
+
+    response.json({
+      ok: true,
+      user: { id: user.id, username: user.username, display_name: user.display_name },
+      keys: {
+        openai: profile?.openai_api_key ? { present: true, masked: maskKey(profile.openai_api_key) } : { present: false },
+        gemini: profile?.gemini_api_key ? { present: true, masked: maskKey(profile.gemini_api_key) } : { present: false }
+      }
+    });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/account/keys', async (request, response) => {
+  try {
+    const user = await getAuthenticatedUser(request);
+    if (!user) return response.status(401).json({ error: 'not_authenticated' });
+
+    const provider = String(request.query.provider || request.body?.provider || '').toLowerCase();
+    if (!['openai', 'gemini'].includes(provider)) {
+      return response.status(400).json({ error: 'invalid_provider' });
+    }
+
+    const column = provider === 'openai' ? 'openai_api_key' : 'gemini_api_key';
+    await query(`update user_profiles set ${column} = null where user_id = $1`, [user.id]);
+
+    response.json({ ok: true, provider });
+  } catch (err) {
+    response.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/auth/login", async (request, response) => {
   try {
     const username = String(request.body.username || "").trim().toLowerCase();

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Account API Keys</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;margin:24px}
+    .card{border:1px solid #eee;padding:16px;border-radius:8px;max-width:720px}
+    button{margin-left:8px}
+  </style>
+</head>
+<body>
+  <h1>API Key Management</h1>
+  <div class="card">
+    <div id="status">Loading...</div>
+    <div id="keys" style="margin-top:12px"></div>
+    <p style="margin-top:12px">Notes: You can add/update keys from your account settings. Deleting removes the stored key from the server.</p>
+  </div>
+
+  <script>
+    async function fetchKeys(){
+      const status = document.getElementById('status');
+      const keysDiv = document.getElementById('keys');
+      status.textContent = 'Fetching...';
+      try{
+        const res = await fetch('/api/account/keys');
+        if(res.status===401){
+          status.innerHTML = 'Not logged in. Please log in first.';
+          keysDiv.innerHTML = '';
+          return;
+        }
+        const json = await res.json();
+        if(!json.ok){ status.textContent = 'Error: ' + (json.error || 'unknown'); return; }
+        status.textContent = `Logged in as ${json.user.display_name || json.user.username}`;
+        const keys = json.keys || {};
+        keysDiv.innerHTML = '';
+        ['openai','gemini'].forEach(p => {
+          const info = keys[p];
+          const row = document.createElement('div');
+          row.innerHTML = `<strong>${p.toUpperCase()}</strong>: ${info.present? info.masked : '<em>not set</em>'}`;
+          if(info.present){
+            const btn = document.createElement('button');
+            btn.textContent = 'Delete';
+            btn.onclick = async ()=>{
+              if(!confirm('Delete stored key for '+p+'?')) return;
+              const d = await fetch('/api/account/keys?provider='+p,{ method:'DELETE', headers:{ 'Content-Type':'application/json' } });
+              const dj = await d.json();
+              if(dj.ok){ alert('Deleted '+p); fetchKeys(); } else { alert('Failed: '+(dj.error||'error')); }
+            };
+            row.appendChild(btn);
+          }
+          keysDiv.appendChild(row);
+        });
+      } catch(e){
+        status.textContent = 'Failed to fetch keys';
+        keysDiv.innerHTML = '';
+      }
+    }
+    fetchKeys();
+  </script>
+</body>
+</html>
