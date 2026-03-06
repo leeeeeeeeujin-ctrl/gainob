@@ -11,7 +11,28 @@ const state = {
   latestMarketRequestId: 0,
   resizeObserver: null,
   aiAnnotations: [],
+  overlayIndicatorAnnotations: [],
+  overlaySignals: [],
+  overlayBias: null,
   manualAnnotations: [],
+  focusRegion: null,
+  annotationSourceMap: {},
+  selectedAnnotationSource: null,
+  overlaySelection: {
+    active: false,
+    start: null,
+    current: null,
+    handledPointerUp: false
+  },
+  overlayIndicators: {
+    range: true,
+    midpoint: true,
+    vwap: true,
+    trend: false,
+    breakout: true,
+    pressure: true,
+    volume: true
+  },
   drawingTool: "move",
   pendingDrawing: null,
   currentConversationId: null,
@@ -100,9 +121,18 @@ const elements = {
   tradeMeta: document.querySelector("#tradeMeta"),
   annotationList: document.querySelector("#annotationList"),
   annotationSummary: document.querySelector("#annotationSummary"),
+  overlayAnalysisStatus: document.querySelector("#overlayAnalysisStatus"),
+  overlayIndicatorList: document.querySelector("#overlayIndicatorList"),
+  overlaySignalList: document.querySelector("#overlaySignalList"),
+  overlayBiasCard: document.querySelector("#overlayBiasCard"),
+  overlayAnnotationSource: document.querySelector("#overlayAnnotationSource"),
+  overlayAnalyzeButton: document.querySelector("#overlayAnalyzeButton"),
+  overlayChatButton: document.querySelector("#overlayChatButton"),
+  overlayIndicatorsOnlyButton: document.querySelector("#overlayIndicatorsOnlyButton"),
   chartHost: document.querySelector(".chart-host"),
   chartCanvas: document.querySelector("#chartCanvas"),
-  chartOverlay: document.querySelector("#chartOverlay"),
+  chartAiOverlay: document.querySelector("#chartAiOverlay"),
+  chartDrawingOverlay: document.querySelector("#chartDrawingOverlay"),
   chartMeta: document.querySelector("#chartMeta"),
   chartSymbolChip: document.querySelector("#chartSymbolChip"),
   chartTimeframeChip: document.querySelector("#chartTimeframeChip"),
@@ -138,6 +168,16 @@ const viewTitles = {
   settingsView: "설정",
   accountView: "계정"
 };
+
+const OVERLAY_INDICATOR_DEFS = [
+  { id: "range", label: "고저 범위" },
+  { id: "midpoint", label: "중앙선" },
+  { id: "vwap", label: "VWAP" },
+  { id: "trend", label: "구간 추세" },
+  { id: "breakout", label: "돌파/이탈" },
+  { id: "pressure", label: "위꼬리/아래꼬리" },
+  { id: "volume", label: "거래량 스파이크" }
+];
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -222,6 +262,11 @@ function loadPersonalSettings() {
     state.floatingPanel.x = Number.isFinite(saved.floatingX) ? saved.floatingX : null;
     state.floatingPanel.y = Number.isFinite(saved.floatingY) ? saved.floatingY : null;
     state.floatingPanel.minimized = Boolean(saved.floatingMinimized);
+    const savedOverlayIndicators = saved.overlayIndicators || {};
+    state.overlayIndicators = {
+      ...state.overlayIndicators,
+      ...savedOverlayIndicators
+    };
     elements.marketSearchInput.value = state.marketSearchTerm;
 
     if (saved.selectedCoin) {
@@ -252,6 +297,7 @@ function savePersonalSettings() {
       selectedTimeframe: elements.timeframeSelect.value || "1h",
       marketSearchTerm: state.marketSearchTerm,
       overlayEnabled: elements.overlayToggle.checked,
+      overlayIndicators: state.overlayIndicators,
       floatingX: state.floatingPanel.x,
       floatingY: state.floatingPanel.y,
       floatingMinimized: state.floatingPanel.minimized
@@ -271,6 +317,451 @@ function setAiSettingsStatus(message) {
 function setStoredKeySummary(message) {
   if (elements.storedKeySummary) {
     elements.storedKeySummary.textContent = message;
+  }
+}
+
+function setOverlayAnalysisStatus(message) {
+  if (elements.overlayAnalysisStatus) {
+    elements.overlayAnalysisStatus.textContent = message;
+  }
+}
+
+function isOverlaySelectionMode() {
+  return Boolean(elements.overlayToggle?.checked && state.drawingTool === "move");
+}
+
+function updateChartOverlayMode() {
+  if (!elements.chartHost) {
+    return;
+  }
+
+  elements.chartHost.classList.toggle("is-overlay-mode", Boolean(elements.overlayToggle?.checked));
+  elements.chartHost.classList.toggle("is-selecting", isOverlaySelectionMode() || state.overlaySelection.active);
+}
+
+function renderOverlayIndicatorControls() {
+  if (!elements.overlayIndicatorList) {
+    return;
+  }
+
+  elements.overlayIndicatorList.innerHTML = OVERLAY_INDICATOR_DEFS
+    .map(
+      (indicator) => `
+        <button
+          class="overlay-indicator-chip ${state.overlayIndicators[indicator.id] ? "is-active" : ""}"
+          data-overlay-indicator="${indicator.id}"
+          type="button"
+        >
+          ${escapeHtml(indicator.label)}
+        </button>
+      `
+    )
+    .join("");
+}
+
+function renderOverlaySignalList() {
+  if (!elements.overlaySignalList) {
+    return;
+  }
+
+  if (!state.overlaySignals.length) {
+    elements.overlaySignalList.innerHTML = '<div class="overlay-signal-card is-neutral"><strong>신호 대기</strong><span>구간을 선택하면 상승/하락 신호를 요약합니다.</span></div>';
+    return;
+  }
+
+  elements.overlaySignalList.innerHTML = state.overlaySignals
+    .map(
+      (signal) => `
+        <article class="overlay-signal-card is-${escapeHtml(signal.tone || "neutral")}">
+          <strong>${escapeHtml(signal.label)}</strong>
+          <span>${escapeHtml(signal.value || "-")}</span>
+          <span>${escapeHtml(signal.reason || "")}</span>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderOverlayBiasCard() {
+  if (!elements.overlayBiasCard) {
+    return;
+  }
+
+  if (!state.overlayBias) {
+    elements.overlayBiasCard.innerHTML = '<div class="overlay-bias-card is-neutral"><strong>현재 바이어스 없음</strong><span>구간을 선택하면 상승/하락 우위를 종합합니다.</span></div>';
+    return;
+  }
+
+  elements.overlayBiasCard.innerHTML = `
+    <div class="overlay-bias-card is-${escapeHtml(state.overlayBias.tone || "neutral")}">
+      <strong>${escapeHtml(state.overlayBias.label || "현재 바이어스")}</strong>
+      <span>${escapeHtml(state.overlayBias.summary || "")}</span>
+      <span>${escapeHtml(state.overlayBias.reason || "")}</span>
+    </div>
+  `;
+}
+
+function renderOverlayAnnotationSource() {
+  if (!elements.overlayAnnotationSource) {
+    return;
+  }
+
+  const source = state.selectedAnnotationSource;
+  if (!source) {
+    elements.overlayAnnotationSource.innerHTML = '<div class="overlay-annotation-source"><strong>주석 출처</strong><span>AI 주석을 클릭하면 어떤 메시지에서 생성됐는지 표시합니다.</span></div>';
+    return;
+  }
+
+  elements.overlayAnnotationSource.innerHTML = `
+    <div class="overlay-annotation-source">
+      <strong>${escapeHtml(source.label || "주석 출처")}</strong>
+      <span>${escapeHtml(source.createdAtLabel || "")}</span>
+      <div class="overlay-annotation-source-body">${escapeHtml(source.fullMessage || source.messagePreview || "")}</div>
+      <button class="button ghost overlay-source-jump" data-jump-chat-message-id="${escapeHtml(source.messageId || "")}" type="button">해당 메시지로 이동</button>
+    </div>
+  `;
+}
+
+function buildOverlaySignals(snapshot, focusRegion) {
+  const regionCandles = getRegionCandles(snapshot, focusRegion);
+
+  if (!regionCandles.length) {
+    return [];
+  }
+
+  const firstCandle = regionCandles[0];
+  const lastCandle = regionCandles[regionCandles.length - 1];
+  const highest = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
+  const lowest = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
+  const range = Math.max(highest - lowest, 0.0001);
+  const netChangePct = ((Number(lastCandle.close || 0) - Number(firstCandle.open || 0)) / Math.max(Number(firstCandle.open || 1), 1)) * 100;
+  const closeLocation = ((Number(lastCandle.close || 0) - lowest) / range) * 100;
+  const positiveCloseCount = regionCandles.filter((candle) => Number(candle.close || 0) >= Number(candle.open || 0)).length;
+  const controlPct = (positiveCloseCount / Math.max(regionCandles.length, 1)) * 100;
+  const averageVolume = regionCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0) / Math.max(regionCandles.length, 1);
+  const lastVolumeRatio = Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001);
+  const upperWickTotal = regionCandles.reduce((sum, candle) => sum + Math.max(Number(candle.high || 0) - Math.max(Number(candle.open || 0), Number(candle.close || 0)), 0), 0);
+  const lowerWickTotal = regionCandles.reduce((sum, candle) => sum + Math.max(Math.min(Number(candle.open || 0), Number(candle.close || 0)) - Number(candle.low || 0), 0), 0);
+  const bodyControlTone = netChangePct > 1.2 && closeLocation >= 65 && controlPct >= 55 ? "bullish" : netChangePct < -1.2 && closeLocation <= 35 && controlPct <= 45 ? "bearish" : "neutral";
+  const wickTone = lowerWickTotal > upperWickTotal * 1.18 ? "bullish" : upperWickTotal > lowerWickTotal * 1.18 ? "bearish" : "neutral";
+  const volumeTone = lastVolumeRatio >= 1.6 && netChangePct > 0 ? "bullish" : lastVolumeRatio >= 1.6 && netChangePct < 0 ? "bearish" : "neutral";
+  const priorCandles = regionCandles.slice(0, -1);
+  const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
+  const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
+  const breakoutTone = Number(lastCandle.close || 0) > priorHigh ? "bullish" : Number(lastCandle.close || 0) < priorLow ? "bearish" : "neutral";
+  const midpoint = lowest + range / 2;
+  const reclaimTone = Number(lastCandle.low || 0) < midpoint && Number(lastCandle.close || 0) > midpoint
+    ? "bullish"
+    : Number(lastCandle.high || 0) > midpoint && Number(lastCandle.close || 0) < midpoint
+      ? "bearish"
+      : "neutral";
+  const bodySizeSum = regionCandles.reduce(
+    (sum, candle) => sum + Math.abs(Number(candle.close || 0) - Number(candle.open || 0)),
+    0
+  );
+  const wickSizeSum = upperWickTotal + lowerWickTotal;
+  const absorptionTone = wickSizeSum > bodySizeSum * 1.15
+    ? lowerWickTotal > upperWickTotal
+      ? "bullish"
+      : "bearish"
+    : "neutral";
+
+  return [
+    {
+      label: "구간 방향",
+      value: formatPct(netChangePct),
+      tone: bodyControlTone,
+      reason: "시작 시가 대비 종료 종가 변화"
+    },
+    {
+      label: "종가 위치",
+      value: `${formatNumber(closeLocation, 1)} / 100`,
+      tone: closeLocation >= 70 ? "bullish" : closeLocation <= 30 ? "bearish" : "neutral",
+      reason: "고저 범위 안에서 마지막 종가 위치"
+    },
+    {
+      label: "캔들 주도권",
+      value: `${formatNumber(controlPct, 0)}% 양봉`,
+      tone: controlPct >= 58 ? "bullish" : controlPct <= 42 ? "bearish" : "neutral",
+      reason: "구간 내 양봉 비중"
+    },
+    {
+      label: "꼬리 압력",
+      value: lowerWickTotal > upperWickTotal ? "아래꼬리 우세" : upperWickTotal > lowerWickTotal ? "위꼬리 우세" : "균형",
+      tone: wickTone,
+      reason: "매수/매도 거절 흔적 추정"
+    },
+    {
+      label: "거래량 참여",
+      value: `${formatNumber(lastVolumeRatio, 2)}x`,
+      tone: volumeTone,
+      reason: "마지막 봉 거래량 / 구간 평균"
+    },
+    {
+      label: "돌파 상태",
+      value: breakoutTone === "bullish" ? "직전 구간 상단 돌파" : breakoutTone === "bearish" ? "직전 구간 하단 이탈" : "아직 범위 내부",
+      tone: breakoutTone,
+      reason: "마지막 종가 기준"
+    },
+    {
+      label: "리클레임/실패",
+      value: reclaimTone === "bullish" ? "중앙값 리클레임" : reclaimTone === "bearish" ? "중앙값 재이탈" : "중립",
+      tone: reclaimTone,
+      reason: `선택 구간 중간값 ${formatNumber(midpoint, 2)} 기준 종가 복귀 여부`
+    },
+    {
+      label: "흡수/분배",
+      value: absorptionTone === "bullish" ? "저가 흡수" : absorptionTone === "bearish" ? "고가 분배" : "방향성 약함",
+      tone: absorptionTone,
+      reason: "꼬리 총합 대비 몸통 총합으로 체결 흡수 성격 추정"
+    }
+  ];
+}
+
+function buildOverlayBias(signals) {
+  if (!Array.isArray(signals) || !signals.length) {
+    return null;
+  }
+
+  const signalWeights = {
+    "구간 방향": 2.2,
+    "종가 위치": 1.4,
+    "캔들 주도권": 1.2,
+    "꼬리 압력": 1,
+    "거래량 참여": 1.3,
+    "돌파 상태": 2,
+    "리클레임/실패": 1.6,
+    "흡수/분배": 1.4
+  };
+
+  const score = signals.reduce((sum, signal) => {
+    const weight = signalWeights[signal.label] || 1;
+    if (signal.tone === "bullish") {
+      return sum + weight;
+    }
+    if (signal.tone === "bearish") {
+      return sum - weight;
+    }
+    return sum;
+  }, 0);
+
+  const tone = score >= 2.5 ? "bullish" : score <= -2.5 ? "bearish" : "neutral";
+  const label = tone === "bullish" ? "현재 바이어스: 상승 우위" : tone === "bearish" ? "현재 바이어스: 하락 우위" : "현재 바이어스: 중립";
+  const bullishCount = signals.filter((signal) => signal.tone === "bullish").length;
+  const bearishCount = signals.filter((signal) => signal.tone === "bearish").length;
+  const summary = `점수 ${formatNumber(score, 1)} · 강세 ${bullishCount} / 약세 ${bearishCount}`;
+  const dominantSignals = signals
+    .filter((signal) => signal.tone === tone && tone !== "neutral")
+    .sort((left, right) => (signalWeights[right.label] || 1) - (signalWeights[left.label] || 1));
+  const strongest = dominantSignals[0] || signals.find((signal) => signal.tone !== "neutral");
+
+  return {
+    tone,
+    label,
+    summary,
+    reason: strongest ? `${strongest.label}: ${strongest.reason}` : "유의미한 방향 신호가 부족합니다."
+  };
+}
+
+function getRegionCandles(snapshot, focusRegion) {
+  if (!snapshot?.candles?.length || !focusRegion) {
+    return [];
+  }
+
+  return snapshot.candles.filter(
+    (candle) => Number(candle.timestamp) >= focusRegion.startTime && Number(candle.timestamp) <= focusRegion.endTime
+  );
+}
+
+function buildOverlayIndicatorAnnotations(snapshot, focusRegion) {
+  const regionCandles = getRegionCandles(snapshot, focusRegion);
+
+  if (!regionCandles.length || !focusRegion) {
+    return [];
+  }
+
+  const firstCandle = regionCandles[0];
+  const lastCandle = regionCandles[regionCandles.length - 1];
+  const highest = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
+  const lowest = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
+  const midpoint = (highest + lowest) / 2;
+  const vwapNumerator = regionCandles.reduce(
+    (sum, candle) => sum + ((Number(candle.high || 0) + Number(candle.low || 0) + Number(candle.close || 0)) / 3) * Number(candle.volume || 0),
+    0
+  );
+  const totalVolume = regionCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0);
+  const vwap = totalVolume ? vwapNumerator / totalVolume : midpoint;
+  const priorCandles = regionCandles.slice(0, -1);
+  const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
+  const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
+  const averageVolume = totalVolume / Math.max(regionCandles.length, 1);
+  const upperWick = Math.max(Number(lastCandle.high || 0) - Math.max(Number(lastCandle.open || 0), Number(lastCandle.close || 0)), 0);
+  const lowerWick = Math.max(Math.min(Number(lastCandle.open || 0), Number(lastCandle.close || 0)) - Number(lastCandle.low || 0), 0);
+  const annotations = [];
+
+  if (state.overlayIndicators.range) {
+    annotations.push(
+      {
+        id: `indicator-range-high-${focusRegion.id}`,
+        type: "line",
+        source: "indicator",
+        label: "구간 고점",
+        reason: `선택 구간 최고가 ${formatNumber(highest, 2)}`,
+        color: "#f87171",
+        from: { time: firstCandle.timestamp, price: highest },
+        to: { time: lastCandle.timestamp, price: highest }
+      },
+      {
+        id: `indicator-range-low-${focusRegion.id}`,
+        type: "line",
+        source: "indicator",
+        label: "구간 저점",
+        reason: `선택 구간 최저가 ${formatNumber(lowest, 2)}`,
+        color: "#34d399",
+        from: { time: firstCandle.timestamp, price: lowest },
+        to: { time: lastCandle.timestamp, price: lowest }
+      }
+    );
+  }
+
+  if (state.overlayIndicators.midpoint) {
+    annotations.push({
+      id: `indicator-midpoint-${focusRegion.id}`,
+      type: "line",
+      source: "indicator",
+      label: "구간 중앙선",
+      reason: `고점/저점 중앙값 ${formatNumber(midpoint, 2)}`,
+      color: "#fbbf24",
+      from: { time: firstCandle.timestamp, price: midpoint },
+      to: { time: lastCandle.timestamp, price: midpoint }
+    });
+  }
+
+  if (state.overlayIndicators.vwap) {
+    annotations.push({
+      id: `indicator-vwap-${focusRegion.id}`,
+      type: "line",
+      source: "indicator",
+      label: "구간 VWAP",
+      reason: `거래량 가중 평균가 ${formatNumber(vwap, 2)}`,
+      color: "#60a5fa",
+      from: { time: firstCandle.timestamp, price: vwap },
+      to: { time: lastCandle.timestamp, price: vwap }
+    });
+  }
+
+  if (state.overlayIndicators.trend) {
+    annotations.push({
+      id: `indicator-trend-${focusRegion.id}`,
+      type: "line",
+      source: "indicator",
+      label: "구간 추세",
+      reason: `구간 시작 종가 ${formatNumber(firstCandle.close, 2)} -> 종료 종가 ${formatNumber(lastCandle.close, 2)}`,
+      color: "#c084fc",
+      from: { time: firstCandle.timestamp, price: Number(firstCandle.close || 0) },
+      to: { time: lastCandle.timestamp, price: Number(lastCandle.close || 0) }
+    });
+  }
+
+  if (state.overlayIndicators.breakout) {
+    if (Number(lastCandle.close || 0) > priorHigh) {
+      annotations.push({
+        id: `indicator-breakout-up-${focusRegion.id}`,
+        type: "marker",
+        source: "indicator",
+        label: "상단 돌파",
+        reason: `마지막 종가가 직전 고점 ${formatNumber(priorHigh, 2)} 위`,
+        color: "#22c55e",
+        time: lastCandle.timestamp,
+        price: Number(lastCandle.close || 0)
+      });
+    } else if (Number(lastCandle.close || 0) < priorLow) {
+      annotations.push({
+        id: `indicator-breakout-down-${focusRegion.id}`,
+        type: "marker",
+        source: "indicator",
+        label: "하단 이탈",
+        reason: `마지막 종가가 직전 저점 ${formatNumber(priorLow, 2)} 아래`,
+        color: "#ef4444",
+        time: lastCandle.timestamp,
+        price: Number(lastCandle.close || 0)
+      });
+    }
+  }
+
+  if (state.overlayIndicators.pressure) {
+    annotations.push({
+      id: `indicator-pressure-${focusRegion.id}`,
+      type: "marker",
+      source: "indicator",
+      label: lowerWick > upperWick ? "매수 거절 방어" : upperWick > lowerWick ? "매도 거절 압력" : "꼬리 균형",
+      reason: lowerWick > upperWick ? "아래꼬리가 더 길어 저가 방어 흔적" : upperWick > lowerWick ? "위꼬리가 더 길어 상단 매도 압력" : "상하 꼬리 균형",
+      color: lowerWick > upperWick ? "#34d399" : upperWick > lowerWick ? "#f87171" : "#94a3b8",
+      time: lastCandle.timestamp,
+      price: lowerWick > upperWick ? Number(lastCandle.low || 0) : Number(lastCandle.high || 0)
+    });
+  }
+
+  if (state.overlayIndicators.volume && Number(lastCandle.volume || 0) >= averageVolume * 1.6) {
+    annotations.push({
+      id: `indicator-volume-${focusRegion.id}`,
+      type: "marker",
+      source: "indicator",
+      label: "거래량 스파이크",
+      reason: `평균 대비 ${formatNumber(Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001), 2)}배`,
+      color: "#38bdf8",
+      time: lastCandle.timestamp,
+      price: Number(lastCandle.close || 0)
+    });
+  }
+
+  return annotations;
+}
+
+function refreshOverlayIndicators() {
+  state.overlayIndicatorAnnotations = state.focusRegion && state.snapshot ? buildOverlayIndicatorAnnotations(state.snapshot, state.focusRegion) : [];
+  state.overlaySignals = state.focusRegion && state.snapshot ? buildOverlaySignals(state.snapshot, state.focusRegion) : [];
+  state.overlayBias = buildOverlayBias(state.overlaySignals);
+  renderAnnotationList();
+  renderOverlaySignalList();
+  renderOverlayBiasCard();
+  renderOverlayAnnotationSource();
+  renderChartOverlay();
+}
+
+function seedOverlayChatPrompt() {
+  const prompt = `${elements.coinSelect.value} ${elements.timeframeSelect.value} 기준으로 방금 선택한 구간의 상승/하락 신호, 돌파 여부, 거래량 참여, 위꼬리/아래꼬리 해석을 설명해줘.`;
+  if (elements.chatPromptInput) {
+    elements.chatPromptInput.value = prompt;
+  }
+  if (elements.floatingChatPromptInput) {
+    elements.floatingChatPromptInput.value = prompt;
+  }
+}
+
+async function requestOverlayAnalysis() {
+  if (!state.snapshot || !state.focusRegion || !elements.overlayToggle?.checked) {
+    return;
+  }
+
+  setOverlayAnalysisStatus("선택 구간 분석 중");
+
+  try {
+    const payload = await fetchJson("/api/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(buildAnalysisPayload())
+    });
+
+    state.aiAnnotations = Array.isArray(payload.annotations) ? payload.annotations : [];
+    refreshOverlayIndicators();
+    setAnalysisMessage(payload.analysis || "선택 구간 분석이 완료되었습니다.");
+    setOverlayAnalysisStatus("선택 구간 분석 완료");
+  } catch (error) {
+    setAnalysisMessage(error.message);
+    setOverlayAnalysisStatus("선택 구간 분석 실패");
   }
 }
 
@@ -346,7 +837,124 @@ function updateChatContextMeta() {
   const timeframe = elements.timeframeSelect?.value || "1h";
   const currentConversation = state.conversations.find((item) => item.id === state.currentConversationId);
   const title = currentConversation?.title ? ` · ${currentConversation.title}` : "";
-  elements.chatContextMeta.textContent = `현재 대화 기준: ${symbol} · ${timeframe}${title}. 대화 중 AI는 이 종목 컨텍스트와 최근 대화를 함께 사용합니다.`;
+  const focusRegionLabel = state.focusRegion ? " · 질문 구간 선택됨" : "";
+  elements.chatContextMeta.textContent = `현재 대화 기준: ${symbol} · ${timeframe}${title}${focusRegionLabel}. 대화 중 AI는 이 종목 컨텍스트와 최근 대화를 함께 사용합니다.`;
+}
+
+function parseMessageMeta(meta) {
+  if (!meta) {
+    return null;
+  }
+
+  if (typeof meta === "string") {
+    try {
+      return JSON.parse(meta);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  return typeof meta === "object" ? meta : null;
+}
+
+function buildAnnotationSourceMap(messages = state.chatMessages) {
+  return (Array.isArray(messages) ? messages : []).reduce((map, message, index) => {
+    const meta = parseMessageMeta(message.meta);
+    const annotations = Array.isArray(meta?.annotations) ? meta.annotations : [];
+    if (!annotations.length) {
+      return map;
+    }
+
+    const messageId = message.id || `chat-message-${index}`;
+    const createdAtLabel = message.created_at ? formatShortTime(message.created_at) : "방금";
+    const messagePreview = String(message.content || "").trim().slice(0, 140) || "AI 응답";
+    const fullMessage = String(message.content || "").trim() || "AI 응답";
+
+    annotations.forEach((annotation) => {
+      const annotationId = annotation?.id || annotation?.label;
+      if (!annotationId) {
+        return;
+      }
+
+      map[annotationId] = {
+        messageId,
+        label: annotation.label || "AI 주석",
+        messagePreview,
+        fullMessage,
+        createdAtLabel
+      };
+    });
+
+    return map;
+  }, {});
+}
+
+function focusLinkedChatMessage(messageId) {
+  if (!messageId) {
+    return;
+  }
+
+  [elements.chatMessageList, elements.floatingChatMessages].forEach((container) => {
+    const target = container?.querySelector?.(`[data-chat-message-id="${CSS.escape(messageId)}"]`);
+    if (!target) {
+      return;
+    }
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("is-linked");
+    window.setTimeout(() => target.classList.remove("is-linked"), 1600);
+  });
+}
+
+function normalizeFocusRegion(region) {
+  if (!region || typeof region !== "object") {
+    return null;
+  }
+
+  const startTime = Number(region.startTime);
+  const endTime = Number(region.endTime);
+  const minPrice = Number(region.minPrice);
+  const maxPrice = Number(region.maxPrice);
+
+  if (![startTime, endTime, minPrice, maxPrice].every(Number.isFinite)) {
+    return null;
+  }
+
+  return {
+    id: region.id || "focus-region",
+    type: "zone",
+    role: "focus-region",
+    source: "focus",
+    label: region.label || "질문 구간",
+    reason: region.reason || "이번 질문에서 우선 해석할 범위",
+    color: region.color || "rgba(96, 165, 250, 0.16)",
+    lineColor: region.lineColor || "#60a5fa",
+    startTime: Math.min(startTime, endTime),
+    endTime: Math.max(startTime, endTime),
+    minPrice: Math.min(minPrice, maxPrice),
+    maxPrice: Math.max(minPrice, maxPrice)
+  };
+}
+
+function syncConversationVisualState(messages = state.chatMessages) {
+  const normalizedMessages = Array.isArray(messages) ? messages : [];
+  const latestFocusRegion = normalizedMessages
+    .slice()
+    .reverse()
+    .map((message) => normalizeFocusRegion(parseMessageMeta(message.meta)?.focusRegion))
+    .find(Boolean);
+  const latestAiAnnotations = normalizedMessages
+    .slice()
+    .reverse()
+    .map((message) => parseMessageMeta(message.meta)?.annotations)
+    .find((annotations) => Array.isArray(annotations));
+
+  state.focusRegion = latestFocusRegion || null;
+  state.aiAnnotations = Array.isArray(latestAiAnnotations) ? latestAiAnnotations : [];
+  state.annotationSourceMap = buildAnnotationSourceMap(normalizedMessages);
+  state.selectedAnnotationSource = null;
+  refreshOverlayIndicators();
+  updateChatContextMeta();
 }
 
 function renderChatMessages() {
@@ -367,17 +975,18 @@ function renderChatMessages() {
   }
 
   const html = state.chatMessages
-    .map(
-      (message) => `
-        <article class="chat-message ${message.sender === "ai" ? "is-ai" : "is-user"}">
+    .map((message, index) => {
+      const messageId = message.id || `chat-message-${index}`;
+      return `
+        <article class="chat-message ${message.sender === "ai" ? "is-ai" : "is-user"}" data-chat-message-id="${escapeHtml(messageId)}">
           <header>
             <strong>${message.sender === "ai" ? "AI" : "나"}</strong>
             <span>${message.created_at ? formatShortTime(message.created_at) : "방금"}</span>
           </header>
           <div class="chat-message-body">${escapeHtml(message.content || "")}</div>
         </article>
-      `
-    )
+      `;
+    })
     .join("");
 
   if (elements.chatMessageList) {
@@ -426,7 +1035,7 @@ async function loadConversation(conversationId) {
   state.chatMessages = payload.messages || [];
   renderConversationList();
   renderChatMessages();
-  updateChatContextMeta();
+  syncConversationVisualState(state.chatMessages);
 }
 
 async function loadConversations() {
@@ -434,8 +1043,21 @@ async function loadConversations() {
     state.currentConversationId = null;
     state.conversations = [];
     state.chatMessages = [];
+    state.aiAnnotations = [];
+    state.overlayIndicatorAnnotations = [];
+    state.overlaySignals = [];
+    state.overlayBias = null;
+    state.focusRegion = null;
+    state.annotationSourceMap = {};
+    state.selectedAnnotationSource = null;
     renderConversationList();
     renderChatMessages();
+    renderAnnotationList();
+    renderOverlaySignalList();
+    renderOverlayBiasCard();
+    renderOverlayAnnotationSource();
+    renderChartOverlay();
+    updateChatContextMeta();
     return;
   }
 
@@ -449,16 +1071,40 @@ async function loadConversations() {
     } else {
       state.currentConversationId = null;
       state.chatMessages = [];
+      state.aiAnnotations = [];
+      state.overlayIndicatorAnnotations = [];
+      state.overlaySignals = [];
+      state.overlayBias = null;
+      state.focusRegion = null;
+      state.annotationSourceMap = {};
+      state.selectedAnnotationSource = null;
       renderConversationList();
       renderChatMessages();
+      renderAnnotationList();
+      renderOverlaySignalList();
+      renderOverlayBiasCard();
+      renderOverlayAnnotationSource();
+      renderChartOverlay();
       updateChatContextMeta();
     }
   } catch (_error) {
     state.currentConversationId = null;
     state.conversations = [];
     state.chatMessages = [];
+    state.aiAnnotations = [];
+    state.overlayIndicatorAnnotations = [];
+    state.overlaySignals = [];
+    state.overlayBias = null;
+    state.focusRegion = null;
+    state.annotationSourceMap = {};
+    state.selectedAnnotationSource = null;
     renderConversationList();
     renderChatMessages();
+    renderAnnotationList();
+    renderOverlaySignalList();
+    renderOverlayBiasCard();
+    renderOverlayAnnotationSource();
+    renderChartOverlay();
     updateChatContextMeta();
   }
 }
@@ -518,7 +1164,12 @@ async function sendChatMessage(source = "main") {
       renderConversationList();
       updateChatContextMeta();
     }
-    state.chatMessages.push({ sender: "user", content, created_at: new Date().toISOString() });
+    state.chatMessages.push({
+      sender: "user",
+      content,
+      created_at: new Date().toISOString(),
+      meta: state.focusRegion ? { focusRegion: state.focusRegion } : null
+    });
     renderChatMessages();
     if (promptElement) {
       promptElement.value = "";
@@ -539,6 +1190,7 @@ async function sendChatMessage(source = "main") {
         provider: elements.aiProviderSelect.value || "auto",
         symbol: elements.coinSelect.value,
         timeframe: elements.timeframeSelect.value,
+        focusRegion: state.focusRegion,
         modules: getEnabledModules(),
         profile: {
           alias: elements.aliasInput.value,
@@ -554,8 +1206,16 @@ async function sendChatMessage(source = "main") {
     });
 
     if (payload.ai) {
-      state.chatMessages.push({ sender: "ai", content: payload.ai.content, created_at: payload.ai.createdAt });
+      state.chatMessages.push({
+        sender: "ai",
+        content: payload.ai.content,
+        created_at: payload.ai.createdAt,
+        meta: payload.ai.meta || null
+      });
+      state.aiAnnotations = Array.isArray(payload.ai.annotations) ? payload.ai.annotations : [];
       renderChatMessages();
+      renderAnnotationList();
+      renderChartOverlay();
       setAnalysisMessage(payload.ai.content || "AI 응답이 생성되었습니다.");
       setFloatingBriefingMeta(payload.ai.error ? "AI 응답 실패" : "AI 응답 완료");
     }
@@ -576,9 +1236,21 @@ async function sendChatMessage(source = "main") {
 async function createNewConversation() {
   state.currentConversationId = null;
   state.chatMessages = [];
+  state.aiAnnotations = [];
+  state.overlayIndicatorAnnotations = [];
+  state.overlaySignals = [];
+  state.overlayBias = null;
+  state.focusRegion = null;
+  state.annotationSourceMap = {};
+  state.selectedAnnotationSource = null;
   state.floatingHistoryOpen = false;
   renderConversationList();
   renderChatMessages();
+  renderAnnotationList();
+  renderOverlaySignalList();
+  renderOverlayBiasCard();
+  renderOverlayAnnotationSource();
+  renderChartOverlay();
   updateChatContextMeta();
   elements.chatPromptInput?.focus();
 }
@@ -600,8 +1272,20 @@ async function deleteCurrentConversation() {
     state.conversations = state.conversations.filter((item) => item.id !== state.currentConversationId);
     state.currentConversationId = null;
     state.chatMessages = [];
+    state.aiAnnotations = [];
+    state.overlayIndicatorAnnotations = [];
+    state.overlaySignals = [];
+    state.overlayBias = null;
+    state.focusRegion = null;
+    state.annotationSourceMap = {};
+    state.selectedAnnotationSource = null;
     renderConversationList();
     renderChatMessages();
+    renderAnnotationList();
+    renderOverlaySignalList();
+    renderOverlayBiasCard();
+    renderOverlayAnnotationSource();
+    renderChartOverlay();
     updateChatContextMeta();
     setFloatingBriefingMeta("대화 삭제 완료");
   } catch (error) {
@@ -866,17 +1550,23 @@ function getVisibleCandles(snapshot) {
 }
 
 function getActiveAnnotations() {
-  const automated = elements.overlayToggle.checked ? state.aiAnnotations.length ? state.aiAnnotations : state.snapshot?.annotations || [] : [];
-  return [...state.manualAnnotations, ...automated];
+  const automated = elements.overlayToggle.checked
+    ? state.aiAnnotations.length
+      ? state.aiAnnotations
+      : state.snapshot?.annotations || []
+    : [];
+  const indicators = elements.overlayToggle.checked ? state.overlayIndicatorAnnotations : [];
+  return [...state.manualAnnotations, ...automated, ...indicators, ...(state.focusRegion ? [state.focusRegion] : [])];
 }
 
 function renderAnnotationList() {
   const annotations = getActiveAnnotations();
   const manualCount = state.manualAnnotations.length;
-  const automatedCount = Math.max(annotations.length - manualCount, 0);
+  const focusCount = state.focusRegion ? 1 : 0;
+  const automatedCount = Math.max(annotations.length - manualCount - focusCount, 0);
 
   elements.annotationSummary.textContent = annotations.length
-    ? `수동 ${manualCount}개 / 자동 ${automatedCount}개를 차트 위에 표시 중입니다.`
+    ? `수동 ${manualCount}개 / 자동 ${automatedCount}개${focusCount ? " / 질문 구간 1개" : ""}를 차트 위에 표시 중입니다.`
     : "표시 가능한 주석이 없습니다.";
 
   elements.annotationList.innerHTML = annotations.length
@@ -886,7 +1576,7 @@ function renderAnnotationList() {
             <div class="annotation-row">
               <strong>${escapeHtml(annotation.label || annotation.type)}</strong>
               <span>${escapeHtml(annotation.reason || "근거 없음")}</span>
-              <span>${escapeHtml(annotation.type)}${annotation.source ? ` · ${annotation.source}` : ""}</span>
+              <span>${escapeHtml(annotation.type)}${annotation.source ? ` · ${annotation.source === "indicator" ? "signal" : annotation.source}` : " · ai"}</span>
             </div>
           `
         )
@@ -972,6 +1662,43 @@ function renderDrawingTools() {
   });
 }
 
+function setFocusRegion(region) {
+  state.focusRegion = normalizeFocusRegion(region);
+  state.pendingDrawing = null;
+  refreshOverlayIndicators();
+  renderAnnotationList();
+  renderChartOverlay();
+  updateChatContextMeta();
+  setOverlayAnalysisStatus("선택 구간이 업데이트되었습니다. AI 재분석 또는 채팅 전송을 선택할 수 있습니다.");
+}
+
+function removeAnnotationById(annotationId) {
+  if (!annotationId) {
+    return false;
+  }
+
+  if (state.focusRegion?.id === annotationId) {
+    state.focusRegion = null;
+    state.overlayIndicatorAnnotations = [];
+    state.overlaySignals = [];
+    return true;
+  }
+
+  const nextManualAnnotations = state.manualAnnotations.filter((annotation) => annotation.id !== annotationId);
+  if (nextManualAnnotations.length !== state.manualAnnotations.length) {
+    state.manualAnnotations = nextManualAnnotations;
+    return true;
+  }
+
+  const nextAiAnnotations = state.aiAnnotations.filter((annotation) => annotation.id !== annotationId);
+  if (nextAiAnnotations.length !== state.aiAnnotations.length) {
+    state.aiAnnotations = nextAiAnnotations;
+    return true;
+  }
+
+  return false;
+}
+
 function renderOrderbook(snapshot) {
   const totalDepth = Math.max(snapshot.orderbook.totalBidUnits, snapshot.orderbook.totalAskUnits, 0.0001);
   const asks = snapshot.orderbook.asks.slice().reverse().slice(0, 10);
@@ -1033,6 +1760,39 @@ function ensureChartInteractions() {
   }
 
   const releaseDrag = () => {
+    if (state.overlaySelection.active) {
+      const start = state.overlaySelection.start;
+      const current = state.overlaySelection.current;
+      state.overlaySelection.active = false;
+      state.overlaySelection.handledPointerUp = Boolean(start && current);
+      elements.chartHost.classList.remove("is-selecting");
+
+      if (start && current) {
+        const timeDistance = Math.abs(Number(current.time) - Number(start.time));
+        const priceDistance = Math.abs(Number(current.price) - Number(start.price));
+        if (timeDistance > 0 && priceDistance > 0) {
+          setFocusRegion({
+            id: `focus-${Date.now()}`,
+            label: "AI 분석 구간",
+            reason: "오버레이 드래그 선택",
+            color: "rgba(96, 165, 250, 0.16)",
+            lineColor: "#60a5fa",
+            startTime: Math.min(start.time, current.time),
+            endTime: Math.max(start.time, current.time),
+            minPrice: Math.min(start.price, current.price),
+            maxPrice: Math.max(start.price, current.price)
+          });
+          requestOverlayAnalysis();
+        }
+      }
+
+      state.overlaySelection.start = null;
+      state.overlaySelection.current = null;
+      renderChartOverlay();
+      updateChartOverlayMode();
+      return;
+    }
+
     if (!state.chartViewport) {
       return;
     }
@@ -1047,6 +1807,20 @@ function ensureChartInteractions() {
       return;
     }
 
+    if (elements.overlayToggle?.checked) {
+      const point = readChartPoint(event.clientX, event.clientY);
+      if (!point) {
+        return;
+      }
+      state.overlaySelection.active = true;
+      state.overlaySelection.start = point;
+      state.overlaySelection.current = point;
+      state.overlaySelection.handledPointerUp = false;
+      elements.chartHost.classList.add("is-selecting");
+      setChartHint("드래그해서 분석할 구간을 지정하세요.");
+      return;
+    }
+
     state.chartViewport.isDragging = true;
     state.chartViewport.dragOriginX = event.clientX;
     state.chartViewport.dragStartIndex = state.chartViewport.startIndex;
@@ -1055,6 +1829,16 @@ function ensureChartInteractions() {
   });
 
   elements.chartHost.addEventListener("pointermove", (event) => {
+    if (state.overlaySelection.active) {
+      const point = readChartPoint(event.clientX, event.clientY);
+      if (!point) {
+        return;
+      }
+      state.overlaySelection.current = point;
+      renderChartOverlay();
+      return;
+    }
+
     if (!state.snapshot || !state.chartViewport?.isDragging || !state.chartGeometry?.candleGap || state.drawingTool !== "move") {
       return;
     }
@@ -1159,28 +1943,22 @@ function readChartPoint(clientX, clientY) {
 
   return {
     time: candle.timestamp,
-    price: Number(price.toFixed(2))
+    price: Number(price.toFixed(2)),
+    x: relativeX + state.chartGeometry.left,
+    y: relativeY + state.chartGeometry.priceTop
   };
 }
 
-function pushManualAnnotation(annotation) {
-  state.manualAnnotations.push({
-    ...annotation,
-    id: annotation.id || `manual-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    source: "manual"
-  });
-  state.pendingDrawing = null;
-  renderAnnotationList();
-  renderChartOverlay();
-  setChartHint("수동 드로잉을 추가했습니다. AI 분석 시 함께 전달됩니다.");
-}
-
-function handleDrawingClick(event) {
+function handleDrawingPlacement(clientX, clientY, eventTarget = null) {
   if (state.drawingTool === "move" || !state.snapshot || !state.chartGeometry) {
     return;
   }
 
-  const point = readChartPoint(event.clientX, event.clientY);
+  if (eventTarget?.closest?.("[data-annotation-id]")) {
+    return;
+  }
+
+  const point = readChartPoint(clientX, clientY);
 
   if (!point) {
     return;
@@ -1200,7 +1978,13 @@ function handleDrawingClick(event) {
 
   if (!state.pendingDrawing) {
     state.pendingDrawing = point;
-    setChartHint(state.drawingTool === "line" ? "끝점을 한 번 더 클릭하세요." : "구간의 반대쪽을 클릭하세요.");
+    setChartHint(
+      state.drawingTool === "line"
+        ? "끝점을 한 번 더 클릭하세요."
+        : state.drawingTool === "question-zone"
+          ? "질문 구간의 반대쪽을 클릭하세요."
+          : "구간의 반대쪽을 클릭하세요."
+    );
     return;
   }
 
@@ -1231,30 +2015,68 @@ function handleDrawingClick(event) {
       minPrice: Math.min(start.price, end.price),
       maxPrice: Math.max(start.price, end.price)
     });
+    return;
   }
+
+  if (state.drawingTool === "question-zone") {
+    setFocusRegion({
+      id: `focus-${Date.now()}`,
+      label: "질문 구간",
+      reason: "이번 질문에서 우선 해석할 범위",
+      color: "rgba(96, 165, 250, 0.16)",
+      lineColor: "#60a5fa",
+      startTime: Math.min(start.time, end.time),
+      endTime: Math.max(start.time, end.time),
+      minPrice: Math.min(start.price, end.price),
+      maxPrice: Math.max(start.price, end.price)
+    });
+    setChartHint("질문 구간을 지정했습니다. 다음 채팅에서 AI가 이 범위를 우선 해석합니다.");
+  }
+}
+
+function pushManualAnnotation(annotation) {
+  state.manualAnnotations.push({
+    ...annotation,
+    id: annotation.id || `manual-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    source: "manual"
+  });
+  state.pendingDrawing = null;
+  renderAnnotationList();
+  renderChartOverlay();
+  setChartHint("수동 드로잉을 추가했습니다. AI 분석 시 함께 전달됩니다.");
+}
+
+function handleDrawingClick(event) {
+  handleDrawingPlacement(event.clientX, event.clientY, event.target);
 }
 
 function clearManualAnnotations() {
   state.manualAnnotations = [];
+  state.focusRegion = null;
+  state.overlayIndicatorAnnotations = [];
+  state.overlaySignals = [];
+  state.overlayBias = null;
+  state.selectedAnnotationSource = null;
   state.pendingDrawing = null;
   renderAnnotationList();
+  renderOverlaySignalList();
+  renderOverlayBiasCard();
+  renderOverlayAnnotationSource();
   renderChartOverlay();
+  updateChatContextMeta();
   setChartHint("수동 드로잉을 모두 비웠습니다.");
 }
 
-function renderChartOverlay() {
-  const annotations = getActiveAnnotations();
-
-  if (!state.snapshot || state.activeViewId !== "marketView" || !state.chartGeometry || !annotations.length) {
-    elements.chartOverlay.innerHTML = "";
+function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {}) {
+  if (!target) {
     return;
   }
 
   const width = elements.chartHost.clientWidth;
   const height = elements.chartHost.clientHeight;
-  const { candles, left, plotWidth, priceTop, priceHeight, minPrice, maxPrice } = state.chartGeometry;
+  const { candles, left, plotWidth, priceTop, priceHeight, minPrice, maxPrice } = geometry;
 
-  elements.chartOverlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  target.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
   const priceToY = (price) => {
     const ratio = (Number(price) - minPrice) / Math.max(maxPrice - minPrice, 1);
@@ -1271,8 +2093,20 @@ function renderChartOverlay() {
     return left + clamp(ratio, 0, 1) * plotWidth;
   };
 
-  elements.chartOverlay.innerHTML = annotations
+  target.innerHTML = annotations
     .map((annotation) => {
+      const isIndicator = annotation.source === "indicator";
+      const isManual = annotation.source === "manual" || annotation.source === "focus";
+      const sourceInfo = sourceMap[annotation.id || annotation.label] || null;
+      const sourceAttrs = sourceInfo
+        ? ` data-chat-message-id="${escapeHtml(sourceInfo.messageId)}" data-annotation-source-label="${escapeHtml(
+            sourceInfo.label || "AI 주석"
+          )}"`
+        : "";
+      const labelColor = isIndicator ? "#b8e1ff" : isManual ? "#ffd089" : "#d7e2eb";
+      const dash = isIndicator ? "5 4" : annotation.role === "focus-region" ? "6 4" : "none";
+      const strokeWidth = annotation.role === "focus-region" ? "2" : isIndicator ? "1.7" : "2.2";
+
       if (annotation.type === "line" && annotation.from && annotation.to) {
         const x1 = timeToX(annotation.from.time);
         const x2 = timeToX(annotation.to.time);
@@ -1284,8 +2118,8 @@ function renderChartOverlay() {
         }
 
         return `
-          <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="2.2" />
-          <text x="${clamp(x2 + 6, 12, width - 120)}" y="${Math.max(y2 - 6, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "line")}</text>
+          <line data-annotation-id="${escapeHtml(annotation.id || annotation.label || "line")}"${sourceAttrs} x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" opacity="${isIndicator ? "0.92" : "1"}" />
+          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "line")}"${sourceAttrs} x="${clamp(x2 + 6, 12, width - 120)}" y="${Math.max(y2 - 6, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "line")}</text>
         `;
       }
 
@@ -1305,8 +2139,8 @@ function renderChartOverlay() {
         const rectHeight = Math.abs(maxY - minY);
 
         return `
-          <rect x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="1.5" rx="6" ry="6" />
-          <text x="${clamp(x + 6, 12, width - 120)}" y="${Math.max(y + 14, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
+          <rect data-annotation-id="${escapeHtml(annotation.id || annotation.label || "zone")}"${sourceAttrs} x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="${annotation.role === "focus-region" ? "2" : isIndicator ? "1.7" : "1.5"}" stroke-dasharray="${dash}" rx="6" ry="6" opacity="${isIndicator ? "0.9" : "1"}" />
+          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "zone")}"${sourceAttrs} x="${clamp(x + 6, 12, width - 120)}" y="${Math.max(y + 14, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
         `;
       }
 
@@ -1319,14 +2153,99 @@ function renderChartOverlay() {
         }
 
         return `
-          <circle cx="${x}" cy="${y}" r="5" fill="${escapeHtml(annotation.color || "#0ea5a0")}" />
-          <text x="${clamp(x + 8, 12, width - 120)}" y="${Math.max(y - 8, 12)}" fill="#d7e2eb" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
+          <circle data-annotation-id="${escapeHtml(annotation.id || annotation.label || "marker")}"${sourceAttrs} cx="${x}" cy="${y}" r="${isIndicator ? "4.3" : "5"}" fill="${escapeHtml(annotation.color || "#0ea5a0")}" opacity="${isIndicator ? "0.92" : "1"}" />
+          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "marker")}"${sourceAttrs} x="${clamp(x + 8, 12, width - 120)}" y="${Math.max(y - 8, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
         `;
       }
 
       return "";
     })
     .join("");
+}
+
+function renderChartOverlay() {
+  const drawingAnnotations = [...state.manualAnnotations, ...(state.focusRegion ? [state.focusRegion] : [])];
+  const automatedAnnotations = [
+    ...(elements.overlayToggle.checked
+      ? state.aiAnnotations.length
+        ? state.aiAnnotations
+        : state.snapshot?.annotations || []
+      : []),
+    ...(elements.overlayToggle.checked ? state.overlayIndicatorAnnotations : [])
+  ];
+  const sourceMap = state.annotationSourceMap || {};
+
+  if (!state.snapshot || state.activeViewId !== "marketView" || !state.chartGeometry) {
+    if (elements.chartAiOverlay) {
+      elements.chartAiOverlay.innerHTML = "";
+    }
+    if (elements.chartDrawingOverlay) {
+      elements.chartDrawingOverlay.innerHTML = "";
+    }
+    return;
+  }
+
+  const width = elements.chartHost.clientWidth;
+  const height = elements.chartHost.clientHeight;
+  const { candles, left, plotWidth, priceTop, priceHeight, minPrice, maxPrice } = state.chartGeometry;
+
+  const priceToY = (price) => {
+    const ratio = (Number(price) - minPrice) / Math.max(maxPrice - minPrice, 1);
+    return priceTop + priceHeight - ratio * priceHeight;
+  };
+  const timeToX = (time) => {
+    if (!candles.length) {
+      return null;
+    }
+
+    const firstTime = candles[0].timestamp;
+    const lastTime = candles.at(-1).timestamp;
+    const ratio = (Number(time) - firstTime) / Math.max(lastTime - firstTime, 1);
+    return left + clamp(ratio, 0, 1) * plotWidth;
+  };
+
+  const selectionRect = state.overlaySelection.active && state.overlaySelection.start && state.overlaySelection.current
+    ? (() => {
+        const startX = timeToX(state.overlaySelection.start.time);
+        const endX = timeToX(state.overlaySelection.current.time);
+        const startY = priceToY(state.overlaySelection.start.price);
+        const endY = priceToY(state.overlaySelection.current.price);
+
+        if ([startX, endX, startY, endY].some((value) => value === null || value === undefined)) {
+          return "";
+        }
+
+        return `
+          <rect x="${Math.min(startX, endX)}" y="${Math.min(startY, endY)}" width="${Math.max(Math.abs(endX - startX), 6)}" height="${Math.max(Math.abs(endY - startY), 6)}" fill="rgba(96, 165, 250, 0.14)" stroke="#60a5fa" stroke-width="1.8" stroke-dasharray="6 4" rx="6" ry="6" />
+        `;
+      })()
+    : "";
+
+  const pendingDrawingPreview = state.pendingDrawing && state.drawingTool !== "move"
+    ? (() => {
+        const x = timeToX(state.pendingDrawing.time);
+        const y = priceToY(state.pendingDrawing.price);
+
+        if ([x, y].some((value) => value === null || value === undefined)) {
+          return "";
+        }
+
+        return `
+          <circle cx="${x}" cy="${y}" r="5.5" fill="#f59e0b" opacity="0.95" />
+          <circle cx="${x}" cy="${y}" r="11" fill="rgba(245, 158, 11, 0.12)" stroke="#f59e0b" stroke-width="1.2" stroke-dasharray="4 3" />
+          <text x="${clamp(x + 10, 12, width - 120)}" y="${Math.max(y - 10, 12)}" fill="#ffd089" font-size="11">${escapeHtml(state.drawingTool === "question-zone" ? "질문 구간 시작" : "드로잉 시작점")}</text>
+        `;
+      })()
+    : "";
+
+  if (elements.chartAiOverlay) {
+    renderAnnotationsToLayer(elements.chartAiOverlay, automatedAnnotations, state.chartGeometry, sourceMap);
+  }
+
+  if (elements.chartDrawingOverlay) {
+    renderAnnotationsToLayer(elements.chartDrawingOverlay, drawingAnnotations, state.chartGeometry);
+    elements.chartDrawingOverlay.innerHTML += selectionRect + pendingDrawingPreview;
+  }
 }
 
 function renderChart(snapshot) {
@@ -1349,7 +2268,12 @@ function renderChart(snapshot) {
   if (!visibleCandles.length) {
     state.chartGeometry = null;
     elements.chartCanvas.innerHTML = "";
-    elements.chartOverlay.innerHTML = "";
+    if (elements.chartAiOverlay) {
+      elements.chartAiOverlay.innerHTML = "";
+    }
+    if (elements.chartDrawingOverlay) {
+      elements.chartDrawingOverlay.innerHTML = "";
+    }
     return;
   }
 
@@ -1485,6 +2409,18 @@ function renderMarketWorkspace(snapshot) {
   renderOrderbook(snapshot);
   renderTrades(snapshot);
   renderDrawingTools();
+  renderOverlayIndicatorControls();
+  renderOverlaySignalList();
+  renderOverlayBiasCard();
+  renderOverlayAnnotationSource();
+  updateChartOverlayMode();
+  setOverlayAnalysisStatus(
+    elements.overlayToggle.checked
+      ? state.focusRegion
+        ? "선택 구간이 활성화되어 있습니다. 지표 토글을 바꾸면 즉시 반영됩니다."
+        : "드래그해서 분석할 구간을 지정하세요."
+      : "AI 오버레이를 켜면 차트를 드래그해서 영역 분석을 시작할 수 있습니다."
+  );
   renderAnnotationList();
   renderTimeframeButtons();
   renderMarketSymbolList();
@@ -1631,6 +2567,7 @@ function buildAnalysisPayload() {
     timeframe: elements.timeframeSelect.value,
     provider: elements.aiProviderSelect.value || "auto",
     manualAnnotations: state.manualAnnotations,
+    focusRegion: state.focusRegion,
     modules: getEnabledModules(),
     profile: {
       alias: elements.aliasInput.value,
@@ -1916,9 +2853,12 @@ async function refreshMarket() {
   const timeframe = elements.timeframeSelect.value || "1h";
   const requestId = state.latestMarketRequestId + 1;
   state.latestMarketRequestId = requestId;
-  updateChatContextMeta();
   state.aiAnnotations = [];
+  state.overlayIndicatorAnnotations = [];
+  state.overlaySignals = [];
+  state.focusRegion = null;
   state.chartGeometry = null;
+  updateChatContextMeta();
   savePersonalSettings();
   setAnalysisMessage("시세를 먼저 불러오는 중입니다...");
   setFloatingBriefingMeta("시장 데이터 로딩 중");
@@ -2003,7 +2943,37 @@ elements.floatingBriefingMinimizeButton.addEventListener("click", () => {
   updateFloatingBriefingState();
   savePersonalSettings();
 });
-elements.chartHost.addEventListener("click", handleDrawingClick);
+elements.chartHost.addEventListener("pointerup", (event) => {
+  if (event.button !== 0) {
+    return;
+  }
+
+  if (state.overlaySelection.handledPointerUp) {
+    state.overlaySelection.handledPointerUp = false;
+    return;
+  }
+
+  handleDrawingClick(event);
+});
+elements.chartHost.addEventListener("contextmenu", (event) => {
+  const annotationElement = event.target.closest?.("[data-annotation-id]");
+
+  if (!annotationElement) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (!removeAnnotationById(annotationElement.getAttribute("data-annotation-id"))) {
+    return;
+  }
+
+  state.pendingDrawing = null;
+  renderAnnotationList();
+  renderChartOverlay();
+  updateChatContextMeta();
+  setChartHint("선택한 주석을 제거했습니다.");
+});
 elements.marketSearchInput.addEventListener("input", (event) => {
   state.marketSearchTerm = event.target.value;
   savePersonalSettings();
@@ -2043,9 +3013,12 @@ elements.drawingToolList.addEventListener("click", (event) => {
   state.drawingTool = button.dataset.drawingTool;
   state.pendingDrawing = null;
   renderDrawingTools();
+  updateChartOverlayMode();
   setChartHint(
     state.drawingTool === "move"
-      ? "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화"
+      ? elements.overlayToggle.checked
+        ? "드래그로 분석 구간 선택, 휠로 확대/축소"
+        : "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화"
       : `${button.textContent.trim()} 도구 선택됨. 차트 위를 클릭해 표시하세요.`
   );
 });
@@ -2059,8 +3032,80 @@ elements.undoDrawingButton.addEventListener("click", () => {
 elements.clearDrawingsButton.addEventListener("click", clearManualAnnotations);
 elements.overlayToggle.addEventListener("change", () => {
   savePersonalSettings();
-  renderAnnotationList();
-  renderChartOverlay();
+  updateChartOverlayMode();
+  renderOverlayIndicatorControls();
+  if (elements.overlayToggle.checked && state.focusRegion) {
+    refreshOverlayIndicators();
+    requestOverlayAnalysis();
+    setOverlayAnalysisStatus("오버레이 분석 모드 활성화");
+    setChartHint("드래그해서 분석할 구간을 지정하세요.");
+  } else {
+    renderAnnotationList();
+    renderOverlaySignalList();
+    renderOverlayBiasCard();
+    renderOverlayAnnotationSource();
+    renderChartOverlay();
+    setOverlayAnalysisStatus("AI 오버레이를 켜면 차트를 드래그해서 영역 분석을 시작할 수 있습니다.");
+  }
+});
+elements.overlayIndicatorList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-overlay-indicator]");
+  if (!button) {
+    return;
+  }
+
+  const indicatorId = button.dataset.overlayIndicator;
+  state.overlayIndicators[indicatorId] = !state.overlayIndicators[indicatorId];
+  savePersonalSettings();
+  renderOverlayIndicatorControls();
+  refreshOverlayIndicators();
+  setOverlayAnalysisStatus(
+    state.focusRegion
+      ? `${button.textContent.trim()} ${state.overlayIndicators[indicatorId] ? "표시" : "숨김"}`
+      : `${button.textContent.trim()} 옵션을 저장했습니다. 구간 선택 후 바로 반영됩니다.`
+  );
+});
+elements.overlayAnalyzeButton?.addEventListener("click", () => {
+  requestOverlayAnalysis();
+});
+elements.overlayIndicatorsOnlyButton?.addEventListener("click", () => {
+  refreshOverlayIndicators();
+  setOverlayAnalysisStatus("선택 구간 지표만 다시 계산했습니다.");
+});
+elements.overlayChatButton?.addEventListener("click", async () => {
+  if (!state.focusRegion) {
+    setOverlayAnalysisStatus("먼저 구간을 선택하세요.");
+    return;
+  }
+
+  seedOverlayChatPrompt();
+  setActiveView("briefingView");
+  if (state.account?.authenticated) {
+    await sendChatMessage();
+  } else {
+    elements.chatPromptInput?.focus();
+    setAnalysisMessage("로그인 후 구간 분석을 채팅으로 바로 전송할 수 있습니다.");
+  }
+});
+elements.chartAiOverlay?.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-chat-message-id]");
+  if (!target) {
+    return;
+  }
+
+  const messageId = target.dataset.chatMessageId;
+  const annotationId = target.dataset.annotationId;
+  state.selectedAnnotationSource = annotationId ? state.annotationSourceMap[annotationId] || null : null;
+  renderOverlayAnnotationSource();
+  focusLinkedChatMessage(messageId);
+});
+elements.overlayAnnotationSource?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-jump-chat-message-id]");
+  if (!button) {
+    return;
+  }
+
+  focusLinkedChatMessage(button.dataset.jumpChatMessageId);
 });
 elements.registerButton.addEventListener("click", registerAccount);
 elements.loginButton.addEventListener("click", loginAccount);

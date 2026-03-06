@@ -637,8 +637,25 @@ textarea {
   touch-action: none;
 }
 
+.chart-host::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 9, 13, 0);
+  transition: background 180ms ease;
+  pointer-events: none;
+}
+
+.chart-host.is-overlay-mode::after {
+  background: rgba(4, 9, 13, 0.24);
+}
+
 .chart-host.is-dragging {
   cursor: grabbing;
+}
+
+.chart-host.is-selecting {
+  cursor: crosshair;
 }
 
 .chart-canvas,
@@ -647,10 +664,31 @@ textarea {
   inset: 0;
 }
 
+.chart-canvas {
+  z-index: 1;
+}
+
 .chart-overlay {
   width: 100%;
   height: 100%;
   pointer-events: none;
+  z-index: 2;
+}
+
+.chart-ai-overlay {
+  z-index: 2;
+}
+
+.chart-drawing-overlay {
+  z-index: 3;
+}
+
+.chart-overlay [data-annotation-id] {
+  pointer-events: auto;
+}
+
+.chart-overlay text[data-annotation-id] {
+  cursor: context-menu;
 }
 
 .chart-overlay line,
@@ -665,6 +703,150 @@ textarea {
   background: rgba(18, 22, 26, 0.05);
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.overlay-analysis-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(18, 22, 26, 0.05);
+}
+
+.overlay-analysis-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.overlay-analysis-head strong {
+  font-size: 0.9rem;
+}
+
+.overlay-analysis-head span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.overlay-indicator-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.overlay-indicator-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(18, 22, 26, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.overlay-indicator-chip.is-active {
+  border-color: rgba(14, 165, 160, 0.34);
+  background: rgba(14, 165, 160, 0.14);
+}
+
+.overlay-signal-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.overlay-signal-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(18, 22, 26, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.overlay-signal-card strong {
+  font-size: 0.8rem;
+}
+
+.overlay-signal-card span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.overlay-signal-card.is-bullish {
+  border-color: rgba(15, 118, 110, 0.24);
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.overlay-signal-card.is-bearish {
+  border-color: rgba(169, 30, 22, 0.24);
+  background: rgba(169, 30, 22, 0.08);
+}
+
+.overlay-signal-card.is-neutral {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.overlay-bias-card,
+.overlay-annotation-source {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(18, 22, 26, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.overlay-bias-card strong,
+.overlay-annotation-source strong {
+  font-size: 0.84rem;
+}
+
+.overlay-bias-card span,
+.overlay-annotation-source span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.overlay-annotation-source-body {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(18, 22, 26, 0.05);
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-size: 0.8rem;
+}
+
+.overlay-source-jump {
+  justify-self: start;
+}
+
+.overlay-bias-card.is-bullish {
+  border-color: rgba(15, 118, 110, 0.3);
+  background: rgba(15, 118, 110, 0.12);
+}
+
+.overlay-bias-card.is-bearish {
+  border-color: rgba(169, 30, 22, 0.3);
+  background: rgba(169, 30, 22, 0.12);
+}
+
+.overlay-bias-card.is-neutral {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.overlay-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .compact-search input {
@@ -1205,6 +1387,11 @@ textarea {
 
 .chat-message.is-user {
   background: rgba(245, 245, 245, 0.92);
+}
+
+.chat-message.is-linked {
+  border-color: rgba(59, 130, 246, 0.42);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
 
 .chat-message header {

@@ -200,6 +200,7 @@
                         <button class="shortcut-button is-active" data-drawing-tool="move" type="button">이동</button>
                         <button class="shortcut-button" data-drawing-tool="line" type="button">선</button>
                         <button class="shortcut-button" data-drawing-tool="zone" type="button">구간</button>
+                        <button class="shortcut-button" data-drawing-tool="question-zone" type="button">질문 구간</button>
                         <button class="shortcut-button" data-drawing-tool="marker" type="button">마커</button>
                         <button class="shortcut-button" id="undoDrawingButton" type="button">마지막 삭제</button>
                         <button class="shortcut-button" id="clearDrawingsButton" type="button">전체 삭제</button>
@@ -227,10 +228,32 @@
                   <div class="chart-stack">
                     <div class="chart-host">
                       <div id="chartCanvas" class="chart-canvas"></div>
-                      <svg id="chartOverlay" class="chart-overlay" aria-hidden="true"></svg>
+                      <svg id="chartAiOverlay" class="chart-overlay chart-ai-overlay" aria-hidden="true"></svg>
+                      <svg id="chartDrawingOverlay" class="chart-overlay chart-drawing-overlay" aria-hidden="true"></svg>
                     </div>
                     <div id="annotationSummary" class="annotation-summary">
                       차트 위 주석 레이어를 준비 중입니다.
+                    </div>
+                    <div class="overlay-analysis-panel">
+                      <div class="overlay-analysis-head">
+                        <strong>오버레이 분석</strong>
+                        <span id="overlayAnalysisStatus">AI 오버레이를 켜면 차트를 드래그해서 영역 분석을 시작할 수 있습니다.</span>
+                      </div>
+                      <div id="overlayBiasCard" class="overlay-bias-card is-neutral">
+                        <strong>구간 바이어스 대기</strong>
+                        <span>구간을 선택하면 상승/하락 우위를 요약합니다.</span>
+                      </div>
+                      <div id="overlayIndicatorList" class="overlay-indicator-list"></div>
+                      <div id="overlaySignalList" class="overlay-signal-list"></div>
+                      <div id="overlayAnnotationSource" class="overlay-annotation-source">
+                        <strong>주석 출처</strong>
+                        <span>AI 주석을 클릭하면 연결된 답변을 여기서 확인할 수 있습니다.</span>
+                      </div>
+                      <div class="overlay-quick-actions">
+                        <button id="overlayAnalyzeButton" class="button ghost" type="button">AI 재분석</button>
+                        <button id="overlayChatButton" class="button ghost" type="button">채팅으로 보내기</button>
+                        <button id="overlayIndicatorsOnlyButton" class="button ghost" type="button">지표만 갱신</button>
+                      </div>
                     </div>
                   </div>
                 </article>
