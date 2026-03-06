@@ -1,4 +1,5 @@
 const express = require("express");
+const fs = require("fs");
 const path = require("path");
 const { analyzeContext } = require("./ai");
 const {
@@ -421,6 +422,21 @@ async function handlePublicBriefingRequest(request, response) {
 
 app.get("/api/public/briefing", handlePublicBriefingRequest);
 app.get("/api/public/briefing/:symbol", handlePublicBriefingRequest);
+
+// Serve project README as a public endpoint to make docs machine-readable
+app.get("/api/public/readme", (request, response) => {
+  const readmePath = path.join(__dirname, "..", "README.md");
+
+  fs.readFile(readmePath, "utf8", (err, data) => {
+    if (err) {
+      response.status(500).json({ error: "README not available" });
+      return;
+    }
+
+    // Return as markdown/plain text so callers can parse or display it
+    response.type("text/markdown; charset=utf-8").send(data);
+  });
+});
 
 async function buildConciseMarketSnapshot(snapshot, options = {}) {
   function parseTime(val) {
