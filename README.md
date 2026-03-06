@@ -99,6 +99,9 @@ https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
   - `serverTime` (epoch seconds): 응답 시점 기준 타임스탬프(지연 계산에 사용)
   - `fundingRate` (number|null): 선물 펀딩비(가능하면 포함)
   - `openInterest` (number|null): 선물 미체결약정(OI)
+    - `btc_dominance` (number|null): 글로벌 시총 기준 BTC 도미넌스(%) — 이제 `/api/public/market`에도 포함됩니다
+    - `eth_dominance` (number|null): ETH 도미넌스(%)
+    - `total_marketcap_usd` (number|null): 전체 시가총액(USD)
 
 - 레버리지 흐름 간단 해석(외부에서 빠르게 읽는 법)
   - 가격 상승 + `openInterest` 상승 => 추세 강화 (레버리지 유입)

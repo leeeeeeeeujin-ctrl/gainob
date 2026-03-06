@@ -463,6 +463,27 @@ app.get("/api/public/market", async (request, response) => {
       response.json(snapshot);
       return;
     }
+    // attach macro stats (btc/eth dominance, total marketcap) for convenience
+    let intelligence = null;
+    try {
+      intelligence = await getIntelligenceSnapshot(symbol, await getCoinLabel(symbol));
+    } catch (_err) {
+      intelligence = null;
+    }
+
+    const macroFields = intelligence
+      ? {
+          btc_dominance: intelligence.macroStats.btcDominancePct,
+          eth_dominance: intelligence.macroStats.ethDominancePct,
+          total_marketcap_usd: intelligence.macroStats.totalMarketCapUsd
+        }
+      : { btc_dominance: null, eth_dominance: null, total_marketcap_usd: null };
+
+    if (!conciseFlag) {
+      Object.assign(snapshot, macroFields);
+      response.json(snapshot);
+      return;
+    }
 
     const candles = Number(request.query.candles || 24);
     const trades = Number(request.query.trades || 20);
@@ -470,6 +491,7 @@ app.get("/api/public/market", async (request, response) => {
     const start = request.query.start;
     const end = request.query.end;
     const payload = await buildConciseMarketSnapshot(snapshot, { candles, trades, orderbookDepth, start, end });
+    Object.assign(payload, macroFields);
     response.json(payload);
   } catch (error) {
     response.status(400).json({ error: error.message });
