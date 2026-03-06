@@ -84,6 +84,44 @@ https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
 - `total_marketcap_usd`
 - `news_summary`
 
+### Public API 사용법 (요약)
+
+- 기본 엔드포인트
+  - `GET /api/public/market?symbol=BTC&timeframe=1h&concise=true`
+    - 기본은 간결 응답(캔들 24개, 최근 거래 20개, 호가 깊이 20)
+    - 쿼리 파라미터: `concise`(true|false), `candles`, `trades`, `orderbookDepth`, `start`, `end`(ISO 또는 epoch ms)
+  - `GET /api/public/liquidity?symbol=BTC&orderbookDepth=10`
+    - 호가/유동성(스프레드, 매물벽, bids/asks 배열 제한)
+  - `GET /api/public/structure?symbol=BTC&recent=12`
+    - 다중 타임프레임 요약 및 차트 주석(최근 캔들 수 제한)
+
+- 응답에 항상 포함되는 유용한 필드
+  - `serverTime` (epoch seconds): 응답 시점 기준 타임스탬프(지연 계산에 사용)
+  - `fundingRate` (number|null): 선물 펀딩비(가능하면 포함)
+  - `openInterest` (number|null): 선물 미체결약정(OI)
+
+- 레버리지 흐름 간단 해석(외부에서 빠르게 읽는 법)
+  - 가격 상승 + `openInterest` 상승 => 추세 강화 (레버리지 유입)
+  - 가격 상승 + `openInterest` 감소 => 숏커버(공매수 청산 또는 숏 포지션 축소)
+  - `fundingRate`는 양수면 롱 포지션이 숏보다 비용을 지불하는 구조(롱 쏠림), 음수면 숏 쏠림
+
+- 사용 예시 (curl)
+
+```bash
+curl 'http://localhost:3000/api/public/market?symbol=BTC&timeframe=1h&candles=12&trades=10&orderbookDepth=10'
+
+curl 'http://localhost:3000/api/public/liquidity?symbol=BTC&orderbookDepth=10'
+
+curl 'http://localhost:3000/api/public/structure?symbol=BTC&recent=6'
+```
+
+- 빠른 파싱 팁
+  - `serverTime`로 응답 지연(응답 시간 - 서버Time)을 계산해 데이터를 신선도 검사
+  - `fundingRate`/`openInterest`가 `null`이면 해당 심볼에서 선물 데이터가 제공되지 않음
+  - 큰 페이로드가 문제면 `concise=true` 또는 `candles`/`trades`/`orderbookDepth`를 낮춰 요청
+
+이 섹션을 README에 추가하여 외부 툴(예: GPT 플러그인, 파이프라인)에서 바로 호출해 사용할 수 있도록 했습니다.
+
 ## 메모
 
 - 로컬 기준 거래소는 `빗썸`
