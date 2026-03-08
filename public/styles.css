@@ -733,6 +733,53 @@ textarea {
   z-index: 3;
 }
 
+.chart-selection-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 6px;
+  padding: 12px;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.24) 0%, rgba(0, 0, 0, 0.12) 72px, rgba(0, 0, 0, 0.02) 160px, rgba(0, 0, 0, 0) 100%);
+  transition: opacity 160ms ease, background 160ms ease;
+}
+
+.chart-selection-overlay.is-active {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.chart-selection-overlay.is-dragging {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.34) 0%, rgba(0, 0, 0, 0.16) 84px, rgba(0, 0, 0, 0.04) 180px, rgba(0, 0, 0, 0) 100%);
+}
+
+.chart-selection-overlay__badge,
+.chart-selection-overlay__hint {
+  padding: 5px 10px;
+  border-radius: 999px;
+  color: rgba(248, 250, 252, 0.94);
+  background: rgba(0, 0, 0, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(8px);
+}
+
+.chart-selection-overlay__badge {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chart-selection-overlay__hint {
+  font-size: 0.76rem;
+  color: rgba(226, 232, 240, 0.92);
+}
+
 .chart-overlay [data-annotation-id] {
   pointer-events: auto;
 }

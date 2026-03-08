@@ -25,7 +25,8 @@ const state = {
     active: false,
     start: null,
     current: null,
-    handledPointerUp: false
+    handledPointerUp: false,
+    pointerId: null
   },
   overlaySelectionMode: true,
   overlayIndicators: {
@@ -151,6 +152,7 @@ const elements = {
   chartCanvas: document.querySelector("#chartCanvas"),
   chartAiOverlay: document.querySelector("#chartAiOverlay"),
   chartDrawingOverlay: document.querySelector("#chartDrawingOverlay"),
+  chartSelectionOverlay: document.querySelector("#chartSelectionOverlay"),
   chartNavigator: document.querySelector("#chartNavigator"),
   chartNavigatorMeta: document.querySelector("#chartNavigatorMeta"),
   chartMeta: document.querySelector("#chartMeta"),
@@ -436,6 +438,12 @@ function updateChartOverlayMode() {
 
   elements.chartHost.classList.toggle("is-overlay-mode", Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked));
   elements.chartHost.classList.toggle("is-selecting", isOverlaySelectionMode() || state.overlaySelection.active);
+  if (elements.chartSelectionOverlay) {
+    const active = isOverlaySelectionMode() || state.overlaySelection.active;
+    elements.chartSelectionOverlay.classList.toggle("is-active", active);
+    elements.chartSelectionOverlay.classList.toggle("is-dragging", Boolean(state.overlaySelection.active));
+    elements.chartSelectionOverlay.setAttribute("aria-hidden", active ? "false" : "true");
+  }
   renderOverlaySelectionModeButton();
 }
 
@@ -2148,6 +2156,121 @@ function ensureChartInteractions() {
     return;
   }
 
+  const beginOverlaySelection = (event) => {
+    if (!state.snapshot || !state.chartViewport || state.drawingTool !== "move" || !isOverlaySelectionMode()) {
+      return false;
+    }
+
+    const point = readChartPoint(event.clientX, event.clientY);
+    if (!point) {
+      return false;
+    }
+
+    state.overlaySelection.active = true;
+    state.overlaySelection.start = point;
+    state.overlaySelection.current = point;
+    state.overlaySelection.handledPointerUp = false;
+    state.overlaySelection.pointerId = event.pointerId ?? null;
+    elements.chartHost.classList.add("is-selecting");
+    elements.chartSelectionOverlay?.setPointerCapture?.(event.pointerId);
+    setChartHint("드래그해서 분석할 구간을 지정하세요.");
+    renderChartOverlay();
+    updateChartOverlayMode();
+    return true;
+  };
+
+  const updateOverlaySelection = (event) => {
+    if (!state.overlaySelection.active) {
+      return false;
+    }
+
+    if (state.overlaySelection.pointerId !== null && event?.pointerId !== undefined && state.overlaySelection.pointerId !== event.pointerId) {
+      return false;
+    }
+
+    const point = readChartPoint(event.clientX, event.clientY);
+    if (!point) {
+      return false;
+    }
+
+    state.overlaySelection.current = point;
+    renderChartOverlay();
+    return true;
+  };
+
+  const finishOverlaySelection = (event) => {
+    if (!state.overlaySelection.active) {
+      return false;
+    }
+
+    if (state.overlaySelection.pointerId !== null && event?.pointerId !== undefined && state.overlaySelection.pointerId !== event.pointerId) {
+      return false;
+    }
+
+    const start = state.overlaySelection.start;
+    const current = state.overlaySelection.current;
+    const pointerId = state.overlaySelection.pointerId;
+    state.overlaySelection.active = false;
+    state.overlaySelection.handledPointerUp = Boolean(start && current);
+    state.overlaySelection.pointerId = null;
+    elements.chartHost.classList.remove("is-selecting");
+    if (pointerId !== null) {
+      elements.chartSelectionOverlay?.releasePointerCapture?.(pointerId);
+    }
+
+    if (start && current) {
+      const timeDistance = Math.abs(Number(current.time) - Number(start.time));
+      if (timeDistance > 0) {
+        const region = buildFocusRegionFromSelection(state.snapshot, start, current);
+        if (region) {
+          setFocusRegion(region);
+        }
+        requestOverlayAnalysis();
+      } else {
+        setOverlayAnalysisStatus("최소 두 개 이상의 봉을 가로질러 드래그해야 구간이 설정됩니다.");
+      }
+    }
+
+    state.overlaySelection.start = null;
+    state.overlaySelection.current = null;
+    renderChartOverlay();
+    updateChartOverlayMode();
+    return true;
+  };
+
+  if (elements.chartSelectionOverlay && elements.chartSelectionOverlay.dataset.bound !== "true") {
+    elements.chartSelectionOverlay.addEventListener("pointerdown", (event) => {
+      if (!beginOverlaySelection(event)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    elements.chartSelectionOverlay.addEventListener("pointermove", (event) => {
+      if (!updateOverlaySelection(event)) {
+        return;
+      }
+
+      event.preventDefault();
+    });
+
+    const releaseOverlaySelection = (event) => {
+      if (!finishOverlaySelection(event)) {
+        return;
+      }
+
+      event.preventDefault?.();
+      event.stopPropagation?.();
+    };
+
+    elements.chartSelectionOverlay.addEventListener("pointerup", releaseOverlaySelection);
+    elements.chartSelectionOverlay.addEventListener("pointercancel", releaseOverlaySelection);
+    elements.chartSelectionOverlay.addEventListener("pointerleave", releaseOverlaySelection);
+    elements.chartSelectionOverlay.dataset.bound = "true";
+  }
+
   if (elements.chartNavigator && elements.chartNavigator.dataset.bound !== "true") {
     const releaseNavigator = (event) => {
       if (state.chartNavigator.pointerId !== null && event?.pointerId !== undefined && state.chartNavigator.pointerId !== event.pointerId) {
@@ -2253,33 +2376,6 @@ function ensureChartInteractions() {
   }
 
   const releaseDrag = () => {
-    if (state.overlaySelection.active) {
-      const start = state.overlaySelection.start;
-      const current = state.overlaySelection.current;
-      state.overlaySelection.active = false;
-      state.overlaySelection.handledPointerUp = Boolean(start && current);
-      elements.chartHost.classList.remove("is-selecting");
-
-      if (start && current) {
-        const timeDistance = Math.abs(Number(current.time) - Number(start.time));
-        if (timeDistance > 0) {
-          const region = buildFocusRegionFromSelection(state.snapshot, start, current);
-          if (region) {
-            setFocusRegion(region);
-          }
-          requestOverlayAnalysis();
-        } else {
-          setOverlayAnalysisStatus("최소 두 개 이상의 봉을 가로질러 드래그해야 구간이 설정됩니다.");
-        }
-      }
-
-      state.overlaySelection.start = null;
-      state.overlaySelection.current = null;
-      renderChartOverlay();
-      updateChartOverlayMode();
-      return;
-    }
-
     if (!state.chartViewport) {
       return;
     }
@@ -2295,18 +2391,6 @@ function ensureChartInteractions() {
     }
 
     if (isOverlaySelectionMode()) {
-      const point = readChartPoint(event.clientX, event.clientY);
-      if (!point) {
-        return;
-      }
-      state.overlaySelection.active = true;
-      state.overlaySelection.start = point;
-      state.overlaySelection.current = point;
-      state.overlaySelection.handledPointerUp = false;
-      elements.chartHost.classList.add("is-selecting");
-      elements.chartHost.setPointerCapture?.(event.pointerId);
-      setChartHint("드래그해서 분석할 구간을 지정하세요.");
-      renderChartOverlay();
       return;
     }
 
@@ -2318,16 +2402,6 @@ function ensureChartInteractions() {
   });
 
   elements.chartHost.addEventListener("pointermove", (event) => {
-    if (state.overlaySelection.active) {
-      const point = readChartPoint(event.clientX, event.clientY);
-      if (!point) {
-        return;
-      }
-      state.overlaySelection.current = point;
-      renderChartOverlay();
-      return;
-    }
-
     if (!state.snapshot || !state.chartViewport?.isDragging || !state.chartGeometry?.candleGap || state.drawingTool !== "move") {
       return;
     }
