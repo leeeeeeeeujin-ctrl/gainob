@@ -124,6 +124,31 @@ const statements = [
   `
     create index if not exists conversation_messages_conversation_id_created_at_idx
     on conversation_messages(conversation_id, created_at asc);
+  `,
+  `
+    create table if not exists market_direction_history (
+      id uuid primary key default gen_random_uuid(),
+      symbol text not null,
+      timeframe text not null,
+      score numeric not null,
+      trust_score numeric not null,
+      tone text,
+      bias text,
+      price_usdt numeric,
+      change_24h_pct numeric,
+      orderbook_imbalance_pct numeric,
+      quote_volume_24h_usdt numeric,
+      snapshot jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now()
+    );
+  `,
+  `
+    create index if not exists market_direction_history_symbol_timeframe_created_at_idx
+    on market_direction_history(symbol, timeframe, created_at desc);
+  `,
+  `
+    create index if not exists market_direction_history_timeframe_created_at_idx
+    on market_direction_history(timeframe, created_at desc);
   `
 ];
 

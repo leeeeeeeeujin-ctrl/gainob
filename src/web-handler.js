@@ -12,7 +12,7 @@ const {
   shouldUseSecureCookies,
   verifyPassword
 } = require("./auth");
-const { getDatabaseStatus, query } = require("./db");
+const { getDatabaseStatus, hasDatabaseConfig, query } = require("./db");
 const { getIntelligenceSnapshot } = require("./intelligence");
 const { createModuleContext } = require("./core/module-context");
 const { getMarketSnapshot, getMultiTimeframeMarketPacket, getSupportedCoins, getSupportedTimeframes } = require("./market");
@@ -414,8 +414,480 @@ function buildPublicEndpointDocs(baseUrl = "") {
         method: "GET",
         query: { symbol: "조회할 심볼. 예: BTC" },
         returns: "다중 타임프레임 요약 및 차트 주석(간결화)"
+      },
+      {
+        path: `${baseUrl}/api/public/direction?timeframe=1h&limit=5&universe=10`,
+        method: "GET",
+        query: {
+          timeframe: "기준 타임프레임. 예: 1h",
+          limit: "표시할 상위 후보 수 (기본 5)",
+          universe: "스캔할 코인 수 (기본 10)"
+        },
+        returns: "도미넌스, 시장 폭, 복수 신호 점수 기반 상위/하위 후보 스캐너"
+      },
+      {
+        path: `${baseUrl}/api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`,
+        method: "GET",
+        query: {
+          symbol: "조회할 심볼. 예: BTC",
+          timeframe: "기준 타임프레임. 예: 1h",
+          limit: "가져올 이력 수 (기본 24)"
+        },
+        returns: "저장된 방향 점수 및 신뢰도 이력"
       }
     ]
+  };
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function scoreFromChange(changePct, divisor, min, max) {
+  return clampNumber(Number(changePct || 0) / divisor, min, max);
+}
+
+function classifyDirectionBias(score) {
+  if (score >= 4.2) {
+    return { tone: "strong-up", label: "강한 상승 우위" };
+  }
+  if (score >= 2.1) {
+    return { tone: "up", label: "상승 우위" };
+  }
+  if (score <= -4.2) {
+    return { tone: "strong-down", label: "강한 하락 우위" };
+  }
+  if (score <= -2.1) {
+    return { tone: "down", label: "하락 우위" };
+  }
+  return { tone: "neutral", label: "중립" };
+}
+
+function classifyTrustLevel(score) {
+  if (score >= 75) {
+    return { tone: "high", label: "상" };
+  }
+  if (score >= 55) {
+    return { tone: "medium", label: "중" };
+  }
+  return { tone: "low", label: "하" };
+}
+
+function isStablecoinLikeCoin(coin) {
+  const symbol = String(coin?.symbol || "").toUpperCase();
+  const price = Number(coin?.lastPriceUsdt || 0);
+  const change24hPct = Math.abs(Number(coin?.change24hPct || 0));
+  const explicitStableSymbols = new Set(["USDT", "USDC", "FDUSD", "TUSD", "BUSD", "USDP", "DAI", "USD1", "USDE", "PYUSD"]);
+
+  if (explicitStableSymbols.has(symbol)) {
+    return true;
+  }
+
+  return /USD|EUR|TRY/.test(symbol) && price >= 0.85 && price <= 1.15 && change24hPct <= 1.5;
+}
+
+function isMissingRelationError(error) {
+  return error?.code === "42P01" || String(error?.message || "").includes("market_direction_history");
+}
+
+function buildTrustProfile(packet, medianQuoteVolume, medianDepthValue) {
+  const quoteVolume = Number(packet.primary?.quoteVolume24hUsdt || 0);
+  const depthValue = Number(packet.orderbook?.totalBidValueUsdt || 0) + Number(packet.orderbook?.totalAskValueUsdt || 0);
+  const openInterest = Number(packet.openInterest || 0);
+  const coverageCount = (packet.multiTimeframes || []).filter((item) => Number.isFinite(Number(item?.changePct))).length;
+  const localSupported = Boolean(packet.local?.available || packet.comparison?.premiumPct !== null);
+  const volumeScore = medianQuoteVolume > 0
+    ? clampNumber(Math.log10((quoteVolume + 1) / (medianQuoteVolume + 1)) * 18 + 18, 2, 34)
+    : clampNumber(Math.log10(quoteVolume + 1) * 4, 2, 24);
+  const depthScore = medianDepthValue > 0
+    ? clampNumber(Math.log10((depthValue + 1) / (medianDepthValue + 1)) * 16 + 16, 2, 28)
+    : clampNumber(Math.log10(depthValue + 1) * 3.5, 2, 20);
+  const openInterestScore = openInterest > 0 ? clampNumber(Math.log10(openInterest + 1) * 2.6, 2, 12) : 0;
+  const coverageScore = clampNumber(coverageCount * 4, 4, 16);
+  const localSupportScore = localSupported ? 8 : 0;
+  const lowVolumePenalty = medianQuoteVolume > 0 && quoteVolume < medianQuoteVolume * 0.18 ? 10 : 0;
+  const lowDepthPenalty = medianDepthValue > 0 && depthValue < medianDepthValue * 0.18 ? 10 : 0;
+  const trustScore = clampNumber(
+    24 + volumeScore + depthScore + openInterestScore + coverageScore + localSupportScore - lowVolumePenalty - lowDepthPenalty,
+    8,
+    98
+  );
+  const trust = classifyTrustLevel(trustScore);
+  const trustReasons = [];
+
+  if (quoteVolume >= medianQuoteVolume * 1.2) {
+    trustReasons.push("24h 거래대금 상위권");
+  } else if (lowVolumePenalty) {
+    trustReasons.push("거래대금 낮음");
+  }
+
+  if (depthValue >= medianDepthValue * 1.1) {
+    trustReasons.push("호가 두께 양호");
+  } else if (lowDepthPenalty) {
+    trustReasons.push("호가 두께 얕음");
+  }
+
+  if (openInterest > 0) {
+    trustReasons.push("파생 데이터 존재");
+  }
+
+  if (localSupported) {
+    trustReasons.push("국내 비교 가능");
+  }
+
+  if (!trustReasons.length) {
+    trustReasons.push("기본 데이터 커버리지 기준");
+  }
+
+  return {
+    trustScore: Number(trustScore.toFixed(0)),
+    trustTone: trust.tone,
+    trustLabel: trust.label,
+    trustReasons: trustReasons.slice(0, 4)
+  };
+}
+
+function buildDirectionCandidate(packet, medianQuoteVolume, medianDepthValue) {
+  const timeframeMap = new Map((packet.multiTimeframes || []).map((item) => [item.timeframe, item]));
+  const tf15m = timeframeMap.get("15m");
+  const tf1h = timeframeMap.get("1h");
+  const tf4h = timeframeMap.get("4h");
+  const tf1d = timeframeMap.get("1d");
+  const requested = timeframeMap.get(packet.requestedTimeframe) || tf1h || tf4h || tf15m || tf1d || null;
+
+  const change15mScore = scoreFromChange(tf15m?.changePct, 1.1, -1.2, 1.2);
+  const change1hScore = scoreFromChange(tf1h?.changePct, 1.6, -1.5, 1.5);
+  const change4hScore = scoreFromChange(tf4h?.changePct, 2.8, -1.8, 1.8);
+  const change1dScore = scoreFromChange(tf1d?.changePct, 4.2, -2.1, 2.1);
+  const orderbookScore = clampNumber(Number(packet.orderbook?.imbalancePct || 0) / 25, -1.2, 1.2);
+  const premiumScore = clampNumber(Number(packet.comparison?.premiumPct || 0) / 1.2, -0.5, 0.5);
+  const fundingScore = packet.fundingRate === null || packet.fundingRate === undefined
+    ? 0
+    : clampNumber(Number(packet.fundingRate || 0) * 20000, -0.45, 0.45);
+  const volumeScore = medianQuoteVolume > 0
+    ? clampNumber(Math.log10((Number(packet.primary?.quoteVolume24hUsdt || 0) + 1) / (medianQuoteVolume + 1)) * 1.1, -0.65, 0.65)
+    : 0;
+
+  const totalScore =
+    change15mScore * 0.8 +
+    change1hScore * 1.2 +
+    change4hScore * 1.7 +
+    change1dScore * 2.2 +
+    orderbookScore * 1.15 +
+    premiumScore * 0.4 +
+    fundingScore * 0.4 +
+    volumeScore * 0.6;
+
+  const bias = classifyDirectionBias(totalScore);
+  const trustProfile = buildTrustProfile(packet, medianQuoteVolume, medianDepthValue);
+  const reasons = [];
+
+  if ((tf4h?.changePct || 0) > 1.5) {
+    reasons.push(`4h 강세 ${Number(tf4h.changePct).toFixed(2)}%`);
+  } else if ((tf4h?.changePct || 0) < -1.5) {
+    reasons.push(`4h 약세 ${Number(tf4h.changePct).toFixed(2)}%`);
+  }
+
+  if ((tf1d?.changePct || 0) > 2.5) {
+    reasons.push(`일봉 우호 ${Number(tf1d.changePct).toFixed(2)}%`);
+  } else if ((tf1d?.changePct || 0) < -2.5) {
+    reasons.push(`일봉 약세 ${Number(tf1d.changePct).toFixed(2)}%`);
+  }
+
+  if ((packet.orderbook?.imbalancePct || 0) >= 18) {
+    reasons.push(`호가 우위 ${Number(packet.orderbook.imbalancePct).toFixed(1)}%`);
+  } else if ((packet.orderbook?.imbalancePct || 0) <= -18) {
+    reasons.push(`매도 압력 ${Number(packet.orderbook.imbalancePct).toFixed(1)}%`);
+  }
+
+  if ((packet.primary?.quoteVolume24hUsdt || 0) > medianQuoteVolume * 1.35) {
+    reasons.push("거래대금 상위권");
+  }
+
+  if (packet.fundingRate !== null && packet.fundingRate !== undefined) {
+    reasons.push(`펀딩 ${Number(packet.fundingRate).toFixed(5)}`);
+  }
+
+  if (!reasons.length) {
+    reasons.push("복수 신호 혼조");
+  }
+
+  return {
+    symbol: packet.symbol,
+    label: packet.label,
+    pair: packet.pair,
+    timeframe: packet.requestedTimeframe,
+    requestedTrend: requested?.trend || "flat",
+    bias: bias.label,
+    tone: bias.tone,
+    score: Number(totalScore.toFixed(2)),
+    priceUsdt: packet.primary?.priceUsdt || null,
+    change24hPct: packet.primary?.change24hPct || null,
+    premiumPct: packet.comparison?.premiumPct || null,
+    orderbookImbalancePct: packet.orderbook?.imbalancePct || null,
+    quoteVolume24hUsdt: packet.primary?.quoteVolume24hUsdt || null,
+    fundingRate: packet.fundingRate ?? null,
+    openInterest: packet.openInterest ?? null,
+    trustScore: trustProfile.trustScore,
+    trustTone: trustProfile.trustTone,
+    trustLabel: trustProfile.trustLabel,
+    trustReasons: trustProfile.trustReasons,
+    timeframes: {
+      "15m": tf15m?.changePct ?? null,
+      "1h": tf1h?.changePct ?? null,
+      "4h": tf4h?.changePct ?? null,
+      "1d": tf1d?.changePct ?? null
+    },
+    reasons: reasons.slice(0, 4)
+  };
+}
+
+async function getLatestDirectionHistoryEntries(timeframe, symbols = []) {
+  if (!hasDatabaseConfig() || !Array.isArray(symbols) || !symbols.length) {
+    return new Map();
+  }
+
+  let result;
+  try {
+    result = await query(
+      `
+        select distinct on (symbol)
+          symbol,
+          timeframe,
+          score,
+          trust_score,
+          created_at
+        from market_direction_history
+        where timeframe = $1
+          and symbol = any($2::text[])
+        order by symbol, created_at desc
+      `,
+      [timeframe, symbols]
+    );
+  } catch (error) {
+    if (isMissingRelationError(error)) {
+      return new Map();
+    }
+    throw error;
+  }
+
+  return new Map(
+    result.rows.map((row) => [
+      row.symbol,
+      {
+        score: Number(row.score || 0),
+        trustScore: Number(row.trust_score || 0),
+        createdAt: row.created_at
+      }
+    ])
+  );
+}
+
+function attachDirectionHistory(candidate, previousEntry) {
+  return {
+    ...candidate,
+    scoreDelta: previousEntry ? Number((candidate.score - previousEntry.score).toFixed(2)) : null,
+    trustDelta: previousEntry ? Number((candidate.trustScore - previousEntry.trustScore).toFixed(0)) : null,
+    previousCapturedAt: previousEntry?.createdAt || null
+  };
+}
+
+async function persistDirectionHistoryEntries(timeframe, candidates, previousEntries) {
+  if (!hasDatabaseConfig() || !Array.isArray(candidates) || !candidates.length) {
+    return 0;
+  }
+
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  let persistedCount = 0;
+
+  for (const candidate of candidates) {
+    const previousEntry = previousEntries.get(candidate.symbol);
+    if (previousEntry?.createdAt && new Date(previousEntry.createdAt).getTime() >= cutoff) {
+      continue;
+    }
+
+    try {
+      await query(
+        `
+          insert into market_direction_history (
+            symbol,
+            timeframe,
+            score,
+            trust_score,
+            tone,
+            bias,
+            price_usdt,
+            change_24h_pct,
+            orderbook_imbalance_pct,
+            quote_volume_24h_usdt,
+            snapshot
+          )
+          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+        `,
+        [
+          candidate.symbol,
+          timeframe,
+          candidate.score,
+          candidate.trustScore,
+          candidate.tone,
+          candidate.bias,
+          candidate.priceUsdt,
+          candidate.change24hPct,
+          candidate.orderbookImbalancePct,
+          candidate.quoteVolume24hUsdt,
+          JSON.stringify(candidate)
+        ]
+      );
+    } catch (error) {
+      if (isMissingRelationError(error)) {
+        return persistedCount;
+      }
+      throw error;
+    }
+    persistedCount += 1;
+  }
+
+  return persistedCount;
+}
+
+async function getDirectionHistory(symbol, timeframe, limit) {
+  if (!hasDatabaseConfig()) {
+    return [];
+  }
+
+  let result;
+  try {
+    result = await query(
+      `
+        select
+          symbol,
+          timeframe,
+          score,
+          trust_score,
+          tone,
+          bias,
+          price_usdt,
+          change_24h_pct,
+          orderbook_imbalance_pct,
+          quote_volume_24h_usdt,
+          snapshot,
+          created_at
+        from market_direction_history
+        where symbol = $1
+          and timeframe = $2
+        order by created_at desc
+        limit $3
+      `,
+      [symbol, timeframe, limit]
+    );
+  } catch (error) {
+    if (isMissingRelationError(error)) {
+      return [];
+    }
+    throw error;
+  }
+
+  return result.rows.map((row) => ({
+    symbol: row.symbol,
+    timeframe: row.timeframe,
+    score: Number(row.score || 0),
+    trustScore: Number(row.trust_score || 0),
+    tone: row.tone,
+    bias: row.bias,
+    priceUsdt: row.price_usdt === null ? null : Number(row.price_usdt),
+    change24hPct: row.change_24h_pct === null ? null : Number(row.change_24h_pct),
+    orderbookImbalancePct: row.orderbook_imbalance_pct === null ? null : Number(row.orderbook_imbalance_pct),
+    quoteVolume24hUsdt: row.quote_volume_24h_usdt === null ? null : Number(row.quote_volume_24h_usdt),
+    snapshot: parseJsonColumn(row.snapshot, null),
+    createdAt: row.created_at
+  }));
+}
+
+async function buildPublicDirectionScan(timeframe, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit || 5), 3), 12);
+  const universe = Math.min(Math.max(Number(options.universe || 10), limit), 20);
+  const coins = (await getSupportedCoins())
+    .filter((coin) => !isStablecoinLikeCoin(coin))
+    .slice(0, universe);
+  const packets = await Promise.allSettled(
+    coins.map((coin) => getMultiTimeframeMarketPacket(coin.symbol, { timeframe }))
+  );
+
+  const successfulPackets = packets
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
+
+  const quoteVolumes = successfulPackets
+    .map((packet) => Number(packet.primary?.quoteVolume24hUsdt || 0))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  const medianQuoteVolume = quoteVolumes.length ? quoteVolumes[Math.floor(quoteVolumes.length / 2)] : 0;
+  const depthValues = successfulPackets
+    .map((packet) => Number(packet.orderbook?.totalBidValueUsdt || 0) + Number(packet.orderbook?.totalAskValueUsdt || 0))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  const medianDepthValue = depthValues.length ? depthValues[Math.floor(depthValues.length / 2)] : 0;
+
+  const baseCandidates = successfulPackets
+    .map((packet) => buildDirectionCandidate(packet, medianQuoteVolume, medianDepthValue))
+    .sort((left, right) => right.score - left.score);
+  const previousEntries = await getLatestDirectionHistoryEntries(
+    timeframe,
+    baseCandidates.map((candidate) => candidate.symbol)
+  );
+  const candidates = baseCandidates.map((candidate) => attachDirectionHistory(candidate, previousEntries.get(candidate.symbol)));
+  let persistedSymbols = 0;
+
+  try {
+    persistedSymbols = await persistDirectionHistoryEntries(timeframe, candidates, previousEntries);
+  } catch (_error) {
+    persistedSymbols = 0;
+  }
+
+  const leaders = candidates.slice(0, limit);
+  const laggards = [...candidates].reverse().slice(0, Math.min(3, limit));
+  const upCount = candidates.filter((candidate) => candidate.score >= 2.1).length;
+  const downCount = candidates.filter((candidate) => candidate.score <= -2.1).length;
+  const neutralCount = Math.max(candidates.length - upCount - downCount, 0);
+
+  let intelligence = getCachedIntelligence("BTC");
+  if (!intelligence) {
+    try {
+      intelligence = await fetchAndCacheIntelligence("BTC", "BTC");
+    } catch (_error) {
+      intelligence = null;
+    }
+  }
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    timeframe,
+    universeSize: candidates.length,
+    breadth: {
+      upCount,
+      downCount,
+      neutralCount,
+      tone: upCount > downCount ? "risk-on" : downCount > upCount ? "risk-off" : "balanced"
+    },
+    dominance: intelligence
+      ? {
+          btc: intelligence.macroStats.btcDominancePct,
+          eth: intelligence.macroStats.ethDominancePct,
+          totalMarketcapUsd: intelligence.macroStats.totalMarketCapUsd,
+          totalVolumeUsd: intelligence.macroStats.totalVolumeUsd
+        }
+      : {
+          btc: null,
+          eth: null,
+          totalMarketcapUsd: null,
+          totalVolumeUsd: null
+        },
+    storage: {
+      enabled: hasDatabaseConfig(),
+      persistedSymbols
+    },
+    leaders,
+    laggards
   };
 }
 
@@ -1056,6 +1528,40 @@ app.get("/api/public/structure", async (request, response) => {
       fetchedAt: packet.fetchedAt,
       annotations: packet.annotations || [],
       multiTimeframes: multi
+    });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/direction", async (request, response) => {
+  try {
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const payload = await buildPublicDirectionScan(timeframe, {
+      limit: request.query.limit,
+      universe: request.query.universe
+    });
+
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/direction/history", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const limit = Math.min(Math.max(Number(request.query.limit || 24), 1), 200);
+    const history = await getDirectionHistory(symbol, timeframe, limit);
+
+    response.json({
+      symbol,
+      timeframe,
+      history,
+      storage: {
+        enabled: hasDatabaseConfig()
+      }
     });
   } catch (error) {
     response.status(400).json({ error: error.message });

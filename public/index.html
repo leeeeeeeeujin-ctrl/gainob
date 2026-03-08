@@ -131,16 +131,16 @@
 
               <article class="panel-card">
                 <div class="section-head">
-                  <h2>바이낸스 통계</h2>
-                  <span>Stats</span>
+                  <h2>매크로 브리핑</h2>
+                  <span>Public API</span>
                 </div>
                 <dl id="macroStatsOutput" class="facts"></dl>
               </article>
 
               <article class="panel-card">
                 <div class="section-head">
-                  <h2>뉴스 통계</h2>
-                  <span>GDELT</span>
+                  <h2>브리핑 포인트</h2>
+                  <span>Summary</span>
                 </div>
                 <dl id="newsStatsOutput" class="facts"></dl>
               </article>
@@ -151,6 +151,14 @@
                   <span>Runtime</span>
                 </div>
                 <div id="moduleStatus" class="module-status">아직 수집 전입니다.</div>
+              </article>
+
+              <article class="panel-card wide-panel">
+                <div class="section-head">
+                  <h2>방향성 스캐너</h2>
+                  <span id="directionScannerMeta">Multi-signal</span>
+                </div>
+                <div id="directionScannerList" class="scanner-list">스캐너를 준비 중입니다.</div>
               </article>
 
               <article class="panel-card wide-panel">
@@ -230,6 +238,13 @@
                       <div id="chartCanvas" class="chart-canvas"></div>
                       <svg id="chartAiOverlay" class="chart-overlay chart-ai-overlay" aria-hidden="true"></svg>
                       <svg id="chartDrawingOverlay" class="chart-overlay chart-drawing-overlay" aria-hidden="true"></svg>
+                    </div>
+                    <div class="chart-navigator-panel">
+                      <div class="chart-navigator-head">
+                        <strong>구간 네비게이터</strong>
+                        <span id="chartNavigatorMeta">전체 데이터에서 현재 보는 범위를 조정합니다.</span>
+                      </div>
+                      <div id="chartNavigator" class="chart-navigator" aria-label="차트 구간 네비게이터"></div>
                     </div>
                     <div id="annotationSummary" class="annotation-summary">
                       차트 위 주석 레이어를 준비 중입니다.

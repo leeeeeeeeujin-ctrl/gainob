@@ -1,4 +1,6 @@
 const state = {
+  briefing: null,
+  directionScan: null,
   snapshot: null,
   intelligence: null,
   modules: [],
@@ -49,7 +51,15 @@ const state = {
     offsetY: 0
   },
   chartGeometry: null,
-  chartViewport: null
+  chartViewport: null,
+  chartNavigator: {
+    geometry: null,
+    dragMode: null,
+    pointerId: null,
+    originX: 0,
+    startIndex: 0,
+    visibleCount: 0
+  }
 };
 
 const elements = {
@@ -93,6 +103,8 @@ const elements = {
   marketDetailsMirror: document.querySelector("#marketDetailsMirror"),
   macroStatsOutput: document.querySelector("#macroStatsOutput"),
   newsStatsOutput: document.querySelector("#newsStatsOutput"),
+  directionScannerMeta: document.querySelector("#directionScannerMeta"),
+  directionScannerList: document.querySelector("#directionScannerList"),
   analysisOutput: document.querySelector("#analysisOutput"),
   analysisOutputMirror: document.querySelector("#analysisOutputMirror"),
   chatContextMeta: document.querySelector("#chatContextMeta"),
@@ -133,6 +145,8 @@ const elements = {
   chartCanvas: document.querySelector("#chartCanvas"),
   chartAiOverlay: document.querySelector("#chartAiOverlay"),
   chartDrawingOverlay: document.querySelector("#chartDrawingOverlay"),
+  chartNavigator: document.querySelector("#chartNavigator"),
+  chartNavigatorMeta: document.querySelector("#chartNavigatorMeta"),
   chartMeta: document.querySelector("#chartMeta"),
   chartSymbolChip: document.querySelector("#chartSymbolChip"),
   chartTimeframeChip: document.querySelector("#chartTimeframeChip"),
@@ -170,7 +184,7 @@ const viewTitles = {
 };
 
 const CHART_DRAWING_ENABLED = false;
-const CHART_AI_OVERLAY_ENABLED = false;
+const CHART_AI_OVERLAY_ENABLED = true;
 
 const OVERLAY_INDICATOR_DEFS = [
   { id: "range", label: "고저 범위" },
@@ -234,6 +248,16 @@ function formatPct(value) {
   const numeric = Number(value || 0);
   const prefix = numeric > 0 ? "+" : "";
   return `${prefix}${formatNumber(numeric, 2)}%`;
+}
+
+function formatSignedNumber(value, maximumFractionDigits = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  const numeric = Number(value || 0);
+  const prefix = numeric > 0 ? "+" : "";
+  return `${prefix}${formatNumber(numeric, maximumFractionDigits)}`;
 }
 
 function formatShortTime(value) {
@@ -352,7 +376,9 @@ function syncChartFeatureAvailability() {
   }
 
   if (elements.overlayToggle) {
-    elements.overlayToggle.checked = CHART_AI_OVERLAY_ENABLED;
+    if (!CHART_AI_OVERLAY_ENABLED) {
+      elements.overlayToggle.checked = false;
+    }
     elements.overlayToggle.disabled = !CHART_AI_OVERLAY_ENABLED;
   }
 
@@ -360,6 +386,9 @@ function syncChartFeatureAvailability() {
     state.drawingTool = "move";
     state.pendingDrawing = null;
     state.manualAnnotations = [];
+  }
+
+  if (!CHART_DRAWING_ENABLED && !CHART_AI_OVERLAY_ENABLED) {
     state.focusRegion = null;
   }
 
@@ -1462,6 +1491,91 @@ function renderIntelligence(intelligence) {
   elements.newsStatsOutput.innerHTML = renderStatRows(newsRows);
 }
 
+function renderBriefing(briefing) {
+  state.briefing = briefing;
+
+  const macroRows = [
+    ["기준 시각", new Date(briefing.fetchedAt || Date.now()).toLocaleString("ko-KR")],
+    ["BTC 도미넌스", briefing.btc_dominance === null ? "-" : `${formatNumber(briefing.btc_dominance, 2)}%`],
+    ["ETH 도미넌스", briefing.eth_dominance === null ? "-" : `${formatNumber(briefing.eth_dominance, 2)}%`],
+    ["전체 시총", briefing.total_marketcap_usd === null ? "-" : formatUsdt(briefing.total_marketcap_usd)],
+    ["전체 거래대금", briefing.total_volume_usd === null ? "-" : formatUsdt(briefing.total_volume_usd)],
+    ["시장 톤", briefing.macro || "-"]
+  ];
+
+  const summaryRows = [
+    ["현재가", briefing.price === null ? "-" : formatUsdt(briefing.price)],
+    ["빗썸 비교가", briefing.bithumb_price === null ? "미지원" : formatKrw(briefing.bithumb_price)],
+    ["가격 괴리", briefing.premium === null ? "-" : formatPct(briefing.premium)],
+    ["호가 스프레드", briefing.spread_usdt === null ? "-" : formatUsdt(briefing.spread_usdt)],
+    ["호가 불균형", briefing.depth_imbalance_pct === null ? "-" : formatPct(briefing.depth_imbalance_pct)],
+    ["매물 압력", briefing.wall_pressure || "-"],
+    ["최신 헤드라인", briefing.news_summary || "기사 요약 없음"]
+  ];
+
+  elements.macroStatsOutput.innerHTML = renderStatRows(macroRows);
+  elements.newsStatsOutput.innerHTML = renderStatRows(summaryRows);
+}
+
+function renderDirectionScan(scanPayload) {
+  state.directionScan = scanPayload;
+
+  const breadth = scanPayload.breadth || {};
+  const dominance = scanPayload.dominance || {};
+  const storageLabel = scanPayload.storage?.enabled
+    ? `DB 추적 ${scanPayload.storage.persistedSymbols || 0}개`
+    : "DB 추적 비활성";
+  elements.directionScannerMeta.textContent = `기준 ${scanPayload.timeframe} · 상방 ${breadth.upCount || 0} / 하방 ${breadth.downCount || 0} · ${storageLabel}`;
+
+  if (!Array.isArray(scanPayload.leaders) || !scanPayload.leaders.length) {
+    elements.directionScannerList.innerHTML = "방향성 후보가 없습니다.";
+    return;
+  }
+
+  const summaryLine = `시장 폭 ${breadth.tone || "balanced"} · BTC 도미 ${
+    dominance.btc === null || dominance.btc === undefined ? "-" : `${formatNumber(dominance.btc, 2)}%`
+  }`;
+
+  elements.directionScannerList.innerHTML = [
+    `<div class="scanner-subline">${escapeHtml(summaryLine)}</div>`,
+    ...scanPayload.leaders.map((candidate) => {
+      const timeframes = candidate.timeframes || {};
+      const reasons = Array.isArray(candidate.reasons) ? candidate.reasons.join(" · ") : "복수 신호 혼조";
+      const trustReasons = Array.isArray(candidate.trustReasons) ? candidate.trustReasons.join(" · ") : "";
+      const scoreDeltaClass = Number(candidate.scoreDelta || 0) > 0 ? "up" : Number(candidate.scoreDelta || 0) < 0 ? "down" : "";
+      const trustDeltaClass = Number(candidate.trustDelta || 0) > 0 ? "up" : Number(candidate.trustDelta || 0) < 0 ? "down" : "";
+
+      return `
+        <article class="scanner-item">
+          <div class="scanner-item-main">
+            <div class="scanner-item-head">
+              <strong>${escapeHtml(candidate.symbol)}</strong>
+              <span>${escapeHtml(candidate.label || candidate.symbol)}</span>
+              <span class="scanner-badge is-${escapeHtml(candidate.tone || "neutral")}">${escapeHtml(candidate.bias || "중립")}</span>
+            </div>
+            <div class="scanner-meta-row">
+              <span class="scanner-trust is-${escapeHtml(candidate.trustTone || "medium")}">신뢰도 ${escapeHtml(formatNumber(candidate.trustScore, 0))} · ${escapeHtml(candidate.trustLabel || "중")}</span>
+              <span class="scanner-delta ${scoreDeltaClass}">점수 변화 ${escapeHtml(formatSignedNumber(candidate.scoreDelta, 2))}</span>
+              <span class="scanner-delta ${trustDeltaClass}">신뢰도 변화 ${escapeHtml(formatSignedNumber(candidate.trustDelta, 0))}</span>
+            </div>
+            <div class="scanner-subline">
+              15m ${escapeHtml(formatPct(timeframes["15m"]))} · 1h ${escapeHtml(formatPct(timeframes["1h"]))} · 4h ${escapeHtml(formatPct(timeframes["4h"]))} · 1d ${escapeHtml(formatPct(timeframes["1d"]))}
+            </div>
+            <div class="scanner-reasons">${escapeHtml(reasons)}</div>
+            <div class="scanner-trust-notes">${escapeHtml(trustReasons || "거래대금, 호가 두께, 데이터 커버리지를 반영합니다.")}</div>
+          </div>
+          <div class="scanner-metrics">
+            <div class="scanner-score">${escapeHtml(formatNumber(candidate.score, 2))}</div>
+            <div class="scanner-subline">현재가 ${escapeHtml(formatUsdt(candidate.priceUsdt))}</div>
+            <div class="scanner-subline">24h ${escapeHtml(formatPct(candidate.change24hPct))}</div>
+            <div class="scanner-subline">호가 ${escapeHtml(formatPct(candidate.orderbookImbalancePct))}</div>
+          </div>
+        </article>
+      `;
+    })
+  ].join("");
+}
+
 function setChartHint(message) {
   elements.chartInteractionHint.textContent = message;
 }
@@ -1806,9 +1920,211 @@ function renderTrades(snapshot) {
     : "최근 체결 데이터를 불러오지 못했습니다.";
 }
 
+function readNavigatorIndex(clientX) {
+  if (!state.chartNavigator.geometry || !elements.chartNavigator) {
+    return null;
+  }
+
+  const rect = elements.chartNavigator.getBoundingClientRect();
+  const relativeX = clamp(clientX - rect.left - state.chartNavigator.geometry.left, 0, state.chartNavigator.geometry.plotWidth);
+  const ratio = relativeX / Math.max(state.chartNavigator.geometry.plotWidth, 1);
+
+  return clamp(
+    Math.round(ratio * Math.max(state.chartNavigator.geometry.totalCandles - 1, 0)),
+    0,
+    Math.max(state.chartNavigator.geometry.totalCandles - 1, 0)
+  );
+}
+
+function renderChartNavigator(snapshot) {
+  if (!elements.chartNavigator) {
+    return;
+  }
+
+  if (!snapshot?.candles?.length || !state.chartViewport) {
+    elements.chartNavigator.innerHTML = "";
+    state.chartNavigator.geometry = null;
+    if (elements.chartNavigatorMeta) {
+      elements.chartNavigatorMeta.textContent = "전체 데이터가 준비되면 현재 보는 범위를 조정할 수 있습니다.";
+    }
+    return;
+  }
+
+  const width = elements.chartNavigator.clientWidth || 0;
+  const height = elements.chartNavigator.clientHeight || 88;
+
+  if (width < 120) {
+    window.requestAnimationFrame(() => renderChartNavigator(snapshot));
+    return;
+  }
+
+  const candles = snapshot.candles || [];
+  const padding = { top: 10, right: 10, bottom: 10, left: 10 };
+  const plotWidth = Math.max(width - padding.left - padding.right, 40);
+  const plotHeight = Math.max(height - padding.top - padding.bottom, 30);
+  const lows = candles.map((candle) => Number(candle.low || 0));
+  const highs = candles.map((candle) => Number(candle.high || 0));
+  const closes = candles.map((candle) => Number(candle.close || 0));
+  const minPrice = Math.min(...lows);
+  const maxPrice = Math.max(...highs);
+  const maxStartIndex = Math.max(candles.length - state.chartViewport.visibleCount, 0);
+  const viewportStartIndex = clamp(state.chartViewport.startIndex, 0, maxStartIndex);
+  const viewportWidth = Math.max((state.chartViewport.visibleCount / Math.max(candles.length, 1)) * plotWidth, 18);
+  const viewportX = padding.left + (viewportStartIndex / Math.max(candles.length - 1, 1)) * plotWidth;
+  const linePath = closes
+    .map((close, index) => {
+      const x = padding.left + (index / Math.max(candles.length - 1, 1)) * plotWidth;
+      const y = padding.top + plotHeight - ((close - minPrice) / Math.max(maxPrice - minPrice, 1)) * plotHeight;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+
+  const focusRegion = state.focusRegion;
+  let focusRect = "";
+  if (focusRegion) {
+    const focusStartIndex = candles.findIndex((candle) => Number(candle.timestamp) >= Number(focusRegion.startTime));
+    const reverseEndIndex = [...candles].reverse().findIndex((candle) => Number(candle.timestamp) <= Number(focusRegion.endTime));
+    const focusEndIndex = reverseEndIndex === -1 ? -1 : candles.length - 1 - reverseEndIndex;
+
+    if (focusStartIndex >= 0 && focusEndIndex >= focusStartIndex) {
+      const focusX = padding.left + (focusStartIndex / Math.max(candles.length - 1, 1)) * plotWidth;
+      const focusWidth = Math.max(((focusEndIndex - focusStartIndex + 1) / Math.max(candles.length, 1)) * plotWidth, 6);
+      focusRect = `<rect x="${focusX}" y="${padding.top}" width="${focusWidth}" height="${plotHeight}" fill="rgba(96, 165, 250, 0.12)" rx="8" ry="8" />`;
+    }
+  }
+
+  elements.chartNavigator.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="차트 구간 네비게이터">
+      <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
+      <path d="${linePath}" fill="none" stroke="rgba(111, 227, 215, 0.52)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+      ${focusRect}
+      <rect x="${viewportX}" y="${padding.top}" width="${viewportWidth}" height="${plotHeight}" fill="rgba(255,255,255,0.08)" stroke="#f8fafc" stroke-width="1.4" rx="8" ry="8"></rect>
+      <rect x="${viewportX - 2}" y="${padding.top + 8}" width="4" height="${Math.max(plotHeight - 16, 12)}" fill="#f8fafc" rx="2" ry="2"></rect>
+      <rect x="${viewportX + viewportWidth - 2}" y="${padding.top + 8}" width="4" height="${Math.max(plotHeight - 16, 12)}" fill="#f8fafc" rx="2" ry="2"></rect>
+    </svg>
+  `;
+
+  state.chartNavigator.geometry = {
+    left: padding.left,
+    plotWidth,
+    totalCandles: candles.length,
+    viewportX,
+    viewportWidth
+  };
+
+  if (elements.chartNavigatorMeta) {
+    const endIndex = Math.min(viewportStartIndex + state.chartViewport.visibleCount, candles.length);
+    elements.chartNavigatorMeta.textContent = `표시 구간 ${viewportStartIndex + 1} - ${endIndex} / 전체 ${candles.length}봉`;
+  }
+}
+
 function ensureChartInteractions() {
   if (state.resizeObserver || !elements.chartHost) {
     return;
+  }
+
+  if (elements.chartNavigator && elements.chartNavigator.dataset.bound !== "true") {
+    const releaseNavigator = (event) => {
+      if (state.chartNavigator.pointerId !== null && event?.pointerId !== undefined && state.chartNavigator.pointerId !== event.pointerId) {
+        return;
+      }
+
+      state.chartNavigator.dragMode = null;
+      state.chartNavigator.pointerId = null;
+      elements.chartNavigator.classList.remove("is-dragging", "is-resizing");
+    };
+
+    elements.chartNavigator.addEventListener("pointerdown", (event) => {
+      if (!state.snapshot || !state.chartViewport || !state.chartNavigator.geometry) {
+        return;
+      }
+
+      const rect = elements.chartNavigator.getBoundingClientRect();
+      const offsetX = event.clientX - rect.left;
+      const { viewportX, viewportWidth } = state.chartNavigator.geometry;
+      const handleThreshold = 12;
+
+      state.chartNavigator.pointerId = event.pointerId;
+      state.chartNavigator.originX = event.clientX;
+      state.chartNavigator.startIndex = state.chartViewport.startIndex;
+      state.chartNavigator.visibleCount = state.chartViewport.visibleCount;
+
+      if (Math.abs(offsetX - viewportX) <= handleThreshold) {
+        state.chartNavigator.dragMode = "resize-left";
+        elements.chartNavigator.classList.add("is-resizing");
+      } else if (Math.abs(offsetX - (viewportX + viewportWidth)) <= handleThreshold) {
+        state.chartNavigator.dragMode = "resize-right";
+        elements.chartNavigator.classList.add("is-resizing");
+      } else if (offsetX >= viewportX && offsetX <= viewportX + viewportWidth) {
+        state.chartNavigator.dragMode = "pan";
+        elements.chartNavigator.classList.add("is-dragging");
+      } else {
+        const nextIndex = readNavigatorIndex(event.clientX);
+        const nextStartIndex = clamp(
+          Math.round((nextIndex ?? 0) - state.chartViewport.visibleCount / 2),
+          0,
+          Math.max(state.snapshot.candles.length - state.chartViewport.visibleCount, 0)
+        );
+        state.chartViewport.startIndex = nextStartIndex;
+        renderChart(state.snapshot);
+        renderChartOverlay();
+        renderChartNavigator(state.snapshot);
+        return;
+      }
+
+      elements.chartNavigator.setPointerCapture?.(event.pointerId);
+    });
+
+    elements.chartNavigator.addEventListener("pointermove", (event) => {
+      if (!state.snapshot || !state.chartViewport || !state.chartNavigator.dragMode || !state.chartNavigator.geometry) {
+        return;
+      }
+
+      const candleGap = state.chartNavigator.geometry.plotWidth / Math.max(state.chartNavigator.geometry.totalCandles, 1);
+      const deltaCandles = Math.round((event.clientX - state.chartNavigator.originX) / Math.max(candleGap, 1));
+      const totalCandles = state.snapshot.candles.length;
+
+      if (state.chartNavigator.dragMode === "pan") {
+        const maxStartIndex = Math.max(totalCandles - state.chartViewport.visibleCount, 0);
+        state.chartViewport.startIndex = clamp(state.chartNavigator.startIndex + deltaCandles, 0, maxStartIndex);
+      }
+
+      if (state.chartNavigator.dragMode === "resize-left") {
+        const nextStartIndex = clamp(
+          state.chartNavigator.startIndex + deltaCandles,
+          0,
+          state.chartNavigator.startIndex + state.chartNavigator.visibleCount - 20
+        );
+        state.chartViewport.startIndex = nextStartIndex;
+        state.chartViewport.visibleCount = clamp(
+          state.chartNavigator.visibleCount - (nextStartIndex - state.chartNavigator.startIndex),
+          20,
+          totalCandles - nextStartIndex
+        );
+      }
+
+      if (state.chartNavigator.dragMode === "resize-right") {
+        state.chartViewport.visibleCount = clamp(
+          state.chartNavigator.visibleCount + deltaCandles,
+          20,
+          totalCandles - state.chartNavigator.startIndex
+        );
+        state.chartViewport.startIndex = clamp(
+          state.chartNavigator.startIndex,
+          0,
+          Math.max(totalCandles - state.chartViewport.visibleCount, 0)
+        );
+      }
+
+      renderChart(state.snapshot);
+      renderChartOverlay();
+      renderChartNavigator(state.snapshot);
+    });
+
+    elements.chartNavigator.addEventListener("pointerup", releaseNavigator);
+    elements.chartNavigator.addEventListener("pointercancel", releaseNavigator);
+    elements.chartNavigator.addEventListener("pointerleave", releaseNavigator);
+    elements.chartNavigator.dataset.bound = "true";
   }
 
   const releaseDrag = () => {
@@ -1966,8 +2282,12 @@ function ensureChartInteractions() {
 
       renderChart(state.snapshot);
       renderChartOverlay();
+      renderChartNavigator(state.snapshot);
     });
     state.resizeObserver.observe(elements.chartHost);
+    if (elements.chartNavigator) {
+      state.resizeObserver.observe(elements.chartNavigator);
+    }
   }
 }
 
@@ -2448,6 +2768,7 @@ function renderChart(snapshot) {
   };
 
   window.requestAnimationFrame(renderChartOverlay);
+  window.requestAnimationFrame(() => renderChartNavigator(snapshot));
 }
 
 function renderMarketWorkspace(snapshot) {
@@ -2928,42 +3249,29 @@ async function refreshMarket() {
   setFloatingBriefingMeta("시장 데이터 로딩 중");
 
   try {
-    const snapshot = await fetchJson(
-      `/api/market?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-    );
+    const [briefing, directionScan] = await Promise.all([
+      fetchJson(`/api/public/briefing?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`),
+      fetchJson(`/api/public/direction?timeframe=${encodeURIComponent(timeframe)}&limit=5&universe=10`)
+    ]);
 
     if (requestId !== state.latestMarketRequestId) {
       return;
     }
 
-    renderSnapshot(snapshot);
+    renderSnapshot(briefing.market);
+    renderBriefing(briefing);
+    renderDirectionScan(directionScan);
     renderModuleStatus(null);
-    elements.macroStatsOutput.innerHTML = renderStatRows([["불러오는 중", "시장 통계 대기"]]);
-    elements.newsStatsOutput.innerHTML = renderStatRows([["불러오는 중", "뉴스 통계 대기"]]);
-    setAnalysisMessage("차트는 준비되었습니다. 뉴스와 매크로 통계를 이어서 불러오는 중입니다.");
-    setFloatingBriefingMeta(`${snapshot.symbol} · ${snapshot.timeframe} 준비됨`);
-
-    fetchJson(`/api/intelligence?symbol=${encodeURIComponent(symbol)}`)
-      .then((intelligence) => {
-        if (requestId !== state.latestMarketRequestId) {
-          return;
-        }
-
-        renderIntelligence(intelligence);
-        setAnalysisMessage("AI 분석을 요청하면 여기에 결과가 표시됩니다.");
-        setFloatingBriefingMeta(`${snapshot.symbol} · intelligence ready`);
-      })
-      .catch((error) => {
-        if (requestId !== state.latestMarketRequestId) {
-          return;
-        }
-
-        elements.macroStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
-        elements.newsStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
-        setFloatingBriefingMeta(`${snapshot.symbol} · 일부 통계 지연`);
-      });
+    setAnalysisMessage("공개 브리핑과 시장 스냅샷을 불러왔습니다. 이제 이 데이터를 기준으로 코인 대화를 이어갈 수 있습니다.");
+    setFloatingBriefingMeta(`${briefing.symbol} · ${briefing.timeframe} · public briefing ready`);
   } catch (error) {
+    state.briefing = null;
+    state.directionScan = null;
     setAnalysisMessage(error.message);
+    elements.macroStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
+    elements.newsStatsOutput.innerHTML = renderStatRows([["로드 실패", error.message]]);
+    elements.directionScannerMeta.textContent = "Multi-signal";
+    elements.directionScannerList.innerHTML = error.message;
     setFloatingBriefingMeta("시장 데이터 로드 실패");
   }
 }
