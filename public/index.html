@@ -304,7 +304,13 @@
               </section>
 
               <aside class="market-side">
-                <article class="panel-card side-panel">
+                <div id="marketSideTabList" class="side-tabs" role="tablist" aria-label="오른쪽 패널 탭">
+                  <button class="side-tab-button is-active" data-side-tab="orderbook" type="button" role="tab" aria-selected="true">호가창</button>
+                  <button class="side-tab-button" data-side-tab="trades" type="button" role="tab" aria-selected="false">체결</button>
+                  <button class="side-tab-button" data-side-tab="memo" type="button" role="tab" aria-selected="false">메모</button>
+                </div>
+
+                <article class="panel-card side-panel is-active" data-side-panel="orderbook">
                   <div class="section-head">
                     <h2>호가창</h2>
                     <span id="orderbookMeta">Top 20</span>
@@ -312,12 +318,20 @@
                   <div id="orderbookOutput" class="orderbook-panel">-</div>
                 </article>
 
-                <article class="panel-card side-panel">
+                <article class="panel-card side-panel" data-side-panel="trades" hidden>
                   <div class="section-head">
                     <h2>최근 체결</h2>
                     <span id="tradeMeta">30 prints</span>
                   </div>
                   <div id="tradesOutput" class="trade-panel-output">-</div>
+                </article>
+
+                <article class="panel-card side-panel" data-side-panel="memo" hidden>
+                  <div class="section-head">
+                    <h2>분석 메모</h2>
+                    <span id="marketMemoMeta">요청 시 업데이트</span>
+                  </div>
+                  <div id="marketMemoOutput" class="memo-panel-output">메모를 준비 중입니다.</div>
                 </article>
               </aside>
             </section>

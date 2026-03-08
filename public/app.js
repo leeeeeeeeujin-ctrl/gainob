@@ -63,7 +63,9 @@ const state = {
     originX: 0,
     startIndex: 0,
     visibleCount: 0
-  }
+  },
+  marketSideTab: "orderbook",
+  marketMemoView: "market"
 };
 
 const elements = {
@@ -136,6 +138,8 @@ const elements = {
   orderbookMeta: document.querySelector("#orderbookMeta"),
   tradesOutput: document.querySelector("#tradesOutput"),
   tradeMeta: document.querySelector("#tradeMeta"),
+  marketMemoMeta: document.querySelector("#marketMemoMeta"),
+  marketMemoOutput: document.querySelector("#marketMemoOutput"),
   annotationList: document.querySelector("#annotationList"),
   annotationSummary: document.querySelector("#annotationSummary"),
   overlayAnalysisStatus: document.querySelector("#overlayAnalysisStatus"),
@@ -179,6 +183,9 @@ const elements = {
   logoutButton: document.querySelector("#logoutButton"),
   deleteAccountButton: document.querySelector("#deleteAccountButton"),
   viewTitle: document.querySelector("#viewTitle"),
+  marketSideTabList: document.querySelector("#marketSideTabList"),
+  marketSideTabButtons: Array.from(document.querySelectorAll("[data-side-tab]")),
+  marketSidePanels: Array.from(document.querySelectorAll("[data-side-panel]")),
   navButtons: Array.from(document.querySelectorAll("[data-view-target]")),
   views: Array.from(document.querySelectorAll("[data-view]"))
 };
@@ -205,6 +212,83 @@ const OVERLAY_INDICATOR_DEFS = [
   { id: "pressure", label: "위꼬리/아래꼬리" },
   { id: "volume", label: "거래량 스파이크" }
 ];
+
+const MEMO_ANALYSIS_VERSION = "memo-2026-03-08.2";
+
+const MANUAL_MEMO_CONTENT = {
+  market: {
+    title: "장 분석",
+    subtitle: "기회 미확인 · 전조 탐색 구간",
+    lead: "지금 장은 넓게 추격하는 구간보다, 비트가 하락을 실패시키는지 먼저 확인해야 하는 구간으로 봅니다. 메이저가 구조를 회복하면 그 다음에 알트 확산을 믿을 수 있습니다.",
+    chips: [
+      { label: "장 신뢰도 3.5/10", tone: "risk" },
+      { label: "우선 관망", tone: "risk" },
+      { label: "비트 전조 우선", tone: "watch" }
+    ],
+    bullets: [
+      "비트가 먼저 하락 실패를 보여야 ETH, SOL 쪽 회복도 신뢰할 수 있습니다.",
+      "현재는 박스 중간 추격보다 저점 재테스트 반응 또는 상단 회복 확인이 유리합니다.",
+      "업데이트는 요청받을 때 이 메모를 기준으로 다시 정리합니다."
+    ]
+  },
+  coins: {
+    BTC: {
+      title: "코인 분석 · BTC",
+      subtitle: "리트머스지 코인",
+      lead: "비트는 지금 매수 주도 코인이라기보다 시장 공포가 과했는지 확인하는 기준점입니다. 구조가 살아나면 다른 코인으로 확산될 여지가 생깁니다.",
+      chips: [
+        { label: "관찰 1순위", tone: "watch" },
+        { label: "하락 실패 확인", tone: "watch" },
+        { label: "추세추종 아님", tone: "risk" }
+      ],
+      bullets: [
+        "66.5k 부근 재테스트 후 빠른 복귀가 나오면 눌림 시나리오의 기대값이 좋아집니다.",
+        "68.2k 재돌파는 단기 구조 회복, 68.8k~69.0k 회복은 더 강한 확인으로 봅니다.",
+        "비트가 애매하면 알트의 반짝 강세도 신뢰도가 낮습니다."
+      ],
+      scenarios: [
+        {
+          title: "시나리오 1 · 눌림 대기",
+          subtitle: "저점 재테스트 후 하락 실패 확인",
+          rangeMin: 65500,
+          rangeMax: 70500,
+          stop: 65900,
+          entryLow: 66500,
+          entryHigh: 66900,
+          target1: 68200,
+          target2: 68900,
+          target3: 70500,
+          caption: "싼 가격을 노리는 대신 승률은 더 낮습니다. 66.5k 부근을 찍고 바로 회복할 때만 의미가 있습니다.",
+          stats: [
+            { label: "진입", value: "$66.5k ~ $66.9k" },
+            { label: "손절", value: "$65.9k" },
+            { label: "목표 1", value: "$68.2k" },
+            { label: "목표 2", value: "$68.9k / $70.5k" }
+          ]
+        },
+        {
+          title: "시나리오 2 · 확인 매수",
+          subtitle: "박스 상단 회복 후 유지 확인",
+          rangeMin: 66700,
+          rangeMax: 73500,
+          stop: 67200,
+          entryLow: 68200,
+          entryHigh: 69000,
+          target1: 70500,
+          target2: 72000,
+          target3: 73000,
+          caption: "가격은 더 비싸지만 구조가 낫습니다. 지금 같은 장에선 이 시나리오가 더 안정적입니다.",
+          stats: [
+            { label: "진입", value: "$68.2k ~ $69.0k" },
+            { label: "손절", value: "$67.2k" },
+            { label: "목표 1", value: "$70.5k" },
+            { label: "목표 2", value: "$72.0k ~ $73.0k" }
+          ]
+        }
+      ]
+    }
+  }
+};
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -306,6 +390,8 @@ function loadPersonalSettings() {
       ...savedOverlayIndicators
     };
     state.savedFocusRegion = normalizeFocusRegion(saved.focusRegion);
+    state.marketSideTab = saved.marketSideTab || state.marketSideTab;
+    state.marketMemoView = saved.marketMemoView || state.marketMemoView;
     elements.marketSearchInput.value = state.marketSearchTerm;
 
     if (saved.selectedCoin) {
@@ -338,6 +424,8 @@ function savePersonalSettings() {
       overlayEnabled: elements.overlayToggle.checked,
       overlaySelectionMode: state.overlaySelectionMode,
       overlayIndicators: state.overlayIndicators,
+      marketSideTab: state.marketSideTab,
+      marketMemoView: state.marketMemoView,
       focusRegion: state.savedFocusRegion || state.focusRegion,
       floatingX: state.floatingPanel.x,
       floatingY: state.floatingPanel.y,
@@ -365,6 +453,293 @@ function setOverlayAnalysisStatus(message) {
   if (elements.overlayAnalysisStatus) {
     elements.overlayAnalysisStatus.textContent = message;
   }
+}
+
+function formatMemoPrice(value) {
+  if (!Number.isFinite(Number(value))) {
+    return "-";
+  }
+
+  return `$${formatNumber(Number(value), 0)}`;
+}
+
+function buildMemoScenarioChart(scenario) {
+  const rangeMin = Number(scenario.rangeMin || 0);
+  const rangeMax = Number(scenario.rangeMax || 0);
+  const scale = Math.max(rangeMax - rangeMin, 1);
+  const toPct = (value) => clamp(((Number(value || 0) - rangeMin) / scale) * 100, 0, 100);
+  const entryLeft = Math.min(toPct(scenario.entryLow), toPct(scenario.entryHigh));
+  const entryRight = Math.max(toPct(scenario.entryLow), toPct(scenario.entryHigh));
+  const markers = [
+    { label: `손절 ${formatMemoPrice(scenario.stop)}`, className: "is-stop", value: scenario.stop },
+    { label: `진입 ${formatMemoPrice(scenario.entryLow)}`, className: "is-entry-low", value: scenario.entryLow },
+    { label: `상단 ${formatMemoPrice(scenario.entryHigh)}`, className: "is-entry-high", value: scenario.entryHigh },
+    { label: `목표1 ${formatMemoPrice(scenario.target1)}`, className: "is-target-1", value: scenario.target1 },
+    { label: `목표2 ${formatMemoPrice(scenario.target2)}`, className: "is-target-2", value: scenario.target2 },
+    { label: `확장 ${formatMemoPrice(scenario.target3)}`, className: "is-target-3", value: scenario.target3 }
+  ];
+
+  return `
+    <div class="memo-scenario-chart">
+      <div class="memo-scenario-axis">
+        <span>${formatMemoPrice(rangeMin)}</span>
+        <span>${formatMemoPrice(rangeMax)}</span>
+      </div>
+      <div class="memo-scenario-rail">
+        <div class="memo-range-band is-entry" style="left:${entryLeft}%; width:${Math.max(entryRight - entryLeft, 1)}%;"></div>
+        ${markers
+          .map(
+            (marker) => `
+              <div
+                class="memo-level-marker ${marker.className}"
+                data-label="${escapeHtml(marker.label)}"
+                style="left:${toPct(marker.value)}%;"
+              ></div>
+            `
+          )
+          .join("")}
+      </div>
+      <p class="memo-caption">${escapeHtml(scenario.caption || "")}</p>
+    </div>
+  `;
+}
+
+function buildFallbackMemoCard(symbol) {
+  return {
+    title: `코인 분석 · ${symbol}`,
+    subtitle: "스냅샷 대기 중",
+    lead: `${symbol} 시장 스냅샷을 아직 읽지 못했습니다. 새로고침 후 메모 탭을 열면 자동 초안이 생성됩니다.`,
+    chips: [
+      { label: `${symbol} 대기`, tone: "watch" },
+      { label: "자동 초안 예정", tone: "risk" }
+    ],
+    bullets: [
+      "현재는 선택 종목이 바뀌었지만 최신 스냅샷이 아직 반영되지 않았습니다.",
+      "시장 데이터가 들어오면 같은 자리에서 진입·손절·목표 시나리오를 자동 계산합니다."
+    ],
+    scenarios: []
+  };
+}
+
+function buildDynamicCoinMemo(snapshot) {
+  if (!snapshot?.candles?.length) {
+    return buildFallbackMemoCard(elements.coinSelect?.value || "BTC");
+  }
+
+  const candles = snapshot.candles.slice(-Math.min(snapshot.candles.length, 48));
+  const highs = candles.map((candle) => Number(candle.high || 0));
+  const lows = candles.map((candle) => Number(candle.low || 0));
+  const closes = candles.map((candle) => Number(candle.close || 0));
+  const recentHigh = Math.max(...highs);
+  const recentLow = Math.min(...lows);
+  const current = closes[closes.length - 1] || Number(snapshot.primary?.priceUsdt || 0);
+  const range = Math.max(recentHigh - recentLow, Math.max(current * 0.025, 0.0001));
+  const midpoint = recentLow + range / 2;
+  const rangePosition = ((current - recentLow) / range) * 100;
+  const change24hPct = Number(snapshot.primary?.change24hPct || 0);
+  const spreadUsdt = Number(snapshot.orderbook?.spreadUsdt || 0);
+  const premiumPct = snapshot.local?.available ? Number(snapshot.comparison?.premiumPct || 0) : null;
+  const orderbookImbalancePct = ((Number(snapshot.orderbook?.totalBidUnits || 0) - Number(snapshot.orderbook?.totalAskUnits || 0)) /
+    Math.max(Number(snapshot.orderbook?.totalBidUnits || 0) + Number(snapshot.orderbook?.totalAskUnits || 0), 0.0001)) * 100;
+  const lowReclaimTone = current >= midpoint ? "중앙값 위 복귀" : "하단 방어 필요";
+  const reboundEntryLow = recentLow + range * 0.1;
+  const reboundEntryHigh = recentLow + range * 0.18;
+  const reboundStop = Math.max(recentLow - range * 0.08, 0);
+  const reboundTarget1 = midpoint;
+  const reboundTarget2 = recentHigh - range * 0.1;
+  const reboundTarget3 = recentHigh + range * 0.15;
+  const confirmEntryLow = recentHigh - range * 0.1;
+  const confirmEntryHigh = recentHigh + range * 0.04;
+  const confirmStop = recentHigh - range * 0.26;
+  const confirmTarget1 = recentHigh + range * 0.18;
+  const confirmTarget2 = recentHigh + range * 0.34;
+  const confirmTarget3 = recentHigh + range * 0.5;
+
+  return {
+    title: `코인 분석 · ${snapshot.symbol}`,
+    subtitle: `${snapshot.timeframe} 자동 초안`,
+    lead: `${snapshot.symbol}는 최근 ${candles.length}개 봉 기준 ${formatMemoPrice(recentLow)} ~ ${formatMemoPrice(recentHigh)} 범위 안에 있습니다. 현재 위치는 ${formatNumber(rangePosition, 0)} / 100이고, 해석은 ${lowReclaimTone} 쪽입니다.`,
+    chips: [
+      { label: `24h ${formatPct(change24hPct)}`, tone: change24hPct >= 0 ? "watch" : "risk" },
+      { label: `범위 ${formatNumber(rangePosition, 0)}/100`, tone: rangePosition >= 55 ? "watch" : "risk" },
+      { label: `호가 ${formatPct(orderbookImbalancePct)}`, tone: orderbookImbalancePct >= 0 ? "watch" : "risk" }
+    ],
+    bullets: [
+      `현재가 ${formatMemoPrice(current)} · 최근 스윙 저점 ${formatMemoPrice(recentLow)} · 최근 스윙 고점 ${formatMemoPrice(recentHigh)}`,
+      `호가 스프레드 ${formatMemoPrice(spreadUsdt)} · ${snapshot.local?.available ? `빗썸 괴리 ${formatPct(premiumPct)}` : "빗썸 비교 없음"}`,
+      `${current >= midpoint ? "중앙값 위라서 상단 재공략 여부가 중요합니다." : "중앙값 아래라서 저점 재테스트 반응이 우선입니다."}`
+    ],
+    scenarios: [
+      {
+        title: "시나리오 1 · 눌림 대기",
+        subtitle: "최근 저점권 재테스트 후 반응 확인",
+        rangeMin: Math.max(recentLow - range * 0.12, 0),
+        rangeMax: recentHigh + range * 0.18,
+        stop: reboundStop,
+        entryLow: reboundEntryLow,
+        entryHigh: reboundEntryHigh,
+        target1: reboundTarget1,
+        target2: reboundTarget2,
+        target3: reboundTarget3,
+        caption: `최근 저점권 근처를 다시 확인하고 바로 되돌릴 때 의미가 있습니다. ${snapshot.symbol} 자동 초안입니다.`,
+        stats: [
+          { label: "진입", value: `${formatMemoPrice(reboundEntryLow)} ~ ${formatMemoPrice(reboundEntryHigh)}` },
+          { label: "손절", value: formatMemoPrice(reboundStop) },
+          { label: "목표 1", value: formatMemoPrice(reboundTarget1) },
+          { label: "목표 2", value: `${formatMemoPrice(reboundTarget2)} / ${formatMemoPrice(reboundTarget3)}` }
+        ]
+      },
+      {
+        title: "시나리오 2 · 확인 매수",
+        subtitle: "최근 상단 회복 후 유지 확인",
+        rangeMin: Math.max(recentLow - range * 0.08, 0),
+        rangeMax: recentHigh + range * 0.55,
+        stop: confirmStop,
+        entryLow: confirmEntryLow,
+        entryHigh: confirmEntryHigh,
+        target1: confirmTarget1,
+        target2: confirmTarget2,
+        target3: confirmTarget3,
+        caption: `상단을 회복한 뒤 다시 박스 안으로 깊게 밀리지 않을 때 더 안정적인 구조로 봅니다.`,
+        stats: [
+          { label: "진입", value: `${formatMemoPrice(confirmEntryLow)} ~ ${formatMemoPrice(confirmEntryHigh)}` },
+          { label: "손절", value: formatMemoPrice(confirmStop) },
+          { label: "목표 1", value: formatMemoPrice(confirmTarget1) },
+          { label: "목표 2", value: `${formatMemoPrice(confirmTarget2)} / ${formatMemoPrice(confirmTarget3)}` }
+        ]
+      }
+    ]
+  };
+}
+
+function buildMarketMemoContext() {
+  const breadthTone = state.directionScan?.breadth?.tone || "mixed";
+  const leaders = Array.isArray(state.directionScan?.leaders) ? state.directionScan.leaders.slice(0, 2).map((item) => item.symbol).join(", ") : "-";
+  const btcDominance = state.directionScan?.dominance?.btc;
+  const snapshot = state.snapshot;
+
+  return {
+    title: MANUAL_MEMO_CONTENT.market.title,
+    subtitle: MANUAL_MEMO_CONTENT.market.subtitle,
+    lead: snapshot
+      ? `${MANUAL_MEMO_CONTENT.market.lead} 현재 ${snapshot.symbol} 화면을 보고 있지만, 장 해석 기준은 여전히 비트 전조와 시장 폭입니다.`
+      : MANUAL_MEMO_CONTENT.market.lead,
+    chips: [
+      ...MANUAL_MEMO_CONTENT.market.chips,
+      { label: `폭 ${breadthTone}`, tone: breadthTone === "up" || breadthTone === "balanced" ? "watch" : "risk" },
+      { label: `BTC 도미 ${btcDominance === null || btcDominance === undefined ? "-" : `${formatNumber(btcDominance, 2)}%`}`, tone: "watch" }
+    ],
+    bullets: [
+      ...MANUAL_MEMO_CONTENT.market.bullets,
+      `현재 방향성 스캐너 상단 후보: ${leaders || "-"}`
+    ]
+  };
+}
+
+function renderMarketMemo() {
+  if (!elements.marketMemoOutput) {
+    return;
+  }
+
+  const symbol = elements.coinSelect?.value || "BTC";
+  const snapshotMatchesSymbol = state.snapshot?.symbol === symbol;
+  const marketMemo = buildMarketMemoContext();
+  const coinMemo = MANUAL_MEMO_CONTENT.coins[symbol] || (snapshotMatchesSymbol ? buildDynamicCoinMemo(state.snapshot) : buildFallbackMemoCard(symbol));
+  const memoTimestamp = snapshotMatchesSymbol && state.snapshot?.fetchedAt
+    ? new Date(state.snapshot.fetchedAt).toLocaleString("ko-KR")
+    : "현재 종목 데이터 대기";
+
+  if (elements.marketMemoMeta) {
+    elements.marketMemoMeta.textContent = `${symbol} · ${state.marketMemoView === "market" ? "장 분석" : "코인 분석"}`;
+  }
+
+  const renderCard = (memo, toneClass = "") => `
+    <article class="memo-card ${toneClass}">
+      <div class="memo-card-head">
+        <strong>${escapeHtml(memo.title)}</strong>
+        <span>${escapeHtml(memo.subtitle)}</span>
+      </div>
+      <p class="memo-lead">${escapeHtml(memo.lead)}</p>
+      <div class="memo-chip-row">
+        ${memo.chips
+          .map(
+            (chip) => `<span class="memo-chip ${chip.tone === "risk" ? "is-risk" : chip.tone === "watch" ? "is-watch" : ""}">${escapeHtml(chip.label)}</span>`
+          )
+          .join("")}
+      </div>
+      <ul class="memo-bullets">
+        ${memo.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}
+      </ul>
+    </article>
+  `;
+
+  const scenarioCards = (coinMemo.scenarios || [])
+    .map(
+      (scenario) => `
+        <article class="memo-card">
+          <div class="memo-card-head">
+            <strong>${escapeHtml(scenario.title)}</strong>
+            <span>${escapeHtml(scenario.subtitle)}</span>
+          </div>
+          ${buildMemoScenarioChart(scenario)}
+          <div class="memo-scenario-grid">
+            ${scenario.stats
+              .map(
+                (item) => `
+                  <div class="memo-stat">
+                    <span>${escapeHtml(item.label)}</span>
+                    <strong>${escapeHtml(item.value)}</strong>
+                  </div>
+                `
+              )
+              .join("")}
+          </div>
+        </article>
+      `
+    )
+    .join("");
+
+  const showMarket = state.marketMemoView === "market";
+
+  elements.marketMemoOutput.innerHTML = `
+    <div class="memo-layout">
+      <div class="memo-toolbar">
+        <div class="memo-view-toggle" role="tablist" aria-label="메모 보기 전환">
+          <button class="memo-view-button ${showMarket ? "is-active" : ""}" data-memo-view="market" type="button" aria-selected="${showMarket ? "true" : "false"}">장 분석</button>
+          <button class="memo-view-button ${!showMarket ? "is-active" : ""}" data-memo-view="coin" type="button" aria-selected="${!showMarket ? "true" : "false"}">${escapeHtml(symbol)} 분석</button>
+        </div>
+        <div class="memo-meta-stack">
+          <span>기준 시각 ${escapeHtml(memoTimestamp)}</span>
+          <span>버전 ${escapeHtml(MEMO_ANALYSIS_VERSION)}</span>
+        </div>
+      </div>
+      ${showMarket ? renderCard(marketMemo, "is-caution") : `${renderCard(coinMemo, "is-coin")}${scenarioCards}`}
+    </div>
+  `;
+}
+
+function setMarketMemoView(viewId) {
+  state.marketMemoView = viewId === "coin" ? "coin" : "market";
+  savePersonalSettings();
+  renderMarketMemo();
+}
+
+function setActiveMarketSideTab(tabId) {
+  state.marketSideTab = tabId;
+
+  elements.marketSideTabButtons.forEach((button) => {
+    const isActive = button.dataset.sideTab === tabId;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  elements.marketSidePanels.forEach((panel) => {
+    const isActive = panel.dataset.sidePanel === tabId;
+    panel.hidden = !isActive;
+    panel.classList.toggle("is-active", isActive);
+  });
+
+  savePersonalSettings();
 }
 
 function renderOverlaySelectionModeButton() {
@@ -687,6 +1062,34 @@ function getRegionCandles(snapshot, focusRegion) {
   );
 }
 
+function buildOverlayIndicatorSegments(regionCandles) {
+  if (!Array.isArray(regionCandles) || !regionCandles.length) {
+    return [];
+  }
+
+  const segmentCount = regionCandles.length >= 96 ? 5 : regionCandles.length >= 72 ? 4 : regionCandles.length >= 48 ? 3 : regionCandles.length >= 24 ? 2 : 1;
+  const segments = [];
+
+  for (let index = 0; index < segmentCount; index += 1) {
+    const startIndex = Math.floor((index * regionCandles.length) / segmentCount);
+    const endIndex = Math.floor(((index + 1) * regionCandles.length) / segmentCount);
+    const candles = regionCandles.slice(startIndex, Math.max(endIndex, startIndex + 1));
+
+    if (!candles.length) {
+      continue;
+    }
+
+    segments.push({
+      index: segments.length + 1,
+      candles,
+      isSegmented: segmentCount > 1,
+      isLast: index === segmentCount - 1
+    });
+  }
+
+  return segments;
+}
+
 function buildOverlayIndicatorAnnotations(snapshot, focusRegion) {
   const regionCandles = getRegionCandles(snapshot, focusRegion);
 
@@ -694,140 +1097,146 @@ function buildOverlayIndicatorAnnotations(snapshot, focusRegion) {
     return [];
   }
 
-  const firstCandle = regionCandles[0];
-  const lastCandle = regionCandles[regionCandles.length - 1];
-  const highest = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
-  const lowest = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
-  const midpoint = (highest + lowest) / 2;
-  const vwapNumerator = regionCandles.reduce(
-    (sum, candle) => sum + ((Number(candle.high || 0) + Number(candle.low || 0) + Number(candle.close || 0)) / 3) * Number(candle.volume || 0),
-    0
-  );
-  const totalVolume = regionCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0);
-  const vwap = totalVolume ? vwapNumerator / totalVolume : midpoint;
-  const priorCandles = regionCandles.slice(0, -1);
-  const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
-  const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
-  const averageVolume = totalVolume / Math.max(regionCandles.length, 1);
-  const upperWick = Math.max(Number(lastCandle.high || 0) - Math.max(Number(lastCandle.open || 0), Number(lastCandle.close || 0)), 0);
-  const lowerWick = Math.max(Math.min(Number(lastCandle.open || 0), Number(lastCandle.close || 0)) - Number(lastCandle.low || 0), 0);
+  const segments = buildOverlayIndicatorSegments(regionCandles);
   const annotations = [];
 
-  if (state.overlayIndicators.range) {
-    annotations.push(
-      {
-        id: `indicator-range-high-${focusRegion.id}`,
-        type: "line",
-        source: "indicator",
-        label: "구간 고점",
-        reason: `선택 구간 최고가 ${formatNumber(highest, 2)}`,
-        color: "#f87171",
-        from: { time: firstCandle.timestamp, price: highest },
-        to: { time: lastCandle.timestamp, price: highest }
-      },
-      {
-        id: `indicator-range-low-${focusRegion.id}`,
-        type: "line",
-        source: "indicator",
-        label: "구간 저점",
-        reason: `선택 구간 최저가 ${formatNumber(lowest, 2)}`,
-        color: "#34d399",
-        from: { time: firstCandle.timestamp, price: lowest },
-        to: { time: lastCandle.timestamp, price: lowest }
-      }
+  segments.forEach((segment) => {
+    const segmentCandles = segment.candles;
+    const firstCandle = segmentCandles[0];
+    const lastCandle = segmentCandles[segmentCandles.length - 1];
+    const highest = Math.max(...segmentCandles.map((candle) => Number(candle.high || 0)));
+    const lowest = Math.min(...segmentCandles.map((candle) => Number(candle.low || 0)));
+    const midpoint = (highest + lowest) / 2;
+    const vwapNumerator = segmentCandles.reduce(
+      (sum, candle) => sum + ((Number(candle.high || 0) + Number(candle.low || 0) + Number(candle.close || 0)) / 3) * Number(candle.volume || 0),
+      0
     );
-  }
+    const totalVolume = segmentCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0);
+    const vwap = totalVolume ? vwapNumerator / totalVolume : midpoint;
+    const priorCandles = segmentCandles.slice(0, -1);
+    const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
+    const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
+    const averageVolume = totalVolume / Math.max(segmentCandles.length, 1);
+    const upperWick = Math.max(Number(lastCandle.high || 0) - Math.max(Number(lastCandle.open || 0), Number(lastCandle.close || 0)), 0);
+    const lowerWick = Math.max(Math.min(Number(lastCandle.open || 0), Number(lastCandle.close || 0)) - Number(lastCandle.low || 0), 0);
+    const suffix = segment.isSegmented ? ` ${segment.index}` : "";
 
-  if (state.overlayIndicators.midpoint) {
-    annotations.push({
-      id: `indicator-midpoint-${focusRegion.id}`,
-      type: "line",
-      source: "indicator",
-      label: "구간 중앙선",
-      reason: `고점/저점 중앙값 ${formatNumber(midpoint, 2)}`,
-      color: "#fbbf24",
-      from: { time: firstCandle.timestamp, price: midpoint },
-      to: { time: lastCandle.timestamp, price: midpoint }
-    });
-  }
+    if (state.overlayIndicators.range) {
+      annotations.push(
+        {
+          id: `indicator-range-high-${focusRegion.id}-${segment.index}`,
+          type: "line",
+          source: "indicator",
+          label: `고점${suffix}`,
+          reason: `세그먼트 ${segment.index} 최고가 ${formatNumber(highest, 2)}`,
+          color: "#f87171",
+          from: { time: firstCandle.timestamp, price: highest },
+          to: { time: lastCandle.timestamp, price: highest }
+        },
+        {
+          id: `indicator-range-low-${focusRegion.id}-${segment.index}`,
+          type: "line",
+          source: "indicator",
+          label: `저점${suffix}`,
+          reason: `세그먼트 ${segment.index} 최저가 ${formatNumber(lowest, 2)}`,
+          color: "#34d399",
+          from: { time: firstCandle.timestamp, price: lowest },
+          to: { time: lastCandle.timestamp, price: lowest }
+        }
+      );
+    }
 
-  if (state.overlayIndicators.vwap) {
-    annotations.push({
-      id: `indicator-vwap-${focusRegion.id}`,
-      type: "line",
-      source: "indicator",
-      label: "구간 VWAP",
-      reason: `거래량 가중 평균가 ${formatNumber(vwap, 2)}`,
-      color: "#60a5fa",
-      from: { time: firstCandle.timestamp, price: vwap },
-      to: { time: lastCandle.timestamp, price: vwap }
-    });
-  }
-
-  if (state.overlayIndicators.trend) {
-    annotations.push({
-      id: `indicator-trend-${focusRegion.id}`,
-      type: "line",
-      source: "indicator",
-      label: "구간 추세",
-      reason: `구간 시작 종가 ${formatNumber(firstCandle.close, 2)} -> 종료 종가 ${formatNumber(lastCandle.close, 2)}`,
-      color: "#c084fc",
-      from: { time: firstCandle.timestamp, price: Number(firstCandle.close || 0) },
-      to: { time: lastCandle.timestamp, price: Number(lastCandle.close || 0) }
-    });
-  }
-
-  if (state.overlayIndicators.breakout) {
-    if (Number(lastCandle.close || 0) > priorHigh) {
+    if (state.overlayIndicators.midpoint) {
       annotations.push({
-        id: `indicator-breakout-up-${focusRegion.id}`,
-        type: "marker",
+        id: `indicator-midpoint-${focusRegion.id}-${segment.index}`,
+        type: "line",
         source: "indicator",
-        label: "상단 돌파",
-        reason: `마지막 종가가 직전 고점 ${formatNumber(priorHigh, 2)} 위`,
-        color: "#22c55e",
-        time: lastCandle.timestamp,
-        price: Number(lastCandle.close || 0)
+        label: `중앙${suffix}`,
+        reason: `세그먼트 ${segment.index} 중앙값 ${formatNumber(midpoint, 2)}`,
+        color: "#fbbf24",
+        from: { time: firstCandle.timestamp, price: midpoint },
+        to: { time: lastCandle.timestamp, price: midpoint }
       });
-    } else if (Number(lastCandle.close || 0) < priorLow) {
+    }
+
+    if (state.overlayIndicators.vwap) {
       annotations.push({
-        id: `indicator-breakout-down-${focusRegion.id}`,
+        id: `indicator-vwap-${focusRegion.id}-${segment.index}`,
+        type: "line",
+        source: "indicator",
+        label: `VWAP${suffix}`,
+        reason: `세그먼트 ${segment.index} 거래량 가중 평균가 ${formatNumber(vwap, 2)}`,
+        color: "#60a5fa",
+        from: { time: firstCandle.timestamp, price: vwap },
+        to: { time: lastCandle.timestamp, price: vwap }
+      });
+    }
+
+    if (state.overlayIndicators.trend) {
+      annotations.push({
+        id: `indicator-trend-${focusRegion.id}-${segment.index}`,
+        type: "line",
+        source: "indicator",
+        label: `추세${suffix}`,
+        reason: `세그먼트 ${segment.index} 종가 ${formatNumber(firstCandle.close, 2)} -> ${formatNumber(lastCandle.close, 2)}`,
+        color: "#c084fc",
+        from: { time: firstCandle.timestamp, price: Number(firstCandle.close || 0) },
+        to: { time: lastCandle.timestamp, price: Number(lastCandle.close || 0) }
+      });
+    }
+
+    if (state.overlayIndicators.breakout) {
+      if (Number(lastCandle.close || 0) > priorHigh) {
+        annotations.push({
+          id: `indicator-breakout-up-${focusRegion.id}-${segment.index}`,
+          type: "marker",
+          source: "indicator",
+          label: `상단 돌파${suffix}`,
+          reason: `세그먼트 ${segment.index} 종가가 직전 고점 ${formatNumber(priorHigh, 2)} 위`,
+          color: "#22c55e",
+          time: lastCandle.timestamp,
+          price: Number(lastCandle.close || 0)
+        });
+      } else if (Number(lastCandle.close || 0) < priorLow) {
+        annotations.push({
+          id: `indicator-breakout-down-${focusRegion.id}-${segment.index}`,
+          type: "marker",
+          source: "indicator",
+          label: `하단 이탈${suffix}`,
+          reason: `세그먼트 ${segment.index} 종가가 직전 저점 ${formatNumber(priorLow, 2)} 아래`,
+          color: "#ef4444",
+          time: lastCandle.timestamp,
+          price: Number(lastCandle.close || 0)
+        });
+      }
+    }
+
+    if (state.overlayIndicators.pressure) {
+      annotations.push({
+        id: `indicator-pressure-${focusRegion.id}-${segment.index}`,
         type: "marker",
         source: "indicator",
-        label: "하단 이탈",
-        reason: `마지막 종가가 직전 저점 ${formatNumber(priorLow, 2)} 아래`,
-        color: "#ef4444",
+        label: lowerWick > upperWick ? `매수 방어${suffix}` : upperWick > lowerWick ? `매도 압력${suffix}` : `꼬리 균형${suffix}`,
+        reason: lowerWick > upperWick ? `세그먼트 ${segment.index} 아래꼬리 우세` : upperWick > lowerWick ? `세그먼트 ${segment.index} 위꼬리 우세` : `세그먼트 ${segment.index} 꼬리 균형`,
+        color: lowerWick > upperWick ? "#34d399" : upperWick > lowerWick ? "#f87171" : "#94a3b8",
+        time: lastCandle.timestamp,
+        price: lowerWick > upperWick ? Number(lastCandle.low || 0) : Number(lastCandle.high || 0)
+      });
+    }
+
+    if (state.overlayIndicators.volume && Number(lastCandle.volume || 0) >= averageVolume * 1.6) {
+      annotations.push({
+        id: `indicator-volume-${focusRegion.id}-${segment.index}`,
+        type: "marker",
+        source: "indicator",
+        label: `거래량 스파이크${suffix}`,
+        reason: `세그먼트 ${segment.index} 평균 대비 ${formatNumber(Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001), 2)}배`,
+        color: "#38bdf8",
         time: lastCandle.timestamp,
         price: Number(lastCandle.close || 0)
       });
     }
-  }
-
-  if (state.overlayIndicators.pressure) {
-    annotations.push({
-      id: `indicator-pressure-${focusRegion.id}`,
-      type: "marker",
-      source: "indicator",
-      label: lowerWick > upperWick ? "매수 거절 방어" : upperWick > lowerWick ? "매도 거절 압력" : "꼬리 균형",
-      reason: lowerWick > upperWick ? "아래꼬리가 더 길어 저가 방어 흔적" : upperWick > lowerWick ? "위꼬리가 더 길어 상단 매도 압력" : "상하 꼬리 균형",
-      color: lowerWick > upperWick ? "#34d399" : upperWick > lowerWick ? "#f87171" : "#94a3b8",
-      time: lastCandle.timestamp,
-      price: lowerWick > upperWick ? Number(lastCandle.low || 0) : Number(lastCandle.high || 0)
-    });
-  }
-
-  if (state.overlayIndicators.volume && Number(lastCandle.volume || 0) >= averageVolume * 1.6) {
-    annotations.push({
-      id: `indicator-volume-${focusRegion.id}`,
-      type: "marker",
-      source: "indicator",
-      label: "거래량 스파이크",
-      reason: `평균 대비 ${formatNumber(Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001), 2)}배`,
-      color: "#38bdf8",
-      time: lastCandle.timestamp,
-      price: Number(lastCandle.close || 0)
-    });
-  }
+  });
 
   return annotations;
 }
@@ -3232,6 +3641,7 @@ function setActiveView(viewId) {
     window.requestAnimationFrame(() => {
       renderMarketWorkspace(state.snapshot);
       renderChartOverlay();
+      renderMarketMemo();
     });
   }
 }
@@ -3557,6 +3967,7 @@ async function refreshMarket() {
     renderSnapshot(briefing.market);
     renderBriefing(briefing);
     renderDirectionScan(directionScan);
+    renderMarketMemo();
     renderModuleStatus(null);
     setAnalysisMessage("공개 브리핑과 시장 스냅샷을 불러왔습니다. 이제 이 데이터를 기준으로 코인 대화를 이어갈 수 있습니다.");
     setFloatingBriefingMeta(`${briefing.symbol} · ${briefing.timeframe} · public briefing ready`);
@@ -3665,6 +4076,7 @@ elements.marketSymbolList.addEventListener("click", (event) => {
   clearManualAnnotations();
   elements.coinSelect.value = button.dataset.symbolRow;
   renderMarketSymbolList();
+  renderMarketMemo();
   refreshMarket();
 });
 elements.timeframeShortcutList.addEventListener("click", (event) => {
@@ -3677,7 +4089,26 @@ elements.timeframeShortcutList.addEventListener("click", (event) => {
   clearManualAnnotations();
   elements.timeframeSelect.value = button.dataset.shortcutTimeframe;
   renderTimeframeButtons();
+  renderMarketMemo();
   refreshMarket();
+});
+elements.marketSideTabList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-side-tab]");
+
+  if (!button) {
+    return;
+  }
+
+  setActiveMarketSideTab(button.dataset.sideTab);
+});
+elements.marketMemoOutput?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-memo-view]");
+
+  if (!button) {
+    return;
+  }
+
+  setMarketMemoView(button.dataset.memoView);
 });
 elements.drawingToolList.addEventListener("click", (event) => {
   if (!CHART_DRAWING_ENABLED) {
@@ -3965,6 +4396,8 @@ ensureFloatingBriefingInteractions();
 
 Promise.all([loadCoins(), loadModules(), loadAccount()])
   .then(() => {
+    renderMarketMemo();
+    setActiveMarketSideTab(state.marketSideTab || "orderbook");
     setActiveView(state.activeViewId);
     updateChatContextMeta();
     return refreshMarket();
