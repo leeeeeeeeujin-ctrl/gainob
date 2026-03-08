@@ -1077,6 +1077,43 @@ function buildFocusRegionFromVisibleRange(snapshot) {
   };
 }
 
+function buildFocusRegionFromSelection(snapshot, startPoint, endPoint) {
+  if (!snapshot?.candles?.length || !startPoint || !endPoint) {
+    return null;
+  }
+
+  const startTime = Math.min(Number(startPoint.time), Number(endPoint.time));
+  const endTime = Math.max(Number(startPoint.time), Number(endPoint.time));
+  const regionCandles = snapshot.candles.filter(
+    (candle) => Number(candle.timestamp) >= startTime && Number(candle.timestamp) <= endTime
+  );
+
+  if (!regionCandles.length) {
+    return null;
+  }
+
+  const rawMinPrice = Math.min(Number(startPoint.price), Number(endPoint.price));
+  const rawMaxPrice = Math.max(Number(startPoint.price), Number(endPoint.price));
+  const priceDistance = Math.abs(Number(endPoint.price) - Number(startPoint.price));
+  const candleMinPrice = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
+  const candleMaxPrice = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
+  const useCandleRange = priceDistance < Math.max((candleMaxPrice - candleMinPrice) * 0.08, 0.5);
+
+  return {
+    id: `focus-${Date.now()}`,
+    label: "AI 분석 구간",
+    reason: "오버레이 드래그 선택",
+    color: "rgba(96, 165, 250, 0.16)",
+    lineColor: "#60a5fa",
+    symbol: snapshot.symbol,
+    timeframe: snapshot.timeframe,
+    startTime,
+    endTime,
+    minPrice: useCandleRange ? candleMinPrice : rawMinPrice,
+    maxPrice: useCandleRange ? candleMaxPrice : rawMaxPrice
+  };
+}
+
 function restoreSavedFocusRegion(snapshot) {
   const saved = normalizeFocusRegion(state.savedFocusRegion);
   if (!saved) {
@@ -2225,20 +2262,14 @@ function ensureChartInteractions() {
 
       if (start && current) {
         const timeDistance = Math.abs(Number(current.time) - Number(start.time));
-        const priceDistance = Math.abs(Number(current.price) - Number(start.price));
-        if (timeDistance > 0 && priceDistance > 0) {
-          setFocusRegion({
-            id: `focus-${Date.now()}`,
-            label: "AI 분석 구간",
-            reason: "오버레이 드래그 선택",
-            color: "rgba(96, 165, 250, 0.16)",
-            lineColor: "#60a5fa",
-            startTime: Math.min(start.time, current.time),
-            endTime: Math.max(start.time, current.time),
-            minPrice: Math.min(start.price, current.price),
-            maxPrice: Math.max(start.price, current.price)
-          });
+        if (timeDistance > 0) {
+          const region = buildFocusRegionFromSelection(state.snapshot, start, current);
+          if (region) {
+            setFocusRegion(region);
+          }
           requestOverlayAnalysis();
+        } else {
+          setOverlayAnalysisStatus("최소 두 개 이상의 봉을 가로질러 드래그해야 구간이 설정됩니다.");
         }
       }
 
@@ -2273,7 +2304,9 @@ function ensureChartInteractions() {
       state.overlaySelection.current = point;
       state.overlaySelection.handledPointerUp = false;
       elements.chartHost.classList.add("is-selecting");
+      elements.chartHost.setPointerCapture?.(event.pointerId);
       setChartHint("드래그해서 분석할 구간을 지정하세요.");
+      renderChartOverlay();
       return;
     }
 
