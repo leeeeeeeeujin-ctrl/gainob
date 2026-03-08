@@ -1049,9 +1049,11 @@ function normalizeFocusRegion(region) {
 function clearFocusRegion(options = {}) {
   const { message = "선택 구간을 해제했습니다.", preserveStatus = false } = options;
   state.focusRegion = null;
+  state.aiAnnotations = [];
   state.overlayIndicatorAnnotations = [];
   state.overlaySignals = [];
   state.overlayBias = null;
+  state.annotationSourceMap = {};
   state.selectedAnnotationSource = null;
   savePersonalSettings();
   renderAnnotationList();
@@ -2734,14 +2736,19 @@ function renderChartOverlay() {
     return;
   }
 
-  const drawingAnnotations = [...state.manualAnnotations, ...(state.focusRegion ? [state.focusRegion] : [])];
+  const selectionActive = Boolean(state.overlaySelection.active);
+  const drawingAnnotations = [...state.manualAnnotations, ...(!selectionActive && state.focusRegion ? [state.focusRegion] : [])];
   const automatedAnnotations = [
     ...(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked
-      ? state.aiAnnotations.length
+      ? selectionActive
+        ? []
+        : state.aiAnnotations.length
         ? state.aiAnnotations
-        : state.snapshot?.annotations || []
+        : isOverlaySelectionMode() && !state.focusRegion
+          ? []
+          : state.snapshot?.annotations || []
       : []),
-    ...(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked ? state.overlayIndicatorAnnotations : [])
+    ...(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked && !selectionActive ? state.overlayIndicatorAnnotations : [])
   ];
   const sourceMap = state.annotationSourceMap || {};
 
@@ -3007,9 +3014,6 @@ function renderSnapshot(snapshot) {
   resetChartViewport(snapshot);
   if (state.focusRegion && ((state.focusRegion.symbol && state.focusRegion.symbol !== snapshot.symbol) || (state.focusRegion.timeframe && state.focusRegion.timeframe !== snapshot.timeframe))) {
     clearFocusRegion({ preserveStatus: true });
-  }
-  if (!state.focusRegion) {
-    restoreSavedFocusRegion(snapshot);
   }
   const factsHtml = renderFactsHtml(snapshot);
 
@@ -3635,6 +3639,10 @@ elements.overlayToggle.addEventListener("change", () => {
   }
 
   state.overlaySelectionMode = elements.overlayToggle.checked ? true : false;
+  if (elements.overlayToggle.checked && !state.focusRegion) {
+    state.aiAnnotations = [];
+    state.annotationSourceMap = {};
+  }
   savePersonalSettings();
   updateChartOverlayMode();
   renderOverlayIndicatorControls();
