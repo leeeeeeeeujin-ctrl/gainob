@@ -151,6 +151,7 @@ const elements = {
   overlayClearSelectionButton: document.querySelector("#overlayClearSelectionButton"),
   chartHost: document.querySelector(".chart-host"),
   chartCanvas: document.querySelector("#chartCanvas"),
+  chartBaseDimmer: document.querySelector("#chartBaseDimmer"),
   chartAiOverlay: document.querySelector("#chartAiOverlay"),
   chartDrawingOverlay: document.querySelector("#chartDrawingOverlay"),
   chartSelectionOverlay: document.querySelector("#chartSelectionOverlay"),
@@ -437,8 +438,12 @@ function updateChartOverlayMode() {
     return;
   }
 
-  elements.chartHost.classList.toggle("is-overlay-mode", Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked));
+  const overlayActive = Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked);
+  elements.chartHost.classList.toggle("is-overlay-mode", overlayActive);
   elements.chartHost.classList.toggle("is-selecting", isOverlaySelectionMode() || state.overlaySelection.active);
+  if (elements.chartBaseDimmer) {
+    elements.chartBaseDimmer.setAttribute("aria-hidden", overlayActive ? "false" : "true");
+  }
   if (elements.chartSelectionOverlay) {
     const active = isOverlaySelectionMode() || state.overlaySelection.active;
     elements.chartSelectionOverlay.classList.toggle("is-active", active);
@@ -2661,8 +2666,64 @@ function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {})
     return left + clamp(ratio, 0, 1) * plotWidth;
   };
 
+  const placedLabels = [];
+  const labelPaddingX = 7;
+  const labelHeight = 18;
+
+  const boxesOverlap = (a, b) => {
+    return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+  };
+
+  const reserveLabelBox = (text, preferredX, preferredY, options = {}) => {
+    const anchor = options.anchor === "end" ? "end" : "start";
+    const fontSize = options.fontSize || 11;
+    const estimatedWidth = Math.max(String(text || "").length * (fontSize * 0.62) + labelPaddingX * 2, 46);
+    const maxX = Math.max(width - estimatedWidth - 8, 8);
+    const baseX = anchor === "end" ? clamp(preferredX - estimatedWidth, 8, maxX) : clamp(preferredX, 8, maxX);
+    const yCandidates = [0, -22, 22, -44, 44, -66, 66, -88, 88, -110, 110];
+
+    for (const offset of yCandidates) {
+      const box = {
+        x: baseX,
+        y: clamp(preferredY + offset, 8, Math.max(height - labelHeight - 8, 8)),
+        width: estimatedWidth,
+        height: labelHeight,
+        anchor
+      };
+
+      if (!placedLabels.some((placed) => boxesOverlap(box, placed))) {
+        placedLabels.push(box);
+        return box;
+      }
+    }
+
+    const fallback = {
+      x: baseX,
+      y: clamp(preferredY, 8, Math.max(height - labelHeight - 8, 8)),
+      width: estimatedWidth,
+      height: labelHeight,
+      anchor
+    };
+    placedLabels.push(fallback);
+    return fallback;
+  };
+
+  const renderLabelBadge = (annotationId, sourceAttrs, text, color, preferredX, preferredY, options = {}) => {
+    const fontSize = options.fontSize || 11;
+    const labelBox = reserveLabelBox(text, preferredX, preferredY, options);
+    const textX = labelBox.anchor === "end" ? labelBox.x + labelBox.width - labelPaddingX : labelBox.x + labelPaddingX;
+    const textY = labelBox.y + 12.5;
+    return `
+      <g data-annotation-id="${escapeHtml(annotationId)}"${sourceAttrs}>
+        <rect x="${labelBox.x}" y="${labelBox.y}" width="${labelBox.width}" height="${labelBox.height}" rx="6" ry="6" fill="rgba(7, 13, 17, 0.78)" stroke="rgba(255,255,255,0.18)" stroke-width="1" />
+        <text x="${textX}" y="${textY}" text-anchor="${labelBox.anchor}" fill="${color}" font-size="${fontSize}" font-weight="600">${escapeHtml(text)}</text>
+      </g>
+    `;
+  };
+
   target.innerHTML = annotations
     .map((annotation) => {
+      const annotationId = annotation.id || annotation.label || annotation.type || "annotation";
       const isIndicator = annotation.source === "indicator";
       const isManual = annotation.source === "manual" || annotation.source === "focus";
       const sourceInfo = sourceMap[annotation.id || annotation.label] || null;
@@ -2685,9 +2746,19 @@ function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {})
           return "";
         }
 
+        const label = renderLabelBadge(
+          annotationId,
+          sourceAttrs,
+          annotation.label || "line",
+          labelColor,
+          x2 > width - 150 ? x2 - 10 : x2 + 8,
+          y2 - 16,
+          { anchor: x2 > width - 150 ? "end" : "start" }
+        );
+
         return `
-          <line data-annotation-id="${escapeHtml(annotation.id || annotation.label || "line")}"${sourceAttrs} x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" opacity="${isIndicator ? "0.92" : "1"}" />
-          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "line")}"${sourceAttrs} x="${clamp(x2 + 6, 12, width - 120)}" y="${Math.max(y2 - 6, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "line")}</text>
+          <line data-annotation-id="${escapeHtml(annotationId)}"${sourceAttrs} x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeHtml(annotation.color || "#0ea5a0")}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" opacity="${isIndicator ? "0.92" : "1"}" />
+          ${label}
         `;
       }
 
@@ -2705,10 +2776,19 @@ function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {})
         const y = Math.min(minY, maxY);
         const rectWidth = Math.abs(endX - startX);
         const rectHeight = Math.abs(maxY - minY);
+        const label = renderLabelBadge(
+          annotationId,
+          sourceAttrs,
+          annotation.label || "zone",
+          labelColor,
+          x + 6,
+          y + 6,
+          { anchor: "start" }
+        );
 
         return `
-          <rect data-annotation-id="${escapeHtml(annotation.id || annotation.label || "zone")}"${sourceAttrs} x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="${annotation.role === "focus-region" ? "2" : isIndicator ? "1.7" : "1.5"}" stroke-dasharray="${dash}" rx="6" ry="6" opacity="${isIndicator ? "0.9" : "1"}" />
-          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "zone")}"${sourceAttrs} x="${clamp(x + 6, 12, width - 120)}" y="${Math.max(y + 14, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "zone")}</text>
+          <rect data-annotation-id="${escapeHtml(annotationId)}"${sourceAttrs} x="${x}" y="${y}" width="${Math.max(rectWidth, 6)}" height="${Math.max(rectHeight, 6)}" fill="${escapeHtml(annotation.color || "rgba(14,165,160,0.14)")}" stroke="${escapeHtml(annotation.lineColor || annotation.color || "#0ea5a0")}" stroke-width="${annotation.role === "focus-region" ? "2" : isIndicator ? "1.7" : "1.5"}" stroke-dasharray="${dash}" rx="6" ry="6" opacity="${isIndicator ? "0.9" : "1"}" />
+          ${label}
         `;
       }
 
@@ -2720,9 +2800,19 @@ function renderAnnotationsToLayer(target, annotations, geometry, sourceMap = {})
           return "";
         }
 
+        const label = renderLabelBadge(
+          annotationId,
+          sourceAttrs,
+          annotation.label || "marker",
+          labelColor,
+          x > width - 150 ? x - 10 : x + 10,
+          y - 18,
+          { anchor: x > width - 150 ? "end" : "start" }
+        );
+
         return `
-          <circle data-annotation-id="${escapeHtml(annotation.id || annotation.label || "marker")}"${sourceAttrs} cx="${x}" cy="${y}" r="${isIndicator ? "4.3" : "5"}" fill="${escapeHtml(annotation.color || "#0ea5a0")}" opacity="${isIndicator ? "0.92" : "1"}" />
-          <text data-annotation-id="${escapeHtml(annotation.id || annotation.label || "marker")}"${sourceAttrs} x="${clamp(x + 8, 12, width - 120)}" y="${Math.max(y - 8, 12)}" fill="${labelColor}" font-size="11">${escapeHtml(annotation.label || "marker")}</text>
+          <circle data-annotation-id="${escapeHtml(annotationId)}"${sourceAttrs} cx="${x}" cy="${y}" r="${isIndicator ? "4.3" : "5"}" fill="${escapeHtml(annotation.color || "#0ea5a0")}" opacity="${isIndicator ? "0.92" : "1"}" />
+          ${label}
         `;
       }
 

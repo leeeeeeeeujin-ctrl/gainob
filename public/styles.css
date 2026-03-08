@@ -687,19 +687,6 @@ textarea {
   touch-action: none;
 }
 
-.chart-host::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(4, 9, 13, 0);
-  transition: background 180ms ease;
-  pointer-events: none;
-}
-
-.chart-host.is-overlay-mode::after {
-  background: rgba(4, 9, 13, 0.24);
-}
-
 .chart-host.is-dragging {
   cursor: grabbing;
 }
@@ -718,25 +705,45 @@ textarea {
   z-index: 1;
 }
 
+.chart-base-dimmer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(2, 6, 10, 0.24) 0%, rgba(2, 6, 10, 0.16) 100%),
+    radial-gradient(circle at 50% 12%, rgba(15, 23, 42, 0.18), transparent 58%);
+  transition: opacity 180ms ease;
+}
+
+.chart-host.is-overlay-mode .chart-base-dimmer {
+  opacity: 1;
+}
+
+.chart-host.is-selecting .chart-base-dimmer {
+  opacity: 1;
+}
+
 .chart-overlay {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
 
 .chart-ai-overlay {
-  z-index: 2;
+  z-index: 3;
 }
 
 .chart-drawing-overlay {
-  z-index: 3;
+  z-index: 4;
 }
 
 .chart-selection-overlay {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 5;
   display: grid;
   align-content: start;
   justify-items: start;
