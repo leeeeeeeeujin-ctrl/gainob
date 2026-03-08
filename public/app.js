@@ -26,7 +26,8 @@ const state = {
     start: null,
     current: null,
     handledPointerUp: false,
-    pointerId: null
+    pointerId: null,
+    windowBound: false
   },
   overlaySelectionMode: true,
   overlayIndicators: {
@@ -2174,8 +2175,8 @@ function ensureChartInteractions() {
     state.overlaySelection.handledPointerUp = false;
     state.overlaySelection.pointerId = event.pointerId ?? null;
     elements.chartHost.classList.add("is-selecting");
-    elements.chartSelectionOverlay?.setPointerCapture?.(event.pointerId);
     setChartHint("드래그해서 분석할 구간을 지정하세요.");
+    setOverlayAnalysisStatus("새 분석 구간을 선택하는 중입니다.");
     renderChartOverlay();
     updateChartOverlayMode();
     return true;
@@ -2211,14 +2212,10 @@ function ensureChartInteractions() {
 
     const start = state.overlaySelection.start;
     const current = state.overlaySelection.current;
-    const pointerId = state.overlaySelection.pointerId;
     state.overlaySelection.active = false;
     state.overlaySelection.handledPointerUp = Boolean(start && current);
     state.overlaySelection.pointerId = null;
     elements.chartHost.classList.remove("is-selecting");
-    if (pointerId !== null) {
-      elements.chartSelectionOverlay?.releasePointerCapture?.(pointerId);
-    }
 
     if (start && current) {
       const timeDistance = Math.abs(Number(current.time) - Number(start.time));
@@ -2250,27 +2247,36 @@ function ensureChartInteractions() {
       event.stopPropagation();
     });
 
-    elements.chartSelectionOverlay.addEventListener("pointermove", (event) => {
-      if (!updateOverlaySelection(event)) {
-        return;
-      }
+    elements.chartSelectionOverlay.dataset.bound = "true";
+  }
 
-      event.preventDefault();
-    });
+  if (!state.overlaySelection.windowBound) {
+    window.addEventListener(
+      "pointermove",
+      (event) => {
+        if (!updateOverlaySelection(event)) {
+          return;
+        }
 
-    const releaseOverlaySelection = (event) => {
+        event.preventDefault();
+      },
+      { passive: false }
+    );
+    window.addEventListener("pointerup", (event) => {
       if (!finishOverlaySelection(event)) {
         return;
       }
 
       event.preventDefault?.();
-      event.stopPropagation?.();
-    };
+    });
+    window.addEventListener("pointercancel", (event) => {
+      if (!finishOverlaySelection(event)) {
+        return;
+      }
 
-    elements.chartSelectionOverlay.addEventListener("pointerup", releaseOverlaySelection);
-    elements.chartSelectionOverlay.addEventListener("pointercancel", releaseOverlaySelection);
-    elements.chartSelectionOverlay.addEventListener("pointerleave", releaseOverlaySelection);
-    elements.chartSelectionOverlay.dataset.bound = "true";
+      event.preventDefault?.();
+    });
+    state.overlaySelection.windowBound = true;
   }
 
   if (elements.chartNavigator && elements.chartNavigator.dataset.bound !== "true") {
@@ -3639,28 +3645,34 @@ elements.overlayToggle.addEventListener("change", () => {
   }
 
   state.overlaySelectionMode = elements.overlayToggle.checked ? true : false;
-  if (elements.overlayToggle.checked && !state.focusRegion) {
-    state.aiAnnotations = [];
-    state.annotationSourceMap = {};
-  }
   savePersonalSettings();
   updateChartOverlayMode();
   renderOverlayIndicatorControls();
-  if (elements.overlayToggle.checked && state.focusRegion) {
-    refreshOverlayIndicators();
-    requestOverlayAnalysis();
-    setOverlayAnalysisStatus("오버레이 분석 모드 활성화");
-    setChartHint("드래그해서 분석할 구간을 지정하세요.");
-  } else if (elements.overlayToggle.checked) {
-    setOverlayAnalysisStatus("오버레이 활성화. 기본값은 구간 선택 모드입니다.");
-    setChartHint("드래그로 분석 구간 선택, 휠로 확대/축소");
+  if (elements.overlayToggle.checked) {
+    const region = state.snapshot ? buildFocusRegionFromVisibleRange(state.snapshot) : null;
+    state.aiAnnotations = [];
+    state.annotationSourceMap = {};
+
+    if (region) {
+      setFocusRegion(region);
+      requestOverlayAnalysis();
+      setOverlayAnalysisStatus("현재 화면 구간을 기준으로 오버레이 분석을 시작했습니다.");
+    } else {
+      clearFocusRegion({ preserveStatus: true });
+      setOverlayAnalysisStatus("오버레이를 켰지만 현재 화면 구간을 읽을 수 없습니다.");
+    }
+
+    setChartHint("현재 화면 구간이 기본 선택되었습니다. 드래그해서 다시 지정할 수 있습니다.");
   } else {
+    state.aiAnnotations = [];
+    state.annotationSourceMap = {};
     renderAnnotationList();
     renderOverlaySignalList();
     renderOverlayBiasCard();
     renderOverlayAnnotationSource();
     renderChartOverlay();
-    setOverlayAnalysisStatus("AI 오버레이를 켜면 차트를 드래그해서 영역 분석을 시작할 수 있습니다.");
+    setOverlayAnalysisStatus("AI 오버레이를 켜면 현재 화면 구간을 기준으로 분석을 시작합니다.");
+    setChartHint("드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
   }
 });
 elements.overlayIndicatorList?.addEventListener("click", (event) => {
