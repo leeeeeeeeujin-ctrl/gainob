@@ -18,6 +18,7 @@ const state = {
   overlayBias: null,
   manualAnnotations: [],
   focusRegion: null,
+  savedFocusRegion: null,
   annotationSourceMap: {},
   selectedAnnotationSource: null,
   overlaySelection: {
@@ -26,6 +27,7 @@ const state = {
     current: null,
     handledPointerUp: false
   },
+  overlaySelectionMode: true,
   overlayIndicators: {
     range: true,
     midpoint: true,
@@ -75,6 +77,7 @@ const elements = {
   noteInput: document.querySelector("#noteInput"),
   focusQuestionInput: document.querySelector("#focusQuestionInput"),
   overlayToggle: document.querySelector("#overlayToggle"),
+  overlaySelectionModeButton: document.querySelector("#overlaySelectionModeButton"),
   marketSearchInput: document.querySelector("#marketSearchInput"),
   marketSymbolList: document.querySelector("#marketSymbolList"),
   marketHeadline: document.querySelector("#marketHeadline"),
@@ -141,6 +144,9 @@ const elements = {
   overlayAnalyzeButton: document.querySelector("#overlayAnalyzeButton"),
   overlayChatButton: document.querySelector("#overlayChatButton"),
   overlayIndicatorsOnlyButton: document.querySelector("#overlayIndicatorsOnlyButton"),
+  overlayUseVisibleRangeButton: document.querySelector("#overlayUseVisibleRangeButton"),
+  overlayRestoreSelectionButton: document.querySelector("#overlayRestoreSelectionButton"),
+  overlayClearSelectionButton: document.querySelector("#overlayClearSelectionButton"),
   chartHost: document.querySelector(".chart-host"),
   chartCanvas: document.querySelector("#chartCanvas"),
   chartAiOverlay: document.querySelector("#chartAiOverlay"),
@@ -284,6 +290,7 @@ function loadPersonalSettings() {
     elements.noteInput.value = saved.note || "";
     elements.focusQuestionInput.value = saved.focusQuestion || "";
     elements.overlayToggle.checked = saved.overlayEnabled ?? true;
+    state.overlaySelectionMode = saved.overlaySelectionMode ?? true;
     state.activeViewId = saved.activeViewId || state.activeViewId;
     state.marketSearchTerm = saved.marketSearchTerm || "";
     state.floatingPanel.x = Number.isFinite(saved.floatingX) ? saved.floatingX : null;
@@ -294,6 +301,7 @@ function loadPersonalSettings() {
       ...state.overlayIndicators,
       ...savedOverlayIndicators
     };
+    state.savedFocusRegion = normalizeFocusRegion(saved.focusRegion);
     elements.marketSearchInput.value = state.marketSearchTerm;
 
     if (saved.selectedCoin) {
@@ -324,7 +332,9 @@ function savePersonalSettings() {
       selectedTimeframe: elements.timeframeSelect.value || "1h",
       marketSearchTerm: state.marketSearchTerm,
       overlayEnabled: elements.overlayToggle.checked,
+      overlaySelectionMode: state.overlaySelectionMode,
       overlayIndicators: state.overlayIndicators,
+      focusRegion: state.savedFocusRegion || state.focusRegion,
       floatingX: state.floatingPanel.x,
       floatingY: state.floatingPanel.y,
       floatingMinimized: state.floatingPanel.minimized
@@ -351,6 +361,17 @@ function setOverlayAnalysisStatus(message) {
   if (elements.overlayAnalysisStatus) {
     elements.overlayAnalysisStatus.textContent = message;
   }
+}
+
+function renderOverlaySelectionModeButton() {
+  if (!elements.overlaySelectionModeButton) {
+    return;
+  }
+
+  const active = Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked && state.overlaySelectionMode);
+  elements.overlaySelectionModeButton.classList.toggle("is-active", active);
+  elements.overlaySelectionModeButton.disabled = !CHART_AI_OVERLAY_ENABLED || !elements.overlayToggle?.checked;
+  elements.overlaySelectionModeButton.textContent = active ? "구간 선택 중" : "구간 선택 모드";
 }
 
 function syncChartFeatureAvailability() {
@@ -393,16 +414,19 @@ function syncChartFeatureAvailability() {
   }
 
   if (!CHART_AI_OVERLAY_ENABLED) {
+    state.overlaySelectionMode = false;
     state.aiAnnotations = [];
     state.overlayIndicatorAnnotations = [];
     state.overlaySignals = [];
     state.overlayBias = null;
     state.selectedAnnotationSource = null;
   }
+
+  renderOverlaySelectionModeButton();
 }
 
 function isOverlaySelectionMode() {
-  return Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked && state.drawingTool === "move");
+  return Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked && state.overlaySelectionMode && state.drawingTool === "move");
 }
 
 function updateChartOverlayMode() {
@@ -412,6 +436,7 @@ function updateChartOverlayMode() {
 
   elements.chartHost.classList.toggle("is-overlay-mode", Boolean(CHART_AI_OVERLAY_ENABLED && elements.overlayToggle?.checked));
   elements.chartHost.classList.toggle("is-selecting", isOverlaySelectionMode() || state.overlaySelection.active);
+  renderOverlaySelectionModeButton();
 }
 
 function renderOverlayIndicatorControls() {
@@ -1000,6 +1025,8 @@ function normalizeFocusRegion(region) {
     type: "zone",
     role: "focus-region",
     source: "focus",
+    symbol: String(region.symbol || elements.coinSelect?.value || "").toUpperCase(),
+    timeframe: String(region.timeframe || elements.timeframeSelect?.value || "1h").toLowerCase(),
     label: region.label || "질문 구간",
     reason: region.reason || "이번 질문에서 우선 해석할 범위",
     color: region.color || "rgba(96, 165, 250, 0.16)",
@@ -1009,6 +1036,65 @@ function normalizeFocusRegion(region) {
     minPrice: Math.min(minPrice, maxPrice),
     maxPrice: Math.max(minPrice, maxPrice)
   };
+}
+
+function clearFocusRegion(options = {}) {
+  const { message = "선택 구간을 해제했습니다.", preserveStatus = false } = options;
+  state.focusRegion = null;
+  state.overlayIndicatorAnnotations = [];
+  state.overlaySignals = [];
+  state.overlayBias = null;
+  state.selectedAnnotationSource = null;
+  savePersonalSettings();
+  renderAnnotationList();
+  renderOverlaySignalList();
+  renderOverlayBiasCard();
+  renderOverlayAnnotationSource();
+  renderChartOverlay();
+  renderChartNavigator(state.snapshot);
+  updateChatContextMeta();
+  if (!preserveStatus) {
+    setOverlayAnalysisStatus(message);
+  }
+}
+
+function buildFocusRegionFromVisibleRange(snapshot) {
+  const visibleCandles = getVisibleCandles(snapshot);
+  if (!visibleCandles.length) {
+    return null;
+  }
+
+  return {
+    id: `visible-focus-${Date.now()}`,
+    label: "현재 화면 구간",
+    reason: "현재 보이는 차트 범위를 기준으로 생성",
+    symbol: snapshot.symbol,
+    timeframe: snapshot.timeframe,
+    startTime: Number(visibleCandles[0].timestamp),
+    endTime: Number(visibleCandles[visibleCandles.length - 1].timestamp),
+    minPrice: Math.min(...visibleCandles.map((candle) => Number(candle.low || 0))),
+    maxPrice: Math.max(...visibleCandles.map((candle) => Number(candle.high || 0)))
+  };
+}
+
+function restoreSavedFocusRegion(snapshot) {
+  const saved = normalizeFocusRegion(state.savedFocusRegion);
+  if (!saved) {
+    return false;
+  }
+
+  if ((saved.symbol && saved.symbol !== snapshot.symbol) || (saved.timeframe && saved.timeframe !== snapshot.timeframe)) {
+    return false;
+  }
+
+  const regionCandles = getRegionCandles(snapshot, saved);
+  if (!regionCandles.length) {
+    return false;
+  }
+
+  state.focusRegion = saved;
+  refreshOverlayIndicators();
+  return true;
 }
 
 function syncConversationVisualState(messages = state.chatMessages) {
@@ -1025,6 +1111,7 @@ function syncConversationVisualState(messages = state.chatMessages) {
     .find((annotations) => Array.isArray(annotations));
 
   state.focusRegion = latestFocusRegion || null;
+  state.savedFocusRegion = latestFocusRegion || state.savedFocusRegion;
   state.aiAnnotations = Array.isArray(latestAiAnnotations) ? latestAiAnnotations : [];
   state.annotationSourceMap = buildAnnotationSourceMap(normalizedMessages);
   state.selectedAnnotationSource = null;
@@ -1830,10 +1917,13 @@ function renderDrawingTools() {
 
 function setFocusRegion(region) {
   state.focusRegion = normalizeFocusRegion(region);
+  state.savedFocusRegion = state.focusRegion;
   state.pendingDrawing = null;
+  savePersonalSettings();
   refreshOverlayIndicators();
   renderAnnotationList();
   renderChartOverlay();
+  renderChartNavigator(state.snapshot);
   updateChatContextMeta();
   setOverlayAnalysisStatus("선택 구간이 업데이트되었습니다. AI 재분석 또는 채팅 전송을 선택할 수 있습니다.");
 }
@@ -1844,9 +1934,7 @@ function removeAnnotationById(annotationId) {
   }
 
   if (state.focusRegion?.id === annotationId) {
-    state.focusRegion = null;
-    state.overlayIndicatorAnnotations = [];
-    state.overlaySignals = [];
+    clearFocusRegion({ preserveStatus: true });
     return true;
   }
 
@@ -2167,7 +2255,7 @@ function ensureChartInteractions() {
 
     state.chartViewport.isDragging = false;
     elements.chartHost.classList.remove("is-dragging");
-    setChartHint("드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
+    setChartHint(isOverlaySelectionMode() ? "드래그해서 분석할 구간을 지정하세요." : "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화");
   };
 
   elements.chartHost.addEventListener("pointerdown", (event) => {
@@ -2175,7 +2263,7 @@ function ensureChartInteractions() {
       return;
     }
 
-    if (elements.overlayToggle?.checked) {
+    if (isOverlaySelectionMode()) {
       const point = readChartPoint(event.clientX, event.clientY);
       if (!point) {
         return;
@@ -2424,16 +2512,9 @@ function handleDrawingClick(event) {
 
 function clearManualAnnotations() {
   state.manualAnnotations = [];
-  state.focusRegion = null;
-  state.overlayIndicatorAnnotations = [];
-  state.overlaySignals = [];
-  state.overlayBias = null;
-  state.selectedAnnotationSource = null;
   state.pendingDrawing = null;
+  clearFocusRegion({ message: "선택 구간과 수동 드로잉을 모두 비웠습니다.", preserveStatus: true });
   renderAnnotationList();
-  renderOverlaySignalList();
-  renderOverlayBiasCard();
-  renderOverlayAnnotationSource();
   renderChartOverlay();
   updateChatContextMeta();
   setChartHint("수동 드로잉을 모두 비웠습니다.");
@@ -2803,7 +2884,9 @@ function renderMarketWorkspace(snapshot) {
     CHART_AI_OVERLAY_ENABLED && elements.overlayToggle.checked
       ? state.focusRegion
         ? "선택 구간이 활성화되어 있습니다. 지표 토글을 바꾸면 즉시 반영됩니다."
-        : "드래그해서 분석할 구간을 지정하세요."
+        : state.overlaySelectionMode
+          ? "구간 선택 모드입니다. 차트를 드래그해 AI 분석 범위를 지정하세요."
+          : "오버레이는 켜져 있습니다. 구간 선택 모드를 켜거나 현재 화면 선택을 사용하세요."
       : "차트는 현재 읽기 전용입니다."
   );
   renderAnnotationList();
@@ -2815,6 +2898,12 @@ function renderMarketWorkspace(snapshot) {
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
   resetChartViewport(snapshot);
+  if (state.focusRegion && ((state.focusRegion.symbol && state.focusRegion.symbol !== snapshot.symbol) || (state.focusRegion.timeframe && state.focusRegion.timeframe !== snapshot.timeframe))) {
+    clearFocusRegion({ preserveStatus: true });
+  }
+  if (!state.focusRegion) {
+    restoreSavedFocusRegion(snapshot);
+  }
   const factsHtml = renderFactsHtml(snapshot);
 
   elements.primaryMetricLabel.textContent = "바이낸스 현재가";
@@ -3400,7 +3489,7 @@ elements.drawingToolList.addEventListener("click", (event) => {
   updateChartOverlayMode();
   setChartHint(
     state.drawingTool === "move"
-      ? elements.overlayToggle.checked
+      ? isOverlaySelectionMode()
         ? "드래그로 분석 구간 선택, 휠로 확대/축소"
         : "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화"
       : `${button.textContent.trim()} 도구 선택됨. 차트 위를 클릭해 표시하세요.`
@@ -3414,11 +3503,31 @@ elements.undoDrawingButton.addEventListener("click", () => {
   setChartHint("마지막 수동 드로잉을 제거했습니다.");
 });
 elements.clearDrawingsButton.addEventListener("click", clearManualAnnotations);
+elements.overlaySelectionModeButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED || !elements.overlayToggle?.checked) {
+    return;
+  }
+
+  state.overlaySelectionMode = !state.overlaySelectionMode;
+  savePersonalSettings();
+  updateChartOverlayMode();
+  setOverlayAnalysisStatus(
+    state.overlaySelectionMode
+      ? "구간 선택 모드 활성화. 차트를 드래그해 AI 분석 범위를 지정하세요."
+      : "구간 선택 모드 해제. 드래그로 화면 이동을 사용할 수 있습니다."
+  );
+  setChartHint(
+    state.overlaySelectionMode
+      ? "드래그로 분석 구간 선택, 휠로 확대/축소"
+      : "드래그로 이동, 휠로 확대/축소, 더블클릭으로 초기화"
+  );
+});
 elements.overlayToggle.addEventListener("change", () => {
   if (!CHART_AI_OVERLAY_ENABLED) {
     return;
   }
 
+  state.overlaySelectionMode = elements.overlayToggle.checked ? true : false;
   savePersonalSettings();
   updateChartOverlayMode();
   renderOverlayIndicatorControls();
@@ -3427,6 +3536,9 @@ elements.overlayToggle.addEventListener("change", () => {
     requestOverlayAnalysis();
     setOverlayAnalysisStatus("오버레이 분석 모드 활성화");
     setChartHint("드래그해서 분석할 구간을 지정하세요.");
+  } else if (elements.overlayToggle.checked) {
+    setOverlayAnalysisStatus("오버레이 활성화. 기본값은 구간 선택 모드입니다.");
+    setChartHint("드래그로 분석 구간 선택, 휠로 확대/축소");
   } else {
     renderAnnotationList();
     renderOverlaySignalList();
@@ -3463,6 +3575,42 @@ elements.overlayAnalyzeButton?.addEventListener("click", () => {
   }
 
   requestOverlayAnalysis();
+});
+elements.overlayUseVisibleRangeButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED || !state.snapshot) {
+    return;
+  }
+
+  const region = buildFocusRegionFromVisibleRange(state.snapshot);
+  if (!region) {
+    setOverlayAnalysisStatus("현재 화면 범위를 구간으로 만들 수 없습니다.");
+    return;
+  }
+
+  setFocusRegion(region);
+});
+elements.overlayRestoreSelectionButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED || !state.snapshot) {
+    return;
+  }
+
+  if (!restoreSavedFocusRegion(state.snapshot)) {
+    setOverlayAnalysisStatus("현재 종목/타임프레임에 복원할 저장 구간이 없습니다.");
+    return;
+  }
+
+  renderAnnotationList();
+  renderChartOverlay();
+  renderChartNavigator(state.snapshot);
+  updateChatContextMeta();
+  setOverlayAnalysisStatus("저장된 구간을 복원했습니다.");
+});
+elements.overlayClearSelectionButton?.addEventListener("click", () => {
+  if (!CHART_AI_OVERLAY_ENABLED) {
+    return;
+  }
+
+  clearFocusRegion();
 });
 elements.overlayIndicatorsOnlyButton?.addEventListener("click", () => {
   if (!CHART_AI_OVERLAY_ENABLED) {
