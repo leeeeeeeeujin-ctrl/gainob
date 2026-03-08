@@ -61,6 +61,10 @@ npm run smoke
   - 바이낸스 메인 시세, 빗썸 비교가, 호가/매물벽 요약, 매크로/뉴스 요약, 기본 차트 주석을 JSON으로 반환합니다.
 - `GET /api/public/briefing?symbol=BTC&timeframe=1h&format=text`
   - 같은 내용을 ChatGPT 웹에 붙여넣기 쉬운 텍스트로 반환합니다.
+- `GET /api/public/direction?timeframe=1h&limit=5&universe=10`
+  - 상위 거래량 코인을 훑어서 다중 타임프레임 변화율, 호가 불균형, 프리미엄, 펀딩, 거래대금을 합산한 방향성 후보를 반환합니다.
+- `GET /api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`
+  - 저장된 방향 점수와 신뢰도 이력을 반환합니다.
 
 예:
 
@@ -68,6 +72,8 @@ npm run smoke
 https://<your-domain>/api/public
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
+https://<your-domain>/api/public/direction?timeframe=1h&limit=5&universe=10
+https://<your-domain>/api/public/direction/history?symbol=BTC&timeframe=1h&limit=24
 ```
 
 브리핑 최상단에는 외부 AI가 바로 쓰기 쉽게 다음 같은 평탄화 키가 함께 포함됩니다.
@@ -94,6 +100,10 @@ https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
     - 호가/유동성(스프레드, 매물벽, bids/asks 배열 제한)
   - `GET /api/public/structure?symbol=BTC&recent=12`
     - 다중 타임프레임 요약 및 차트 주석(최근 캔들 수 제한)
+  - `GET /api/public/direction?timeframe=1h&limit=5&universe=10`
+    - 상위 코인 후보, 하위 후보, 시장 breadth, BTC/ETH dominance, 신뢰도, 점수 변화량
+  - `GET /api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`
+    - 저장된 direction/trust 이력 조회
 
 - 응답에 항상 포함되는 유용한 필드
   - `serverTime` (epoch seconds): 응답 시점 기준 타임스탬프(지연 계산에 사용)
@@ -122,6 +132,32 @@ curl 'http://localhost:3000/api/public/structure?symbol=BTC&recent=6'
   - `serverTime`로 응답 지연(응답 시간 - 서버Time)을 계산해 데이터를 신선도 검사
   - `fundingRate`/`openInterest`가 `null`이면 해당 심볼에서 선물 데이터가 제공되지 않음
   - 큰 페이로드가 문제면 `concise=true` 또는 `candles`/`trades`/`orderbookDepth`를 낮춰 요청
+  - `direction.storage.enabled`가 `true`여도 `persistedSymbols`가 `0`일 수 있음
+    - 이 경우 DB는 연결되어 있지만 `market_direction_history` 테이블이 아직 생성되지 않았거나, 최근 5분 이내 동일 심볼이 이미 저장된 상태입니다.
+
+### Direction Scanner 필드
+
+- `leaders[]`
+  - `score`: 방향성 종합 점수
+  - `bias`: 상승 우위 / 하락 우위 / 중립
+  - `trustScore`: 거래대금, 호가 두께, 파생 데이터, 국내 비교 가능 여부를 반영한 신뢰도 점수
+  - `trustReasons[]`: 신뢰도 점수의 근거
+  - `scoreDelta`, `trustDelta`: 직전 저장값 대비 변화량
+- `breadth`
+  - `upCount`, `downCount`, `neutralCount`, `tone`
+- `storage`
+  - `enabled`: DB 연결 여부
+  - `persistedSymbols`: 이번 스캔에서 새로 저장된 심볼 수
+
+### 저장 이력 활성화
+
+`/api/public/direction/history`와 점수 변화량 추적은 DB 테이블이 있어야 제대로 동작합니다.
+
+```bash
+npm run db:init
+```
+
+테이블이 없으면 direction 엔드포인트 자체는 계속 응답하지만, 저장 수는 `0`, history 응답은 빈 배열로 폴백됩니다.
 
 이 섹션을 README에 추가하여 외부 툴(예: GPT 플러그인, 파이프라인)에서 바로 호출해 사용할 수 있도록 했습니다.
 
