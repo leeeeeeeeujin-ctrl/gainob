@@ -55,6 +55,27 @@ npm run smoke
 
 ## 공개 엔드포인트
 
+### AI 소비자용 빠른 가이드
+
+- 시장 전체 분위기부터 볼 때
+  - `/api/public/direction`
+  - `/api/public/sector-flow`
+- 지금 당장 볼 만한 자리 후보를 고를 때
+  - `/api/public/opportunity`
+- 특정 심볼을 깊게 해석할 때
+  - `/api/public/briefing`
+  - `/api/public/liquidity`
+  - `/api/public/overlay`
+- 저장 추세 변화를 확인할 때
+  - `/api/public/direction/history`
+
+권장 조회 순서:
+
+1. `/api/public/direction`으로 시장 breadth와 상위/하위 후보를 확인합니다.
+2. `/api/public/sector-flow`로 어떤 섹터에 상대강도가 붙는지 봅니다.
+3. `/api/public/opportunity`로 추세 추종 후보, 반등 감시 후보, 회피 후보를 나눕니다.
+4. 관심 심볼은 `/api/public/briefing`, `/api/public/liquidity`, `/api/public/overlay`로 상세 확인합니다.
+
 - `GET /api/public`
   - 어떤 공개 엔드포인트가 있는지 설명 JSON을 반환합니다.
 - `GET /api/public/briefing?symbol=BTC&timeframe=1h`
@@ -63,8 +84,16 @@ npm run smoke
   - 같은 내용을 ChatGPT 웹에 붙여넣기 쉬운 텍스트로 반환합니다.
 - `GET /api/public/direction?timeframe=1h&limit=5&universe=10`
   - 상위 거래량 코인을 훑어서 다중 타임프레임 변화율, 호가 불균형, 프리미엄, 펀딩, 거래대금을 합산한 방향성 후보를 반환합니다.
+- `GET /api/public/sector-flow?timeframe=1h&universe=24`
+  - 상위 거래대금 코인을 섹터별로 묶어서 어느 섹터에 유동성이 붙거나 빠지는지 집계합니다.
+- `GET /api/public/opportunity?timeframe=1h&universe=24&limit=6`
+  - 섹터 상대강도, 호가 불균형, 점수 변화량을 합쳐서 추세 추종 후보 / 반등 감시 후보 / 회피 후보를 반환합니다.
 - `GET /api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`
   - 저장된 방향 점수와 신뢰도 이력을 반환합니다.
+- `GET /api/public/overlay?symbol=BTC&timeframe=1h&candles=96`
+  - AI 오버레이 구간 지표, 신호, 바이어스를 JSON으로 반환합니다.
+  - `start`, `end`를 넘기면 해당 구간 기준으로 계산하고, 없으면 타임프레임별 기본 visible 범위를 사용합니다.
+  - `indicators`로 `range,midpoint,vwap,trend,breakout,pressure,volume` 중 필요한 항목만 선택할 수 있습니다.
 
 예:
 
@@ -73,7 +102,10 @@ https://<your-domain>/api/public
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h
 https://<your-domain>/api/public/briefing?symbol=BTC&timeframe=1h&format=text
 https://<your-domain>/api/public/direction?timeframe=1h&limit=5&universe=10
+https://<your-domain>/api/public/sector-flow?timeframe=1h&universe=24
+https://<your-domain>/api/public/opportunity?timeframe=1h&universe=24&limit=6
 https://<your-domain>/api/public/direction/history?symbol=BTC&timeframe=1h&limit=24
+https://<your-domain>/api/public/overlay?symbol=BTC&timeframe=1h&candles=96
 ```
 
 브리핑 최상단에는 외부 AI가 바로 쓰기 쉽게 다음 같은 평탄화 키가 함께 포함됩니다.
@@ -102,8 +134,15 @@ https://<your-domain>/api/public/direction/history?symbol=BTC&timeframe=1h&limit
     - 다중 타임프레임 요약 및 차트 주석(최근 캔들 수 제한)
   - `GET /api/public/direction?timeframe=1h&limit=5&universe=10`
     - 상위 코인 후보, 하위 후보, 시장 breadth, BTC/ETH dominance, 신뢰도, 점수 변화량
+  - `GET /api/public/sector-flow?timeframe=1h&universe=24`
+    - 섹터별 평균 점수, 평균 호가 불균형, 총 거래대금, 대표 강세/약세 종목 조회
+  - `GET /api/public/opportunity?timeframe=1h&universe=24&limit=6`
+    - 추세 추종 후보, 반등 감시 후보, 회피 후보 조회
   - `GET /api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`
     - 저장된 direction/trust 이력 조회
+  - `GET /api/public/overlay?symbol=BTC&timeframe=1h&candles=96`
+    - AI 오버레이 구간 지표, 신호, 바이어스 조회
+    - 쿼리 파라미터: `start`, `end`(ISO 또는 epoch ms), `candles`, `indicators`
 
 - 응답에 항상 포함되는 유용한 필드
   - `serverTime` (epoch seconds): 응답 시점 기준 타임스탬프(지연 계산에 사용)
@@ -126,6 +165,14 @@ curl 'http://localhost:3000/api/public/market?symbol=BTC&timeframe=1h&candles=12
 curl 'http://localhost:3000/api/public/liquidity?symbol=BTC&orderbookDepth=10'
 
 curl 'http://localhost:3000/api/public/structure?symbol=BTC&recent=6'
+
+curl 'http://localhost:3000/api/public/sector-flow?timeframe=1h&universe=24'
+
+curl 'http://localhost:3000/api/public/opportunity?timeframe=1h&universe=24&limit=6'
+
+curl 'http://localhost:3000/api/public/overlay?symbol=BTC&timeframe=1h&candles=96'
+
+curl 'http://localhost:3000/api/public/overlay?symbol=BTC&timeframe=1h&start=2026-03-08T00:00:00Z&end=2026-03-08T08:00:00Z&indicators=range,midpoint,vwap,breakout,pressure,volume'
 ```
 
 - 빠른 파싱 팁

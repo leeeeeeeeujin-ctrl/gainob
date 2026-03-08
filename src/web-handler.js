@@ -426,6 +426,25 @@ function buildPublicEndpointDocs(baseUrl = "") {
         returns: "도미넌스, 시장 폭, 복수 신호 점수 기반 상위/하위 후보 스캐너"
       },
       {
+        path: `${baseUrl}/api/public/sector-flow?timeframe=1h&universe=24`,
+        method: "GET",
+        query: {
+          timeframe: "기준 타임프레임. 예: 1h",
+          universe: "섹터 집계에 포함할 상위 거래대금 코인 수 (기본 24)"
+        },
+        returns: "L1, 밈, 결제, 거래소, DeFi, AI/Data 등 섹터 단위 유동성/방향성 집계"
+      },
+      {
+        path: `${baseUrl}/api/public/opportunity?timeframe=1h&universe=24&limit=6`,
+        method: "GET",
+        query: {
+          timeframe: "기준 타임프레임. 예: 1h",
+          universe: "기회 후보 계산에 포함할 상위 거래대금 코인 수 (기본 24)",
+          limit: "각 버킷에서 보여줄 후보 수 (기본 6)"
+        },
+        returns: "추세 추종 후보, 반등 감시 후보, 회피 후보를 섹터/호가/점수 변화 기준으로 묶은 기회 스캔"
+      },
+      {
         path: `${baseUrl}/api/public/direction/history?symbol=BTC&timeframe=1h&limit=24`,
         method: "GET",
         query: {
@@ -434,6 +453,19 @@ function buildPublicEndpointDocs(baseUrl = "") {
           limit: "가져올 이력 수 (기본 24)"
         },
         returns: "저장된 방향 점수 및 신뢰도 이력"
+      },
+      {
+        path: `${baseUrl}/api/public/overlay?symbol=BTC&timeframe=1h&candles=96`,
+        method: "GET",
+        query: {
+          symbol: "조회할 심볼. 예: BTC",
+          timeframe: "15m | 1h | 4h | 1d | 1w",
+          start: "구간 시작 시각(ISO 또는 epoch ms)",
+          end: "구간 종료 시각(ISO 또는 epoch ms)",
+          candles: "start/end가 없을 때 최근 몇 개 봉을 기준으로 계산할지",
+          indicators: "표시할 지표 id 목록. 예: range,midpoint,vwap,breakout,pressure,volume"
+        },
+        returns: "AI 오버레이용 구간 지표, 신호, 바이어스, 계산에 사용된 범위 정보"
       }
     ]
   };
@@ -441,6 +473,312 @@ function buildPublicEndpointDocs(baseUrl = "") {
 
 function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function parsePublicTimeValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isNaN(numeric) && /^\d+$/.test(String(value))) {
+    return numeric;
+  }
+
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatSignedPct(value, digits = 2) {
+  const numeric = Number(value || 0);
+  const fixed = numeric.toFixed(digits);
+  return `${numeric > 0 ? "+" : ""}${fixed}%`;
+}
+
+function formatFixedNumber(value, digits = 2) {
+  return Number(Number(value || 0).toFixed(digits));
+}
+
+const PUBLIC_OVERLAY_INDICATOR_DEFAULTS = {
+  range: true,
+  midpoint: true,
+  vwap: true,
+  trend: false,
+  breakout: true,
+  pressure: true,
+  volume: true
+};
+
+function getDefaultOverlayVisibleCount(timeframe, totalCandles) {
+  const defaults = {
+    "15m": 72,
+    "1h": 96,
+    "4h": 84,
+    "1d": 120,
+    "1w": 80
+  };
+
+  return clampNumber(defaults[timeframe] || 72, 20, Math.max(totalCandles, 20));
+}
+
+function parseOverlayIndicatorSelection(value) {
+  if (!value) {
+    return { ...PUBLIC_OVERLAY_INDICATOR_DEFAULTS };
+  }
+
+  const selected = new Set(
+    String(value)
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  return Object.fromEntries(
+    Object.keys(PUBLIC_OVERLAY_INDICATOR_DEFAULTS).map((key) => [key, selected.has(key)])
+  );
+}
+
+function getOverlayRegionCandles(snapshot, focusRegion) {
+  if (!snapshot?.candles?.length || !focusRegion) {
+    return [];
+  }
+
+  return snapshot.candles.filter(
+    (candle) => Number(candle.timestamp) >= Number(focusRegion.startTime) && Number(candle.timestamp) <= Number(focusRegion.endTime)
+  );
+}
+
+function buildPublicOverlayIndicatorSegments(regionCandles) {
+  if (!Array.isArray(regionCandles) || !regionCandles.length) {
+    return [];
+  }
+
+  const segmentCount = regionCandles.length >= 96 ? 5 : regionCandles.length >= 72 ? 4 : regionCandles.length >= 48 ? 3 : regionCandles.length >= 24 ? 2 : 1;
+  const segments = [];
+
+  for (let index = 0; index < segmentCount; index += 1) {
+    const startIndex = Math.floor((index * regionCandles.length) / segmentCount);
+    const endIndex = Math.floor(((index + 1) * regionCandles.length) / segmentCount);
+    const candles = regionCandles.slice(startIndex, Math.max(endIndex, startIndex + 1));
+
+    if (!candles.length) {
+      continue;
+    }
+
+    segments.push({
+      index: segments.length + 1,
+      candles,
+      isSegmented: segmentCount > 1,
+      isLast: index === segmentCount - 1
+    });
+  }
+
+  return segments;
+}
+
+function buildPublicOverlayRegion(snapshot, options = {}) {
+  const candles = Array.isArray(snapshot?.candles) ? snapshot.candles : [];
+  if (!candles.length) {
+    throw new Error("Overlay region requires candle data.");
+  }
+
+  const startTime = parsePublicTimeValue(options.start);
+  const endTime = parsePublicTimeValue(options.end);
+  let regionCandles = candles.slice();
+  let mode = "visible-default";
+
+  if (startTime !== null || endTime !== null) {
+    if (startTime !== null) {
+      regionCandles = regionCandles.filter((candle) => Number(candle.timestamp) >= startTime);
+    }
+    if (endTime !== null) {
+      regionCandles = regionCandles.filter((candle) => Number(candle.timestamp) <= endTime);
+    }
+    mode = "custom-range";
+  } else {
+    const visibleCount = clampNumber(Number(options.candles || getDefaultOverlayVisibleCount(snapshot.timeframe, candles.length)), 20, candles.length);
+    regionCandles = candles.slice(-visibleCount);
+  }
+
+  if (!regionCandles.length) {
+    throw new Error("No candles matched the requested overlay range.");
+  }
+
+  return {
+    id: `public-overlay-${snapshot.symbol}-${snapshot.timeframe}`,
+    type: "zone",
+    role: "focus-region",
+    source: "focus",
+    label: mode === "custom-range" ? "요청 구간" : "현재 화면 기준 구간",
+    reason: mode === "custom-range" ? "공개 API에서 지정한 범위" : "공개 API 기본 visible 범위",
+    symbol: snapshot.symbol,
+    timeframe: snapshot.timeframe,
+    startTime: Number(regionCandles[0].timestamp),
+    endTime: Number(regionCandles[regionCandles.length - 1].timestamp),
+    minPrice: Math.min(...regionCandles.map((candle) => Number(candle.low || 0))),
+    maxPrice: Math.max(...regionCandles.map((candle) => Number(candle.high || 0))),
+    candleCount: regionCandles.length,
+    mode
+  };
+}
+
+function buildPublicOverlaySignals(snapshot, focusRegion) {
+  const regionCandles = getOverlayRegionCandles(snapshot, focusRegion);
+
+  if (!regionCandles.length) {
+    return [];
+  }
+
+  const firstCandle = regionCandles[0];
+  const lastCandle = regionCandles[regionCandles.length - 1];
+  const highest = Math.max(...regionCandles.map((candle) => Number(candle.high || 0)));
+  const lowest = Math.min(...regionCandles.map((candle) => Number(candle.low || 0)));
+  const range = Math.max(highest - lowest, 0.0001);
+  const netChangePct = ((Number(lastCandle.close || 0) - Number(firstCandle.open || 0)) / Math.max(Number(firstCandle.open || 1), 1)) * 100;
+  const closeLocation = ((Number(lastCandle.close || 0) - lowest) / range) * 100;
+  const positiveCloseCount = regionCandles.filter((candle) => Number(candle.close || 0) >= Number(candle.open || 0)).length;
+  const controlPct = (positiveCloseCount / Math.max(regionCandles.length, 1)) * 100;
+  const averageVolume = regionCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0) / Math.max(regionCandles.length, 1);
+  const lastVolumeRatio = Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001);
+  const upperWickTotal = regionCandles.reduce((sum, candle) => sum + Math.max(Number(candle.high || 0) - Math.max(Number(candle.open || 0), Number(candle.close || 0)), 0), 0);
+  const lowerWickTotal = regionCandles.reduce((sum, candle) => sum + Math.max(Math.min(Number(candle.open || 0), Number(candle.close || 0)) - Number(candle.low || 0), 0), 0);
+  const bodyControlTone = netChangePct > 1.2 && closeLocation >= 65 && controlPct >= 55 ? "bullish" : netChangePct < -1.2 && closeLocation <= 35 && controlPct <= 45 ? "bearish" : "neutral";
+  const wickTone = lowerWickTotal > upperWickTotal * 1.18 ? "bullish" : upperWickTotal > lowerWickTotal * 1.18 ? "bearish" : "neutral";
+  const volumeTone = lastVolumeRatio >= 1.6 && netChangePct > 0 ? "bullish" : lastVolumeRatio >= 1.6 && netChangePct < 0 ? "bearish" : "neutral";
+  const priorCandles = regionCandles.slice(0, -1);
+  const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
+  const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
+  const breakoutTone = Number(lastCandle.close || 0) > priorHigh ? "bullish" : Number(lastCandle.close || 0) < priorLow ? "bearish" : "neutral";
+  const midpoint = lowest + range / 2;
+  const reclaimTone = Number(lastCandle.low || 0) < midpoint && Number(lastCandle.close || 0) > midpoint
+    ? "bullish"
+    : Number(lastCandle.high || 0) > midpoint && Number(lastCandle.close || 0) < midpoint
+      ? "bearish"
+      : "neutral";
+  const bodySizeSum = regionCandles.reduce((sum, candle) => sum + Math.abs(Number(candle.close || 0) - Number(candle.open || 0)), 0);
+  const wickSizeSum = upperWickTotal + lowerWickTotal;
+  const absorptionTone = wickSizeSum > bodySizeSum * 1.15
+    ? lowerWickTotal > upperWickTotal
+      ? "bullish"
+      : "bearish"
+    : "neutral";
+
+  return [
+    { label: "구간 방향", value: formatSignedPct(netChangePct), tone: bodyControlTone, reason: "시작 시가 대비 종료 종가 변화", raw: formatFixedNumber(netChangePct, 2) },
+    { label: "종가 위치", value: `${formatFixedNumber(closeLocation, 1)} / 100`, tone: closeLocation >= 70 ? "bullish" : closeLocation <= 30 ? "bearish" : "neutral", reason: "고저 범위 안에서 마지막 종가 위치", raw: formatFixedNumber(closeLocation, 1) },
+    { label: "캔들 주도권", value: `${formatFixedNumber(controlPct, 0)}% 양봉`, tone: controlPct >= 58 ? "bullish" : controlPct <= 42 ? "bearish" : "neutral", reason: "구간 내 양봉 비중", raw: formatFixedNumber(controlPct, 1) },
+    { label: "꼬리 압력", value: lowerWickTotal > upperWickTotal ? "아래꼬리 우세" : upperWickTotal > lowerWickTotal ? "위꼬리 우세" : "균형", tone: wickTone, reason: "매수/매도 거절 흔적 추정", raw: { upperWickTotal: formatFixedNumber(upperWickTotal, 4), lowerWickTotal: formatFixedNumber(lowerWickTotal, 4) } },
+    { label: "거래량 참여", value: `${formatFixedNumber(lastVolumeRatio, 2)}x`, tone: volumeTone, reason: "마지막 봉 거래량 / 구간 평균", raw: formatFixedNumber(lastVolumeRatio, 3) },
+    { label: "돌파 상태", value: breakoutTone === "bullish" ? "직전 구간 상단 돌파" : breakoutTone === "bearish" ? "직전 구간 하단 이탈" : "아직 범위 내부", tone: breakoutTone, reason: "마지막 종가 기준" },
+    { label: "리클레임/실패", value: reclaimTone === "bullish" ? "중앙값 리클레임" : reclaimTone === "bearish" ? "중앙값 재이탈" : "중립", tone: reclaimTone, reason: `선택 구간 중간값 ${formatFixedNumber(midpoint, 2)} 기준 종가 복귀 여부`, raw: formatFixedNumber(midpoint, 2) },
+    { label: "흡수/분배", value: absorptionTone === "bullish" ? "저가 흡수" : absorptionTone === "bearish" ? "고가 분배" : "방향성 약함", tone: absorptionTone, reason: "꼬리 총합 대비 몸통 총합으로 체결 흡수 성격 추정" }
+  ];
+}
+
+function buildPublicOverlayBias(signals) {
+  if (!Array.isArray(signals) || !signals.length) {
+    return null;
+  }
+
+  const signalWeights = {
+    "구간 방향": 2.2,
+    "종가 위치": 1.4,
+    "캔들 주도권": 1.2,
+    "꼬리 압력": 1,
+    "거래량 참여": 1.3,
+    "돌파 상태": 2,
+    "리클레임/실패": 1.6,
+    "흡수/분배": 1.4
+  };
+
+  const score = signals.reduce((sum, signal) => {
+    const weight = signalWeights[signal.label] || 1;
+    if (signal.tone === "bullish") return sum + weight;
+    if (signal.tone === "bearish") return sum - weight;
+    return sum;
+  }, 0);
+
+  const tone = score >= 2.5 ? "bullish" : score <= -2.5 ? "bearish" : "neutral";
+  const label = tone === "bullish" ? "현재 바이어스: 상승 우위" : tone === "bearish" ? "현재 바이어스: 하락 우위" : "현재 바이어스: 중립";
+  const bullishCount = signals.filter((signal) => signal.tone === "bullish").length;
+  const bearishCount = signals.filter((signal) => signal.tone === "bearish").length;
+  const dominantSignals = signals.filter((signal) => signal.tone === tone && tone !== "neutral").sort((left, right) => (signalWeights[right.label] || 1) - (signalWeights[left.label] || 1));
+  const strongest = dominantSignals[0] || signals.find((signal) => signal.tone !== "neutral");
+
+  return {
+    tone,
+    label,
+    score: formatFixedNumber(score, 1),
+    summary: `점수 ${formatFixedNumber(score, 1)} · 강세 ${bullishCount} / 약세 ${bearishCount}`,
+    reason: strongest ? `${strongest.label}: ${strongest.reason}` : "유의미한 방향 신호가 부족합니다."
+  };
+}
+
+function buildPublicOverlayIndicatorAnnotations(snapshot, focusRegion, enabledIndicators = PUBLIC_OVERLAY_INDICATOR_DEFAULTS) {
+  const regionCandles = getOverlayRegionCandles(snapshot, focusRegion);
+
+  if (!regionCandles.length || !focusRegion) {
+    return [];
+  }
+
+  const segments = buildPublicOverlayIndicatorSegments(regionCandles);
+  const annotations = [];
+
+  segments.forEach((segment) => {
+    const segmentCandles = segment.candles;
+    const firstCandle = segmentCandles[0];
+    const lastCandle = segmentCandles[segmentCandles.length - 1];
+    const highest = Math.max(...segmentCandles.map((candle) => Number(candle.high || 0)));
+    const lowest = Math.min(...segmentCandles.map((candle) => Number(candle.low || 0)));
+    const midpoint = (highest + lowest) / 2;
+    const vwapNumerator = segmentCandles.reduce((sum, candle) => sum + ((Number(candle.high || 0) + Number(candle.low || 0) + Number(candle.close || 0)) / 3) * Number(candle.volume || 0), 0);
+    const totalVolume = segmentCandles.reduce((sum, candle) => sum + Number(candle.volume || 0), 0);
+    const vwap = totalVolume ? vwapNumerator / totalVolume : midpoint;
+    const priorCandles = segmentCandles.slice(0, -1);
+    const priorHigh = priorCandles.length ? Math.max(...priorCandles.map((candle) => Number(candle.high || 0))) : highest;
+    const priorLow = priorCandles.length ? Math.min(...priorCandles.map((candle) => Number(candle.low || 0))) : lowest;
+    const averageVolume = totalVolume / Math.max(segmentCandles.length, 1);
+    const upperWick = Math.max(Number(lastCandle.high || 0) - Math.max(Number(lastCandle.open || 0), Number(lastCandle.close || 0)), 0);
+    const lowerWick = Math.max(Math.min(Number(lastCandle.open || 0), Number(lastCandle.close || 0)) - Number(lastCandle.low || 0), 0);
+    const suffix = segment.isSegmented ? ` ${segment.index}` : "";
+
+    if (enabledIndicators.range) {
+      annotations.push(
+        { id: `indicator-range-high-${focusRegion.id}-${segment.index}`, type: "line", source: "indicator", label: `고점${suffix}`, reason: `세그먼트 ${segment.index} 최고가 ${formatFixedNumber(highest, 2)}`, color: "#f87171", from: { time: firstCandle.timestamp, price: highest }, to: { time: lastCandle.timestamp, price: highest } },
+        { id: `indicator-range-low-${focusRegion.id}-${segment.index}`, type: "line", source: "indicator", label: `저점${suffix}`, reason: `세그먼트 ${segment.index} 최저가 ${formatFixedNumber(lowest, 2)}`, color: "#34d399", from: { time: firstCandle.timestamp, price: lowest }, to: { time: lastCandle.timestamp, price: lowest } }
+      );
+    }
+
+    if (enabledIndicators.midpoint) {
+      annotations.push({ id: `indicator-midpoint-${focusRegion.id}-${segment.index}`, type: "line", source: "indicator", label: `중앙${suffix}`, reason: `세그먼트 ${segment.index} 중앙값 ${formatFixedNumber(midpoint, 2)}`, color: "#fbbf24", from: { time: firstCandle.timestamp, price: midpoint }, to: { time: lastCandle.timestamp, price: midpoint } });
+    }
+
+    if (enabledIndicators.vwap) {
+      annotations.push({ id: `indicator-vwap-${focusRegion.id}-${segment.index}`, type: "line", source: "indicator", label: `VWAP${suffix}`, reason: `세그먼트 ${segment.index} 거래량 가중 평균가 ${formatFixedNumber(vwap, 2)}`, color: "#60a5fa", from: { time: firstCandle.timestamp, price: vwap }, to: { time: lastCandle.timestamp, price: vwap } });
+    }
+
+    if (enabledIndicators.trend) {
+      annotations.push({ id: `indicator-trend-${focusRegion.id}-${segment.index}`, type: "line", source: "indicator", label: `추세${suffix}`, reason: `세그먼트 ${segment.index} 종가 ${formatFixedNumber(firstCandle.close, 2)} -> ${formatFixedNumber(lastCandle.close, 2)}`, color: "#c084fc", from: { time: firstCandle.timestamp, price: Number(firstCandle.close || 0) }, to: { time: lastCandle.timestamp, price: Number(lastCandle.close || 0) } });
+    }
+
+    if (enabledIndicators.breakout) {
+      if (Number(lastCandle.close || 0) > priorHigh) {
+        annotations.push({ id: `indicator-breakout-up-${focusRegion.id}-${segment.index}`, type: "marker", source: "indicator", label: `상단 돌파${suffix}`, reason: `세그먼트 ${segment.index} 종가가 직전 고점 ${formatFixedNumber(priorHigh, 2)} 위`, color: "#22c55e", time: lastCandle.timestamp, price: Number(lastCandle.close || 0) });
+      } else if (Number(lastCandle.close || 0) < priorLow) {
+        annotations.push({ id: `indicator-breakout-down-${focusRegion.id}-${segment.index}`, type: "marker", source: "indicator", label: `하단 이탈${suffix}`, reason: `세그먼트 ${segment.index} 종가가 직전 저점 ${formatFixedNumber(priorLow, 2)} 아래`, color: "#ef4444", time: lastCandle.timestamp, price: Number(lastCandle.close || 0) });
+      }
+    }
+
+    if (enabledIndicators.pressure) {
+      annotations.push({ id: `indicator-pressure-${focusRegion.id}-${segment.index}`, type: "marker", source: "indicator", label: lowerWick > upperWick ? `매수 방어${suffix}` : upperWick > lowerWick ? `매도 압력${suffix}` : `꼬리 균형${suffix}`, reason: lowerWick > upperWick ? `세그먼트 ${segment.index} 아래꼬리 우세` : upperWick > lowerWick ? `세그먼트 ${segment.index} 위꼬리 우세` : `세그먼트 ${segment.index} 꼬리 균형`, color: lowerWick > upperWick ? "#34d399" : upperWick > lowerWick ? "#f87171" : "#94a3b8", time: lastCandle.timestamp, price: lowerWick > upperWick ? Number(lastCandle.low || 0) : Number(lastCandle.high || 0) });
+    }
+
+    if (enabledIndicators.volume && Number(lastCandle.volume || 0) >= averageVolume * 1.6) {
+      annotations.push({ id: `indicator-volume-${focusRegion.id}-${segment.index}`, type: "marker", source: "indicator", label: `거래량 스파이크${suffix}`, reason: `세그먼트 ${segment.index} 평균 대비 ${formatFixedNumber(Number(lastCandle.volume || 0) / Math.max(averageVolume, 0.0001), 2)}배`, color: "#38bdf8", time: lastCandle.timestamp, price: Number(lastCandle.close || 0) });
+    }
+  });
+
+  return annotations;
 }
 
 function scoreFromChange(changePct, divisor, min, max) {
@@ -639,6 +977,341 @@ function buildDirectionCandidate(packet, medianQuoteVolume, medianDepthValue) {
       "1d": tf1d?.changePct ?? null
     },
     reasons: reasons.slice(0, 4)
+  };
+}
+
+const SECTOR_DEFINITIONS = [
+  {
+    id: "majors",
+    label: "Majors",
+    symbols: ["BTC", "ETH"]
+  },
+  {
+    id: "layer1",
+    label: "L1 / Infra",
+    symbols: ["SOL", "ADA", "AVAX", "DOT", "ATOM", "NEAR", "APT", "SUI", "SEI", "TRX", "TON", "ALGO", "KAS", "HBAR"]
+  },
+  {
+    id: "payments",
+    label: "Payments",
+    symbols: ["XRP", "XLM", "LTC", "BCH", "XMR", "DASH"]
+  },
+  {
+    id: "meme",
+    label: "Meme",
+    symbols: ["DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI", "BRETT", "TRUMP"]
+  },
+  {
+    id: "exchange",
+    label: "Exchange",
+    symbols: ["BNB", "OKB", "CRO", "KCS", "BGB", "GT"]
+  },
+  {
+    id: "defi",
+    label: "DeFi / Yield",
+    symbols: ["UNI", "AAVE", "MKR", "CRV", "COMP", "SNX", "SUSHI", "CAKE", "PENDLE", "ENA", "ONDO", "JUP"]
+  },
+  {
+    id: "ai",
+    label: "AI / Data",
+    symbols: ["TAO", "RNDR", "RENDER", "FET", "AGIX", "WLD", "GRT", "ARKM"]
+  },
+  {
+    id: "gaming",
+    label: "Gaming / NFT",
+    symbols: ["IMX", "GALA", "SAND", "MANA", "AXS", "RON", "BEAM"]
+  }
+];
+
+const SYMBOL_TO_SECTOR = new Map(
+  SECTOR_DEFINITIONS.flatMap((sector) => sector.symbols.map((symbol) => [symbol, sector]))
+);
+
+function getSectorDefinitionForSymbol(symbol) {
+  const sector = SYMBOL_TO_SECTOR.get(String(symbol || "").toUpperCase());
+  return sector || { id: "other", label: "Other", symbols: [] };
+}
+
+function buildSectorFlowPayload(candidates, timeframe, universe) {
+  const grouped = new Map();
+
+  for (const candidate of candidates) {
+    const sector = getSectorDefinitionForSymbol(candidate.symbol);
+    const key = sector.id;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        sector: sector.id,
+        label: sector.label,
+        members: []
+      });
+    }
+    grouped.get(key).members.push(candidate);
+  }
+
+  const sectors = Array.from(grouped.values())
+    .map((entry) => {
+      const members = entry.members.slice().sort((left, right) => right.quoteVolume24hUsdt - left.quoteVolume24hUsdt);
+      const totalWeight = members.reduce((sum, member) => sum + Math.max(Math.log10(Number(member.quoteVolume24hUsdt || 0) + 1), 1), 0);
+      const weightedScore = members.reduce(
+        (sum, member) => sum + member.score * Math.max(Math.log10(Number(member.quoteVolume24hUsdt || 0) + 1), 1),
+        0
+      ) / Math.max(totalWeight, 1);
+      const weightedImbalance = members.reduce(
+        (sum, member) => sum + Number(member.orderbookImbalancePct || 0) * Math.max(Math.log10(Number(member.quoteVolume24hUsdt || 0) + 1), 1),
+        0
+      ) / Math.max(totalWeight, 1);
+      const weightedChange = members.reduce(
+        (sum, member) => sum + Number(member.change24hPct || 0) * Math.max(Math.log10(Number(member.quoteVolume24hUsdt || 0) + 1), 1),
+        0
+      ) / Math.max(totalWeight, 1);
+      const averageTrustScore = members.reduce((sum, member) => sum + Number(member.trustScore || 0), 0) / Math.max(members.length, 1);
+      const dominant = members.slice().sort((left, right) => right.score - left.score)[0] || null;
+      const weakest = members.slice().sort((left, right) => left.score - right.score)[0] || null;
+      const bias = classifyDirectionBias(weightedScore);
+      const positiveCount = members.filter((member) => member.score >= 2.1).length;
+      const negativeCount = members.filter((member) => member.score <= -2.1).length;
+      const neutralCount = Math.max(members.length - positiveCount - negativeCount, 0);
+
+      return {
+        sector: entry.sector,
+        label: entry.label,
+        timeframe,
+        memberCount: members.length,
+        totalQuoteVolume24hUsdt: Number(members.reduce((sum, member) => sum + Number(member.quoteVolume24hUsdt || 0), 0).toFixed(2)),
+        averageScore: Number(weightedScore.toFixed(2)),
+        averageChange24hPct: Number(weightedChange.toFixed(2)),
+        averageOrderbookImbalancePct: Number(weightedImbalance.toFixed(2)),
+        averageTrustScore: Number(averageTrustScore.toFixed(0)),
+        bias: bias.label,
+        tone: bias.tone,
+        breadth: {
+          positiveCount,
+          negativeCount,
+          neutralCount
+        },
+        leader: dominant
+          ? {
+              symbol: dominant.symbol,
+              score: dominant.score,
+              bias: dominant.bias,
+              change24hPct: dominant.change24hPct,
+              orderbookImbalancePct: dominant.orderbookImbalancePct
+            }
+          : null,
+        laggard: weakest
+          ? {
+              symbol: weakest.symbol,
+              score: weakest.score,
+              bias: weakest.bias,
+              change24hPct: weakest.change24hPct,
+              orderbookImbalancePct: weakest.orderbookImbalancePct
+            }
+          : null,
+        members: members.slice(0, 6).map((member) => ({
+          symbol: member.symbol,
+          score: member.score,
+          bias: member.bias,
+          trustScore: member.trustScore,
+          change24hPct: member.change24hPct,
+          orderbookImbalancePct: member.orderbookImbalancePct,
+          quoteVolume24hUsdt: member.quoteVolume24hUsdt
+        }))
+      };
+    })
+    .sort((left, right) => right.averageScore - left.averageScore);
+
+  return {
+    timeframe,
+    universe,
+    sectors,
+    summary: {
+      leaderSector: sectors[0] || null,
+      weakestSector: sectors[sectors.length - 1] || null,
+      riskTone:
+        sectors.filter((sector) => sector.averageScore >= 2.1).length > sectors.filter((sector) => sector.averageScore <= -2.1).length
+          ? "risk-on-lean"
+          : sectors.filter((sector) => sector.averageScore <= -2.1).length > sectors.filter((sector) => sector.averageScore >= 2.1).length
+            ? "risk-off-lean"
+            : "mixed"
+    }
+  };
+}
+
+async function buildPublicSectorFlow(timeframe, options = {}) {
+  const universe = Math.min(Math.max(Number(options.universe || 24), 8), 48);
+  const coins = (await getSupportedCoins())
+    .filter((coin) => !isStablecoinLikeCoin(coin))
+    .slice(0, universe);
+  const packets = await Promise.allSettled(
+    coins.map((coin) => getMultiTimeframeMarketPacket(coin.symbol, { timeframe }))
+  );
+
+  const successfulPackets = packets
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
+
+  const quoteVolumes = successfulPackets
+    .map((packet) => Number(packet.primary?.quoteVolume24hUsdt || 0))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  const medianQuoteVolume = quoteVolumes.length ? quoteVolumes[Math.floor(quoteVolumes.length / 2)] : 0;
+  const depthValues = successfulPackets
+    .map((packet) => Number(packet.orderbook?.totalBidValueUsdt || 0) + Number(packet.orderbook?.totalAskValueUsdt || 0))
+    .filter((value) => Number.isFinite(value))
+    .sort((left, right) => left - right);
+  const medianDepthValue = depthValues.length ? depthValues[Math.floor(depthValues.length / 2)] : 0;
+
+  const candidates = successfulPackets
+    .map((packet) => buildDirectionCandidate(packet, medianQuoteVolume, medianDepthValue))
+    .sort((left, right) => right.score - left.score);
+
+  return buildSectorFlowPayload(candidates, timeframe, universe);
+}
+
+function buildOpportunityReasonList(candidate, sectorSummary, mode) {
+  const reasons = [];
+  if (sectorSummary?.label) {
+    reasons.push(`섹터 ${sectorSummary.label} 평균 ${sectorSummary.averageScore}`);
+  }
+  if (Number.isFinite(Number(candidate.scoreDelta))) {
+    reasons.push(`점수 변화 ${candidate.scoreDelta > 0 ? "+" : ""}${candidate.scoreDelta}`);
+  }
+  if (Number.isFinite(Number(candidate.orderbookImbalancePct))) {
+    reasons.push(`호가 ${Number(candidate.orderbookImbalancePct).toFixed(1)}%`);
+  }
+  if (candidate.trustScore) {
+    reasons.push(`신뢰도 ${candidate.trustScore}`);
+  }
+  if (mode === "rebound" && Number(candidate.change24hPct) < 0) {
+    reasons.push(`24h 낙폭 ${Number(candidate.change24hPct).toFixed(2)}%`);
+  }
+  return reasons.slice(0, 4);
+}
+
+function buildOpportunityBuckets(candidates, sectorFlow) {
+  const sectorBySymbol = new Map();
+  for (const sector of sectorFlow?.sectors || []) {
+    for (const member of sector.members || []) {
+      sectorBySymbol.set(member.symbol, sector);
+    }
+  }
+
+  const withSector = candidates.map((candidate) => ({
+    ...candidate,
+    sector: sectorBySymbol.get(candidate.symbol) || null
+  }));
+
+  const momentumCandidates = withSector
+    .filter((candidate) => candidate.score >= -0.5 && candidate.trustScore >= 60)
+    .map((candidate) => {
+      const sectorScore = Number(candidate.sector?.averageScore || 0);
+      const value =
+        candidate.score * 1.4 +
+        clampNumber(Number(candidate.orderbookImbalancePct || 0) / 15, -2, 2) +
+        clampNumber(Number(candidate.scoreDelta || 0), -2.5, 2.5) * 0.9 +
+        clampNumber(sectorScore / 2.5, -2, 2) +
+        clampNumber((Number(candidate.trustScore || 0) - 50) / 18, -1, 2);
+      return {
+        symbol: candidate.symbol,
+        sector: candidate.sector?.label || "Other",
+        setup: value >= 4.5 ? "추세 추종 우선" : value >= 3 ? "강한 상대강도 감시" : "상대강도 초기 감시",
+        score: Number(value.toFixed(2)),
+        bias: candidate.bias,
+        reasons: buildOpportunityReasonList(candidate, candidate.sector, "momentum")
+      };
+    })
+    .filter((candidate) => candidate.score >= 2.6)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 6);
+
+  const reboundCandidates = withSector
+    .filter((candidate) => candidate.score <= -1 && candidate.score >= -7.5 && candidate.trustScore >= 55)
+    .map((candidate) => {
+      const sectorScore = Number(candidate.sector?.averageScore || 0);
+      const value =
+        clampNumber(Math.abs(candidate.score + 2.5), 0, 4) +
+        clampNumber(Number(candidate.orderbookImbalancePct || 0) / 12, -2, 3) +
+        clampNumber(Number(candidate.scoreDelta || 0), -2, 3) * 1.1 +
+        clampNumber((Number(candidate.trustScore || 0) - 50) / 16, -1, 2) +
+        clampNumber((sectorScore + 4) / 3.5, -2, 2);
+      return {
+        symbol: candidate.symbol,
+        sector: candidate.sector?.label || "Other",
+        setup: value >= 4.8 ? "반등 감시 우선" : value >= 3.2 ? "반등 조건부 감시" : "아직 약함",
+        score: Number(value.toFixed(2)),
+        bias: candidate.bias,
+        reasons: buildOpportunityReasonList(candidate, candidate.sector, "rebound")
+      };
+    })
+    .filter((candidate) => candidate.score >= 3.2)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 6);
+
+  const avoidCandidates = withSector
+    .filter((candidate) => candidate.score <= -3)
+    .map((candidate) => {
+      const sectorScore = Number(candidate.sector?.averageScore || 0);
+      const value =
+        Math.abs(candidate.score) * 1.1 +
+        clampNumber(Math.abs(Math.min(Number(candidate.orderbookImbalancePct || 0), 0)) / 16, 0, 4) +
+        clampNumber(Math.abs(Math.min(Number(candidate.scoreDelta || 0), 0)), 0, 3) * 0.8 +
+        clampNumber(Math.abs(Math.min(sectorScore, 0)) / 2.8, 0, 3);
+      return {
+        symbol: candidate.symbol,
+        sector: candidate.sector?.label || "Other",
+        risk: value >= 8 ? "회피 우선" : value >= 6 ? "공격 매수 주의" : "약세 경계",
+        score: Number(value.toFixed(2)),
+        bias: candidate.bias,
+        reasons: buildOpportunityReasonList(candidate, candidate.sector, "avoid")
+      };
+    })
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 6);
+
+  return {
+    momentumCandidates,
+    reboundCandidates,
+    avoidCandidates
+  };
+}
+
+async function buildPublicOpportunityScan(timeframe, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit || 6), 3), 12);
+  const universe = Math.min(Math.max(Number(options.universe || 24), limit), 48);
+  const sectorFlow = await buildPublicSectorFlow(timeframe, { universe });
+  const direction = await buildPublicDirectionScan(timeframe, {
+    limit: Math.max(limit, 8),
+    universe: Math.min(universe, 20)
+  });
+
+  const allCandidates = new Map();
+  for (const candidate of [...direction.leaders, ...direction.laggards]) {
+    allCandidates.set(candidate.symbol, candidate);
+  }
+  const sectorLeaders = (sectorFlow.sectors || []).flatMap((sector) => sector.members || []);
+  for (const member of sectorLeaders) {
+    if (!allCandidates.has(member.symbol)) {
+      allCandidates.set(member.symbol, member);
+    }
+  }
+  const normalizedBuckets = buildOpportunityBuckets(Array.from(allCandidates.values()), sectorFlow);
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    timeframe,
+    universe,
+    marketRegime: {
+      breadthTone: direction.breadth.tone,
+      sectorTone: sectorFlow.summary.riskTone,
+      leaderSector: sectorFlow.summary.leaderSector?.label || null,
+      weakestSector: sectorFlow.summary.weakestSector?.label || null
+    },
+    setups: {
+      momentum: normalizedBuckets.momentumCandidates.slice(0, limit),
+      rebound: normalizedBuckets.reboundCandidates.slice(0, limit),
+      avoid: normalizedBuckets.avoidCandidates.slice(0, limit)
+    },
+    note: "확률형 감시 목록입니다. 추세 우위, 섹터 상대강도, 호가 불균형, 최근 점수 변화를 함께 반영했습니다."
   };
 }
 
@@ -1548,6 +2221,33 @@ app.get("/api/public/direction", async (request, response) => {
   }
 });
 
+app.get("/api/public/sector-flow", async (request, response) => {
+  try {
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const payload = await buildPublicSectorFlow(timeframe, {
+      universe: request.query.universe
+    });
+
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/opportunity", async (request, response) => {
+  try {
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const payload = await buildPublicOpportunityScan(timeframe, {
+      universe: request.query.universe,
+      limit: request.query.limit
+    });
+
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
 app.get("/api/public/direction/history", async (request, response) => {
   try {
     const symbol = String(request.query.symbol || "BTC").toUpperCase();
@@ -1561,6 +2261,52 @@ app.get("/api/public/direction/history", async (request, response) => {
       history,
       storage: {
         enabled: hasDatabaseConfig()
+      }
+    });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/overlay", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const snapshot = await getMarketSnapshot(symbol, { timeframe });
+    const focusRegion = buildPublicOverlayRegion(snapshot, {
+      start: request.query.start,
+      end: request.query.end,
+      candles: request.query.candles
+    });
+    const enabledIndicators = parseOverlayIndicatorSelection(request.query.indicators);
+    const signals = buildPublicOverlaySignals(snapshot, focusRegion);
+    const bias = buildPublicOverlayBias(signals);
+    const annotations = buildPublicOverlayIndicatorAnnotations(snapshot, focusRegion, enabledIndicators);
+
+    response.json({
+      symbol: snapshot.symbol,
+      label: snapshot.label,
+      timeframe: snapshot.timeframe,
+      fetchedAt: snapshot.fetchedAt,
+      focusRegion: {
+        ...focusRegion,
+        startAt: new Date(Number(focusRegion.startTime)).toISOString(),
+        endAt: new Date(Number(focusRegion.endTime)).toISOString()
+      },
+      indicators: {
+        enabled: enabledIndicators,
+        annotations
+      },
+      signals,
+      bias,
+      usage: {
+        note: "차트 AI 오버레이와 같은 구간 지표 계산 결과입니다.",
+        query: {
+          start: request.query.start || null,
+          end: request.query.end || null,
+          candles: request.query.candles ? Number(request.query.candles) : null,
+          indicators: request.query.indicators || null
+        }
       }
     });
   } catch (error) {
