@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { buildPublicApiUrl } from "@/lib/api-client";
 
 type EndpointPreset = {
@@ -26,6 +26,14 @@ type BatchEntry = {
   source: string;
   url: string | null;
   manualText: string | null;
+};
+
+type TradingViewSummaryRow = {
+  metric: string;
+  rows: number;
+  start_date: string | null;
+  end_date: string | null;
+  updated_at: string | null;
 };
 
 const endpointPresets: EndpointPreset[] = [
@@ -84,6 +92,13 @@ const endpointPresets: EndpointPreset[] = [
     path: "/api/public/readme",
     params: {},
     description: "Public API documentation as markdown"
+  },
+  {
+    id: "tradingview-summary",
+    label: "TradingView DB Summary",
+    path: "/api/private/tradingview/summary",
+    params: {},
+    description: "Private imported BTC.D, ETH.D, TOTAL3 storage status"
   }
 ];
 
@@ -158,17 +173,29 @@ export function PublicEndpointConsole() {
       "GET /api/public/gpt-briefing?profile=liquidity_cycle_v1&timeframe=1h&range=30d",
       "GET /api/public/direction?timeframe=1h&limit=5&universe=24",
       "GET /api/public/sector-flow?timeframe=1h&universe=24",
-      "GET /api/public/opportunity?timeframe=1h&universe=24&limit=6"
+      "GET /api/public/opportunity?timeframe=1h&universe=24&limit=6",
+      "GET /api/private/tradingview/summary"
     ].join("\n")
   );
   const [batchOutput, setBatchOutput] = useState("");
   const [batchRunning, setBatchRunning] = useState(false);
+  const [tradingViewMetric, setTradingViewMetric] = useState("BTC_D");
+  const [tradingViewSource, setTradingViewSource] = useState("TradingView CSV");
+  const [tradingViewCsv, setTradingViewCsv] = useState("");
+  const [tradingViewSummary, setTradingViewSummary] = useState<TradingViewSummaryRow[]>([]);
+  const [tradingViewMessage, setTradingViewMessage] = useState("");
+  const [tradingViewError, setTradingViewError] = useState("");
+  const [tradingViewLoading, setTradingViewLoading] = useState(false);
 
   const selectedPreset = useMemo(
     () => endpointPresets.find((preset) => preset.id === selectedId) || endpointPresets[0],
     [selectedId]
   );
   const selectedParams = paramsById[selectedPreset.id] || {};
+
+  useEffect(() => {
+    void loadTradingViewSummary();
+  }, []);
 
   function updateParam(key: string, value: string) {
     setParamsById((current) => ({
@@ -223,6 +250,65 @@ export function PublicEndpointConsole() {
   async function runAll() {
     for (const preset of endpointPresets) {
       await runEndpoint(preset);
+    }
+  }
+
+  async function loadTradingViewSummary() {
+    setTradingViewLoading(true);
+    setTradingViewError("");
+
+    try {
+      const response = await fetch(buildPublicApiUrl("/api/private/tradingview/summary"), {
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      setTradingViewSummary(Array.isArray(payload.series) ? payload.series : []);
+    } catch (error) {
+      setTradingViewSummary([]);
+      setTradingViewError(error instanceof Error ? error.message : "TradingView summary request failed");
+    } finally {
+      setTradingViewLoading(false);
+    }
+  }
+
+  async function importTradingViewCsv() {
+    setTradingViewLoading(true);
+    setTradingViewError("");
+    setTradingViewMessage("");
+
+    try {
+      const body = new URLSearchParams();
+      body.set("metric", tradingViewMetric);
+      body.set("source", tradingViewSource);
+      body.set("csv", tradingViewCsv);
+
+      const response = await fetch(buildPublicApiUrl("/api/private/tradingview/import"), {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        body
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      setTradingViewMessage(`${payload.metric || tradingViewMetric}: ${payload.rows ?? 0} rows imported.`);
+      setTradingViewCsv("");
+      await loadTradingViewSummary();
+    } catch (error) {
+      setTradingViewError(error instanceof Error ? error.message : "TradingView CSV import failed");
+    } finally {
+      setTradingViewLoading(false);
     }
   }
 
@@ -404,6 +490,98 @@ export function PublicEndpointConsole() {
           </div>
 
           <div className="mt-4 space-y-3">
+            <section className="rounded-lg border border-line bg-white p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink">TradingView Data</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    BTC.D, ETH.D, TOTAL3 CSV를 저장하고 현재 DB 적재 상태를 확인합니다.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadTradingViewSummary}
+                  disabled={tradingViewLoading}
+                  className="rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Refresh Storage
+                </button>
+              </div>
+
+              <div className="mt-3 overflow-hidden rounded-md border border-line">
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Metric</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Rows</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Start</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">End</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tradingViewSummary.length ? (
+                      tradingViewSummary.map((row) => (
+                        <tr key={row.metric}>
+                          <td className="border-b border-line px-3 py-2 font-semibold text-ink">{row.metric}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.rows}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.start_date ? String(row.start_date).slice(0, 10) : "-"}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.end_date ? String(row.end_date).slice(0, 10) : "-"}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-3 text-slate-500">
+                          {tradingViewLoading ? "Loading..." : "No TradingView rows stored yet."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-[180px_1fr]">
+                <label className="text-xs font-semibold text-slate-500">
+                  Metric
+                  <select
+                    value={tradingViewMetric}
+                    onChange={(event) => setTradingViewMetric(event.target.value)}
+                    className="mt-1 w-full rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink outline-none focus:border-moss"
+                  >
+                    <option value="BTC_D">BTC.D</option>
+                    <option value="ETH_D">ETH.D</option>
+                    <option value="TOTAL3">TOTAL3</option>
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-500">
+                  Source
+                  <input
+                    value={tradingViewSource}
+                    onChange={(event) => setTradingViewSource(event.target.value)}
+                    className="mt-1 w-full rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink outline-none focus:border-moss"
+                  />
+                </label>
+              </div>
+              <textarea
+                value={tradingViewCsv}
+                onChange={(event) => setTradingViewCsv(event.target.value)}
+                placeholder={"date,close\n2024-01-01,52.1\n2024-01-02,52.4"}
+                className="mt-3 min-h-32 w-full resize-y rounded-md border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-5 text-ink outline-none focus:border-moss"
+                spellCheck={false}
+              />
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={importTradingViewCsv}
+                  disabled={tradingViewLoading || !tradingViewCsv.trim()}
+                  className="rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Import CSV
+                </button>
+                {tradingViewMessage && <span className="text-xs font-semibold text-moss">{tradingViewMessage}</span>}
+                {tradingViewError && <span className="text-xs font-semibold text-brick">{tradingViewError}</span>}
+              </div>
+            </section>
+
             <section className="rounded-lg border border-line bg-white p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
