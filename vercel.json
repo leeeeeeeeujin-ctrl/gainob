@@ -6,14 +6,14 @@
       "includeFiles": "frontend/out/**"
     }
   },
-  "rewrites": [
+  "routes": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api?endpoint=$1"
+      "src": "/api/(.*)",
+      "dest": "/api?endpoint=$1"
     },
     {
-      "source": "/(.*)",
-      "destination": "/api?endpoint=frontend&path=$1"
+      "src": "/(.*)",
+      "dest": "/api?endpoint=frontend&path=$1"
     }
   ]
 }
