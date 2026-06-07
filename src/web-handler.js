@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { analyzeContext, requestAiText } = require("./ai");
@@ -23,6 +24,7 @@ const { buildLiquidityDashboardSnapshot } = require("./liquidity-dashboard");
 const moduleContext = createModuleContext(modules);
 const app = express();
 const YAHOO_FINANCE_CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
+const SITE_AUTH_COOKIE_NAME = "gainob_site_auth";
 
 // Enable CORS for public API endpoints so external tools (browsers, parsers) can fetch them
 app.use((req, res, next) => {
@@ -78,6 +80,274 @@ function getCachedIntelligence(symbol) {
 async function getCoinLabel(symbol) {
   const coins = await getSupportedCoins();
   return coins.find((coin) => coin.symbol === symbol)?.label || symbol;
+}
+
+function getSitePassword() {
+  return process.env.GAINOB_SITE_PASSWORD || process.env.SITE_PASSWORD || "";
+}
+
+function isSitePasswordEnabled() {
+  return Boolean(getSitePassword());
+}
+
+function parseCookieHeader(header) {
+  return String(header || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const eq = part.indexOf("=");
+      if (eq === -1) return cookies;
+      cookies[decodeURIComponent(part.slice(0, eq))] = decodeURIComponent(part.slice(eq + 1));
+      return cookies;
+    }, {});
+}
+
+function siteAuthToken() {
+  return crypto.createHmac("sha256", getSitePassword()).update("gainob-site-auth").digest("hex");
+}
+
+function isSiteAuthenticated(request) {
+  if (!isSitePasswordEnabled()) return true;
+  const cookies = parseCookieHeader(request.headers.cookie);
+  const token = cookies[SITE_AUTH_COOKIE_NAME] || "";
+  const expected = siteAuthToken();
+  if (token.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+}
+
+function buildSiteAuthCookie(request) {
+  const secure = shouldUseSecureCookies(request) ? "; Secure" : "";
+  return `${SITE_AUTH_COOKIE_NAME}=${encodeURIComponent(siteAuthToken())}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}${secure}`;
+}
+
+function buildExpiredSiteAuthCookie() {
+  return `${SITE_AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+function renderSitePasswordPage(message = "") {
+  return `
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gainob</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f172a; color: #e5e7eb; }
+      main { width: min(380px, calc(100vw - 32px)); background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 24px; }
+      h1 { font-size: 20px; margin: 0 0 16px; }
+      label { display: block; font-size: 13px; color: #9ca3af; margin-bottom: 8px; }
+      input { width: 100%; box-sizing: border-box; border: 1px solid #4b5563; border-radius: 6px; background: #030712; color: #e5e7eb; padding: 10px 12px; }
+      button { margin-top: 14px; width: 100%; border: 0; border-radius: 6px; background: #38bdf8; color: #082f49; font-weight: 700; padding: 10px 12px; cursor: pointer; }
+      p { color: #fca5a5; min-height: 20px; margin: 0 0 12px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Gainob</h1>
+      <p>${escapeHtml(message)}</p>
+      <form method="post" action="/api/private/login">
+        <label for="password">Site Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" autofocus />
+        <button type="submit">Enter</button>
+      </form>
+    </main>
+  </body>
+</html>
+`.trim();
+}
+
+function requireSiteAuth(request, response) {
+  if (isSiteAuthenticated(request)) return true;
+  const acceptsHtml = String(request.headers.accept || "").includes("text/html");
+  if (acceptsHtml || request.method === "GET") {
+    response.status(401).type("text/html; charset=utf-8").send(renderSitePasswordPage());
+    return false;
+  }
+  response.status(401).json({ error: "site_password_required" });
+  return false;
+}
+
+function splitCsvLine(line) {
+  const values = [];
+  let current = "";
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && line[index + 1] === '"') {
+      current += '"';
+      index += 1;
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  values.push(current);
+  return values;
+}
+
+function normalizeTradingViewMetric(value) {
+  const normalized = String(value || "").trim().toUpperCase().replace(/[\s.-]+/g, "_");
+  const aliases = {
+    BTC_D: "BTC_D",
+    BTC_DOMINANCE: "BTC_D",
+    "BTC.D": "BTC_D",
+    ETH_D: "ETH_D",
+    ETH_DOMINANCE: "ETH_D",
+    "ETH.D": "ETH_D",
+    TOTAL3: "TOTAL3"
+  };
+  return aliases[normalized] || null;
+}
+
+function parseTradingViewCsv(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  const [headerLine, ...lines] = trimmed.split(/\r?\n/);
+  const headers = splitCsvLine(headerLine).map((header) => String(header).trim().toLowerCase());
+  const dateIndex = headers.indexOf("date");
+  const closeIndex = headers.indexOf("close");
+
+  if (dateIndex === -1 || closeIndex === -1) {
+    throw new Error("CSV must include date and close columns.");
+  }
+
+  return lines
+    .filter(Boolean)
+    .map((line) => {
+      const values = splitCsvLine(line);
+      const date = String(values[dateIndex] || "").slice(0, 10);
+      const close = Number(values[closeIndex]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close)) {
+        return null;
+      }
+      return { date, close };
+    })
+    .filter(Boolean);
+}
+
+async function upsertTradingViewRows(metric, rows, source = "manual_csv") {
+  if (!rows.length) return 0;
+  let written = 0;
+
+  for (let index = 0; index < rows.length; index += 500) {
+    const chunk = rows.slice(index, index + 500);
+    const values = [];
+    const placeholders = chunk.map((row, rowIndex) => {
+      const base = rowIndex * 4;
+      values.push(metric, row.date, row.close, source);
+      return `($${base + 1}, $${base + 2}::date, $${base + 3}::numeric, $${base + 4})`;
+    });
+
+    await query(
+      `
+        insert into tradingview_series (metric, date, close, source)
+        values ${placeholders.join(",")}
+        on conflict (metric, date)
+        do update set
+          close = excluded.close,
+          source = excluded.source,
+          updated_at = now()
+      `,
+      values
+    );
+    written += chunk.length;
+  }
+
+  return written;
+}
+
+async function getTradingViewSeriesSummary() {
+  const result = await query(
+    `
+      select
+        metric,
+        count(*)::int as rows,
+        min(date) as start_date,
+        max(date) as end_date,
+        max(updated_at) as updated_at
+      from tradingview_series
+      group by metric
+      order by metric
+    `
+  );
+  return result.rows;
+}
+
+function renderTradingViewImportPage({ summary = [], message = "", error = "" } = {}) {
+  const rows = summary.length
+    ? summary.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.metric)}</td>
+          <td>${escapeHtml(item.rows)}</td>
+          <td>${escapeHtml(item.start_date ? String(item.start_date).slice(0, 10) : "")}</td>
+          <td>${escapeHtml(item.end_date ? String(item.end_date).slice(0, 10) : "")}</td>
+        </tr>
+      `.trim()).join("")
+    : `<tr><td colspan="4">저장된 데이터가 없습니다.</td></tr>`;
+
+  return `
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TradingView CSV Import</title>
+    <style>
+      body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f8fafc; color: #111827; }
+      main { max-width: 920px; margin: 0 auto; padding: 32px 20px; }
+      h1 { font-size: 24px; margin: 0 0 18px; }
+      section { margin: 18px 0; }
+      label { display: block; font-size: 13px; font-weight: 700; margin: 12px 0 6px; }
+      select, textarea, input { width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; font: inherit; background: white; }
+      textarea { min-height: 280px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+      button { border: 0; border-radius: 6px; background: #0f172a; color: white; padding: 10px 14px; cursor: pointer; }
+      table { width: 100%; border-collapse: collapse; background: white; }
+      th, td { border: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; font-size: 14px; }
+      .ok { color: #047857; }
+      .err { color: #b91c1c; }
+      .actions { display: flex; gap: 8px; align-items: center; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="actions">
+        <h1 style="flex:1">TradingView CSV Import</h1>
+        <form method="post" action="/api/private/logout"><button type="submit">Logout</button></form>
+      </div>
+      ${message ? `<p class="ok">${escapeHtml(message)}</p>` : ""}
+      ${error ? `<p class="err">${escapeHtml(error)}</p>` : ""}
+      <section>
+        <form method="post" action="/api/private/tradingview/import">
+          <label for="metric">Metric</label>
+          <select id="metric" name="metric">
+            <option value="BTC_D">BTC Dominance / CRYPTOCAP:BTC.D</option>
+            <option value="ETH_D">ETH Dominance / CRYPTOCAP:ETH.D</option>
+            <option value="TOTAL3">TOTAL3 / CRYPTOCAP:TOTAL3</option>
+          </select>
+          <label for="csv">CSV text with date,close columns</label>
+          <textarea id="csv" name="csv" placeholder="date,close&#10;2024-01-01,52.1"></textarea>
+          <label for="source">Source</label>
+          <input id="source" name="source" value="TradingView CSV" />
+          <p><button type="submit">Import CSV</button></p>
+        </form>
+      </section>
+      <section>
+        <h2>Stored Series</h2>
+        <table>
+          <thead><tr><th>Metric</th><th>Rows</th><th>Start</th><th>End</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>
+`.trim();
 }
 
 const SYMBOL_ALIASES = {
@@ -2987,8 +3257,13 @@ async function createUserSession(userId, request, response) {
   response.setHeader("Set-Cookie", buildSessionCookie(sessionToken, shouldUseSecureCookies(request)));
 }
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: false, limit: "2mb" }));
 app.get("/api/frontend", (request, response, next) => {
+  if (!requireSiteAuth(request, response)) {
+    return;
+  }
+
   const frontendOutDir = path.join(__dirname, "..", "frontend", "out");
   const requestedPath = String(request.query.path || "").replace(/^\/+/, "");
   const targetPath = requestedPath ? path.join(frontendOutDir, requestedPath) : path.join(frontendOutDir, "index.html");
@@ -3020,6 +3295,93 @@ app.get("/api/health", (_request, response) => {
     ok: true,
     now: new Date().toISOString()
   });
+});
+
+app.post("/api/private/login", (request, response) => {
+  if (!isSitePasswordEnabled()) {
+    response.redirect("/");
+    return;
+  }
+
+  const password = String(request.body?.password || "");
+  if (password !== getSitePassword()) {
+    response.status(401).type("text/html; charset=utf-8").send(renderSitePasswordPage("비밀번호가 맞지 않습니다."));
+    return;
+  }
+
+  response.setHeader("Set-Cookie", buildSiteAuthCookie(request));
+  response.redirect("/");
+});
+
+app.post("/api/private/logout", (_request, response) => {
+  response.setHeader("Set-Cookie", buildExpiredSiteAuthCookie());
+  response.redirect("/");
+});
+
+app.get("/api/private/tradingview", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    const summary = hasDatabaseConfig() ? await getTradingViewSeriesSummary() : [];
+    response.type("text/html; charset=utf-8").send(renderTradingViewImportPage({
+      summary,
+      error: hasDatabaseConfig() ? "" : "DATABASE_URL이 없어 저장소를 사용할 수 없습니다."
+    }));
+  } catch (error) {
+    response.status(500).type("text/html; charset=utf-8").send(renderTradingViewImportPage({ error: error.message }));
+  }
+});
+
+app.get("/api/private/tradingview/summary", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      response.status(503).json({ error: "database_not_configured" });
+      return;
+    }
+    response.json({ series: await getTradingViewSeriesSummary() });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/private/tradingview/import", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      throw new Error("DATABASE_URL is not configured.");
+    }
+
+    const metric = normalizeTradingViewMetric(request.body?.metric);
+    if (!metric) {
+      throw new Error("Unsupported metric. Use BTC_D, ETH_D, or TOTAL3.");
+    }
+
+    const rows = parseTradingViewCsv(request.body?.csv);
+    const source = String(request.body?.source || "TradingView CSV").slice(0, 120);
+    const written = await upsertTradingViewRows(metric, rows, source);
+
+    const wantsJson = String(request.headers.accept || "").includes("application/json");
+    if (wantsJson) {
+      response.json({ metric, rows: written });
+      return;
+    }
+
+    const summary = await getTradingViewSeriesSummary();
+    response.type("text/html; charset=utf-8").send(renderTradingViewImportPage({
+      summary,
+      message: `${metric} ${written} rows imported.`
+    }));
+  } catch (error) {
+    const wantsJson = String(request.headers.accept || "").includes("application/json");
+    if (wantsJson) {
+      response.status(400).json({ error: error.message });
+      return;
+    }
+    response.status(400).type("text/html; charset=utf-8").send(renderTradingViewImportPage({ error: error.message }));
+  }
 });
 
 app.get("/api/coins", async (_request, response) => {

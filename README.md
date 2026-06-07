@@ -197,6 +197,126 @@ interface LiquidityDashboardProvider {
 }
 ```
 
+## Backtest v1 CLI
+
+Local-only backtest utility for checking whether briefing signals had useful forward-return behavior. It does not touch production APIs or add a web UI.
+
+```bash
+node scripts/backtest-v1.js run --start=2024-01-01 --end=2026-06-01
+node scripts/backtest-v1.js summarize --file=backtests/backtest-v1.csv
+```
+
+Defaults:
+
+- `interval`: `1d`
+- `horizons`: `30d,60d,90d`
+- `symbols`: `BTC,ETH,SOL`
+- output: `backtests/backtest-v1.csv` and `backtests/backtest-v1.json`
+- optional input: `backtests/input/*.csv`
+
+Current no-key sources:
+
+- BTC/ETH/SOL prices: Yahoo Finance chart
+- DXY, US10Y, QQQ: Yahoo Finance chart
+- Stablecoin Market Cap: DefiLlama stablecoin charts
+
+Current limitation:
+
+- Historical BTC dominance, ETH dominance, and TOTAL3 are written as `null` unless optional local CSV inputs are present.
+- Missing source values are written as `null`; the run continues.
+
+Optional local CSV import:
+
+- Put local CSV files under `backtests/input/`.
+- Supported files:
+  - `btc_dominance.csv`
+  - `eth_dominance.csv`
+  - `total3.csv`
+- Required columns: `date,close`
+- If a file exists, `close` is used for that date. If it does not exist, the matching field stays `null`.
+- This is local-only and does not affect production APIs.
+
+TradingView CSV workflow:
+
+1. Open the TradingView chart for the target symbol:
+   - `CRYPTOCAP:BTC.D`
+   - `CRYPTOCAP:ETH.D`
+   - `CRYPTOCAP:TOTAL3`
+2. Set the chart to daily candles and the desired history range.
+3. Export chart data as CSV.
+4. Keep or rename the exported date and close columns to `date,close`.
+5. Save the files as:
+   - `backtests/input/btc_dominance.csv`
+   - `backtests/input/eth_dominance.csv`
+   - `backtests/input/total3.csv`
+6. Run:
+
+```bash
+node scripts/backtest-v1.js run --start=2024-01-01 --end=2026-06-01
+```
+
+## Private TradingView CSV Import
+
+For a personal Vercel deployment, set a site password and import TradingView CSV data into Postgres.
+
+Environment variable:
+
+```bash
+GAINOB_SITE_PASSWORD=your_private_password
+```
+
+Behavior:
+
+- If `GAINOB_SITE_PASSWORD` is set, the frontend entry page requires the site password.
+- If it is not set, the site behaves as before.
+- Public API endpoints remain available for briefing tools.
+- TradingView imports are protected by the same site password.
+- Imported data is stored in Postgres, not in the Vercel filesystem.
+
+Import page:
+
+```http
+GET /api/private/tradingview
+```
+
+Supported metrics:
+
+- `BTC_D` for `CRYPTOCAP:BTC.D`
+- `ETH_D` for `CRYPTOCAP:ETH.D`
+- `TOTAL3` for `CRYPTOCAP:TOTAL3`
+
+CSV format:
+
+```csv
+date,close
+2024-01-01,52.1
+2024-01-02,52.4
+```
+
+Database setup:
+
+```bash
+npm run db:init
+```
+
+Historical dominance / TOTAL3 provider TODO:
+
+- CoinGecko Pro:
+  - Candidate for global historical market cap and dominance data.
+  - Reliable, but historical global chart access can require authenticated/pro API access.
+- CoinMarketCap Pro:
+  - Candidate endpoint: historical global metrics with BTC/ETH dominance and aggregate market cap.
+  - Requires API key, so it is not the default no-key path.
+- TradingView CRYPTOCAP:
+  - Candidate symbols: `CRYPTOCAP:BTC.D`, `CRYPTOCAP:ETH.D`, `CRYPTOCAP:TOTAL3`.
+  - Good chart coverage, but no stable official no-key REST API. Any use would be unofficial scraping/export.
+- CoinPaprika:
+  - Free current `/v1/global` includes BTC dominance and global market metrics.
+  - Historical ticker/global data appears plan-limited, so it needs further validation before wiring.
+- Reconstructed approximation:
+  - Compute BTC dominance, ETH dominance, and TOTAL3 from historical market caps for BTC, ETH, and a broad coin universe.
+  - No-key implementation is possible only as an approximation and may diverge from TradingView/CoinGecko definitions.
+
 교체 지점:
 
 - Server public data provider: `src/liquidity-dashboard.js`

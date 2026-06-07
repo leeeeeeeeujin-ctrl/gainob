@@ -10,6 +10,7 @@
     "frontend:dev": "npm --prefix frontend run dev",
     "build:frontend": "npm --prefix frontend ci --include=dev && npm --prefix frontend run build",
     "smoke": "node scripts/smoke-test.js",
+    "backtest:v1": "node scripts/backtest-v1.js",
     "db:init": "node scripts/db-init.js"
   },
   "engines": {
