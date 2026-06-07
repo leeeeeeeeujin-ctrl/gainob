@@ -58,7 +58,7 @@ Query parameters:
 
 - `profile`: `liquidity_cycle_v1` | `swing_v1` | `market_overview_v1` (default: `liquidity_cycle_v1`)
 - `timeframe`: default `1h`
-- `range`: `7d` | `30d` | `90d` (default: `30d`)
+- `range`: `7d` | `30d` | `90d` | `180d` (default: `30d`)
 - `mode`: `text` | `json` (default: `text`)
 - `format`: `text` | `json` (legacy-compatible; `mode` takes priority)
 - `includeRaw`: `false` | `true` (default: `false`)
@@ -78,7 +78,7 @@ GET /api/public/gpt-briefing?format=json
 - `/api/public/sector-flow?timeframe=<timeframe>&universe=24`
 - `/api/public/opportunity?timeframe=<timeframe>&universe=24&limit=6`
 
-The default export includes summarized values only: `current`, `1d`, `1w`, `1m`, `3m`, `ma20`, `ma50`, `ma200`, `status`, and `trend`.
+The default export includes summarized values only: `current`, `1d`, `1w`, `1m`, `3m`, `6m`, `ma20`, `ma50`, `ma200`, `status`, and `trend`.
 
 Full time series are never included in `gpt-briefing`. This endpoint is designed for copy-paste into GPT with minimal token waste.
 
@@ -95,15 +95,34 @@ Capital Flow fields included in GPT export:
 
 Current implementation status:
 
-- Already available in Gainob mock provider: `Stablecoin Market Cap`, `USDT Supply`, `USDC Supply`, `BTC ETF Net Flow`, `ETH ETF Net Flow`, `TOTAL Market Cap`, `TOTAL2`, `TOTAL3`
-- Already available from existing Gainob public scans: market breadth, sector flow, opportunity buckets, BTC/ETH dominance context
-- Needs real provider wiring: stablecoin supply, ETF flow, TOTAL/TOTAL2/TOTAL3 historical changes
+- Real provider is wired for `BTC Dominance`, `ETH Dominance`, `ETH/BTC`, `SOL/ETH`, `Stablecoin Market Cap`, `USDT Supply`, `USDC Supply`, `TOTAL Market Cap`, `TOTAL2`, and `TOTAL3`.
+- `BTC ETF Net Flow` and `ETH ETF Net Flow` use the SoSoValue ETF API when `SOSO_API_KEY` or `SOSOVALUE_API_KEY` is configured. If no key is configured, the provider falls back to Farside's public BTC/ETH ETF flow tables.
+- If an upstream API fails, only the affected liquidity metric is marked `unavailable`; `gpt-briefing` continues to render the rest of the briefing.
+- CoinGecko's unauthenticated `/global` endpoint provides current dominance and total market cap. Historical global market cap chart access requires authenticated API access, so current TOTAL/TOTAL2/TOTAL3 are real while their 1d/1w/1m/3m changes can be `null`.
 
-Potential public data sources:
+Public data sources and cache strategy:
 
-- Stablecoin supply: DeFiLlama stablecoins data (`stablecoins.llama.fi/stablecoins?includePrices=true`) can provide stablecoin circulating supply, including USDT and USDC.
-- ETF flows: SoSoValue ETF historical inflow API provides daily BTC/ETH spot ETF net inflow fields, including `totalNetInflow`.
-- Market size: CoinGecko global endpoints provide total crypto market cap and dominance data; TOTAL2/TOTAL3 can be derived from total market cap minus BTC/ETH market caps when historical market caps are available.
+- CoinGecko:
+  - Used for BTC Dominance, ETH Dominance, TOTAL, TOTAL2, TOTAL3.
+  - API: `/global`, `/simple/price`.
+  - Rate limit: public/demo plans are rate-limited by CoinGecko; cache is 10 minutes.
+- Binance:
+  - Used for ETH/BTC and SOL/ETH daily ratio series.
+  - API: `data-api.binance.vision/api/v3/klines`.
+  - Cache is 5 minutes.
+- DefiLlama:
+  - Used for Stablecoin Market Cap, USDT Supply, USDC Supply.
+  - API: `stablecoins.llama.fi/stablecoincharts/all`, `stablecoins.llama.fi/stablecoin/1`, `stablecoins.llama.fi/stablecoin/2`.
+  - Cache is 6 hours because stablecoin supply data is daily/slow-moving.
+- SoSoValue:
+  - Optional provider for BTC/ETH spot ETF daily net flow.
+  - API: `/openapi/v2/etf/historicalInflowChart`.
+  - Requires `SOSO_API_KEY` or `SOSOVALUE_API_KEY`; unavailable without a key.
+- Farside:
+  - Fallback provider for BTC/ETH spot ETF daily net flow when SoSoValue API keys are not configured.
+  - Source pages: `farside.co.uk/bitcoin-etf-flow-all-data/`, `farside.co.uk/ethereum-etf-flow-all-data/`.
+  - No API key is used. Data is parsed from public HTML tables, so the ETF fields are isolated and can become `unavailable` if the table format changes or access is blocked.
+  - Cache is 12 hours.
 
 MVP 범위:
 
@@ -114,7 +133,7 @@ MVP 범위:
 - BTC ETF Net Flow
 - ETH ETF Net Flow
 
-현재 데이터 공급자는 Mock Provider입니다. 가격 예측, 매매 신호, 목표가 산출은 포함하지 않습니다.
+현재 데이터 공급자는 공개 API 기반 Provider입니다. 가격 예측, 매매 신호, 목표가 산출은 포함하지 않습니다.
 
 응답 구조 요약:
 
@@ -122,9 +141,9 @@ MVP 범위:
 {
   "asOf": "2026-06-07T00:00:00.000Z",
   "provider": {
-    "id": "mock",
-    "name": "Mock Liquidity Dashboard Provider",
-    "mode": "mock"
+    "id": "public-liquidity-v1",
+    "name": "Public Liquidity Dashboard Provider",
+    "mode": "real"
   },
   "scope": {
     "purpose": "briefing",
@@ -152,7 +171,7 @@ interface LiquidityDashboardProvider {
 
 교체 지점:
 
-- Server mock provider: `src/liquidity-dashboard.js`
+- Server public data provider: `src/liquidity-dashboard.js`
 - Frontend provider contract: `frontend/lib/providers/types.ts`
 - Frontend API client: `frontend/lib/api-client.ts`
 

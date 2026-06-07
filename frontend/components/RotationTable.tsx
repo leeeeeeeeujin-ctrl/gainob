@@ -8,7 +8,8 @@ type Props = {
 const statusClass = {
   Bullish: "bg-emerald-50 text-moss ring-emerald-200",
   Neutral: "bg-amber-50 text-amberline ring-amber-200",
-  Bearish: "bg-rose-50 text-brick ring-rose-200"
+  Bearish: "bg-rose-50 text-brick ring-rose-200",
+  Unavailable: "bg-slate-100 text-slate-500 ring-slate-200"
 };
 
 export function RotationTable({ items }: Props) {

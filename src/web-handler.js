@@ -393,7 +393,7 @@ function buildPublicEndpointDocs(baseUrl = "") {
         path: `${baseUrl}/api/public/liquidity-dashboard`,
         method: "GET",
         query: {},
-        returns: "MVP liquidity dashboard aggregate payload. Mock Provider 기반 BTC Dominance, ETH/BTC, SOL/ETH, Stablecoin Market Cap, BTC/ETH ETF Net Flow를 반환합니다. 가격 예측과 매매 신호는 포함하지 않습니다."
+        returns: "Liquidity dashboard aggregate payload. CoinGecko, Binance, DefiLlama, and optional SoSoValue data are used for market regime, rotation, stablecoin supply, market size, and ETF flow fields. 가격 예측과 매매 신호는 포함하지 않습니다."
       },
       {
         path: `${baseUrl}/api/public/gpt-briefing?profile=liquidity_cycle_v1&timeframe=1h&range=30d`,
@@ -556,7 +556,7 @@ function normalizeGptBriefingProfile(value) {
 
 function normalizeGptBriefingRange(value) {
   const range = String(value || "30d").toLowerCase();
-  return ["7d", "30d", "90d"].includes(range) ? range : "30d";
+  return ["7d", "30d", "90d", "180d"].includes(range) ? range : "30d";
 }
 
 function normalizeGptBriefingMode(modeValue, formatValue) {
@@ -597,6 +597,7 @@ function summarizeMetricForBriefing(metric, range) {
       "1w": "unavailable",
       "1m": "unavailable",
       "3m": "unavailable",
+      "6m": "unavailable",
       trend: "unavailable"
     };
   }
@@ -605,7 +606,8 @@ function summarizeMetricForBriefing(metric, range) {
   const change7d = changeFromSeries(metric.series, 7);
   const change30d = changeFromSeries(metric.series, 30);
   const change90d = changeFromSeries(metric.series, 90);
-  const rangeChange = range === "7d" ? change7d : range === "90d" ? change90d : change30d;
+  const change180d = changeFromSeries(metric.series, 180);
+  const rangeChange = range === "7d" ? change7d : range === "90d" ? change90d : range === "180d" ? change180d : change30d;
 
   return {
     current: metric.current ?? null,
@@ -613,6 +615,7 @@ function summarizeMetricForBriefing(metric, range) {
     "1w": change7d,
     "1m": change30d,
     "3m": change90d,
+    "6m": change180d,
     ma20: metric.ma20 ?? null,
     ma50: metric.ma50 ?? null,
     ma200: metric.ma200 ?? null,
@@ -645,6 +648,22 @@ function summarizeFlowForBriefing(flow, range) {
     "90d": flow.sum90d ?? null,
     status,
     trend: summary.trend
+  };
+}
+
+function applyCurrentFallback(summary, current, status = "available") {
+  if (summary?.current !== null && summary?.current !== undefined && summary?.current !== "unavailable") {
+    return summary;
+  }
+
+  if (current === null || current === undefined || !Number.isFinite(Number(current))) {
+    return summary;
+  }
+
+  return {
+    ...summary,
+    current: Number(current),
+    status: summary?.status || status
   };
 }
 
@@ -842,6 +861,7 @@ async function buildGptBriefingPayload(options = {}) {
   const sectorFlow = sectorSection.data;
   const opportunity = opportunitySection.data;
   const btcDominanceMetric = findById(liquidity?.marketRegime, "btc-dominance");
+  const ethDominanceMetric = findById(liquidity?.marketRegime, "eth-dominance");
   const ethBtcMetric = findById(liquidity?.cycleRotation, "eth-btc");
   const solEthMetric = findById(liquidity?.cycleRotation, "sol-eth");
   const stablecoinCapMetric = findById(liquidity?.cryptoLiquidity, "stablecoin-market-cap");
@@ -866,15 +886,8 @@ async function buildGptBriefingPayload(options = {}) {
 
   const marketRegime = {
     available: liquiditySection.available || directionSection.available,
-    btc_dominance: summarizeMetricForBriefing(btcDominanceMetric, range),
-    eth_dominance: {
-      current: direction?.dominance?.eth ?? null,
-      "1d": null,
-      "1w": null,
-      "1m": null,
-      "3m": null,
-      trend: "unavailable"
-    },
+    btc_dominance: applyCurrentFallback(summarizeMetricForBriefing(btcDominanceMetric, range), direction?.dominance?.btc),
+    eth_dominance: applyCurrentFallback(summarizeMetricForBriefing(ethDominanceMetric, range), direction?.dominance?.eth),
     eth_btc: summarizeMetricForBriefing(ethBtcMetric, range),
     sol_eth: summarizeMetricForBriefing(solEthMetric, range)
   };
@@ -955,6 +968,7 @@ function formatBriefingMetricLines(metric, unit = "") {
     `1w: ${formatBriefingValue(metric?.["1w"], "%")}`,
     `1m: ${formatBriefingValue(metric?.["1m"], "%")}`,
     `3m: ${formatBriefingValue(metric?.["3m"], "%")}`,
+    `6m: ${formatBriefingValue(metric?.["6m"], "%")}`,
     `Trend: ${metric?.trend || "unavailable"}`
   ];
 }

@@ -1,6 +1,18 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
+const COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3";
+const BINANCE_BASE_URL = "https://data-api.binance.vision/api/v3";
+const DEFILLAMA_STABLECOINS_BASE_URL = "https://stablecoins.llama.fi";
+const SOSOVALUE_BASE_URL = "https://api.sosovalue.xyz/openapi/v2";
+const FARSIDE_BASE_URL = "https://farside.co.uk";
+
+const PROVIDER_CACHE_TTL_MS = 10 * 60 * 1000;
+const FARSIDE_ETF_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const providerCache = new Map();
 
 function round(value, digits = 2) {
+  if (!Number.isFinite(Number(value))) {
+    return null;
+  }
   return Number(Number(value).toFixed(digits));
 }
 
@@ -11,25 +23,12 @@ function point(timestamp, value) {
   };
 }
 
-function buildSeries({ days = 180, start, drift = 0, wave = 1, noise = 0 }) {
-  const now = Date.now();
-
-  return Array.from({ length: days }, (_, index) => {
-    const progress = index / Math.max(days - 1, 1);
-    const cyclic = Math.sin(progress * Math.PI * 4) * wave;
-    const shorterCycle = Math.cos(progress * Math.PI * 11) * noise;
-    const value = start + drift * progress + cyclic + shorterCycle;
-
-    return point(now - (days - index - 1) * DAY_MS, value);
-  });
-}
-
 function latest(series) {
   return series.at(-1)?.value ?? null;
 }
 
 function movingAverage(series, window) {
-  const values = series.slice(-window).map((item) => item.value);
+  const values = series.slice(-window).map((item) => item.value).filter((value) => value !== null);
   if (!values.length) {
     return null;
   }
@@ -41,7 +40,7 @@ function changePct(series, periods) {
   const current = latest(series);
   const previous = series.at(-1 - periods)?.value;
 
-  if (current === null || previous === undefined || previous === 0) {
+  if (current === null || previous === undefined || previous === null || previous === 0) {
     return null;
   }
 
@@ -64,28 +63,52 @@ function classifyRotation(current, ma20, ma50, ma200) {
   return "Neutral";
 }
 
-function buildMetric({ id, label, unit, series, description }) {
+function normalizeResult(result, sourceFallback) {
+  if (Array.isArray(result)) {
+    return {
+      series: result,
+      source: sourceFallback,
+      status: result.length ? "available" : "unavailable",
+      error: null
+    };
+  }
+
+  return {
+    series: Array.isArray(result?.series) ? result.series : [],
+    source: result?.source || sourceFallback,
+    status: result?.status || (result?.series?.length ? "available" : "unavailable"),
+    error: result?.error || null
+  };
+}
+
+function buildMetric({ id, label, unit, result, description, source }) {
+  const normalized = normalizeResult(result, source);
+
   return {
     id,
     label,
     unit,
-    current: latest(series),
+    current: latest(normalized.series),
     changes: {
-      "1d": changePct(series, 1),
-      "1w": changePct(series, 7),
-      "1m": changePct(series, 30),
-      "3m": changePct(series, 90)
+      "1d": changePct(normalized.series, 1),
+      "1w": changePct(normalized.series, 7),
+      "1m": changePct(normalized.series, 30),
+      "3m": changePct(normalized.series, 90)
     },
     description,
-    series
+    source: normalized.source,
+    status: normalized.status,
+    error: normalized.error,
+    series: normalized.series
   };
 }
 
-function buildRotation({ id, label, unit, series }) {
-  const current = latest(series);
-  const ma20 = movingAverage(series, 20);
-  const ma50 = movingAverage(series, 50);
-  const ma200 = movingAverage(series, 200);
+function buildRotation({ id, label, unit, result, source }) {
+  const normalized = normalizeResult(result, source);
+  const current = latest(normalized.series);
+  const ma20 = movingAverage(normalized.series, 20);
+  const ma50 = movingAverage(normalized.series, 50);
+  const ma200 = movingAverage(normalized.series, 200);
 
   return {
     id,
@@ -95,16 +118,25 @@ function buildRotation({ id, label, unit, series }) {
     ma20,
     ma50,
     ma200,
-    status: classifyRotation(current, ma20, ma50, ma200),
-    series
+    status: normalized.status === "available" ? classifyRotation(current, ma20, ma50, ma200) : "Unavailable",
+    source: normalized.source,
+    error: normalized.error,
+    series: normalized.series
   };
 }
 
-function buildFlow({ id, label, unit, series, description }) {
-  const current = latest(series);
-  const currentWeek = round(series.slice(-7).reduce((sum, item) => sum + item.value, 0), 2);
-  const sum30d = round(series.slice(-30).reduce((sum, item) => sum + item.value, 0), 2);
-  const sum90d = round(series.slice(-90).reduce((sum, item) => sum + item.value, 0), 2);
+function buildFlow({ id, label, unit, result, description, source }) {
+  const normalized = normalizeResult(result, source);
+  const current = latest(normalized.series);
+  const currentWeek = normalized.series.length
+    ? round(normalized.series.slice(-7).reduce((sum, item) => sum + Number(item.value || 0), 0), 2)
+    : null;
+  const sum30d = normalized.series.length
+    ? round(normalized.series.slice(-30).reduce((sum, item) => sum + Number(item.value || 0), 0), 2)
+    : null;
+  const sum90d = normalized.series.length
+    ? round(normalized.series.slice(-90).reduce((sum, item) => sum + Number(item.value || 0), 0), 2)
+    : null;
 
   return {
     id,
@@ -115,8 +147,24 @@ function buildFlow({ id, label, unit, series, description }) {
     sum30d,
     sum90d,
     description,
-    series
+    source: normalized.source,
+    status: normalized.status,
+    error: normalized.error,
+    series: normalized.series
   };
+}
+
+function describeRotation(metric) {
+  if (metric.status === "Unavailable") {
+    return "unavailable";
+  }
+  if (metric.status === "Bullish") {
+    return "strong";
+  }
+  if (metric.status === "Bearish") {
+    return "weak";
+  }
+  return "neutral";
 }
 
 function buildCapitalFlowSummary({ btcDominance, ethBtc, solEth, stablecoinCap, btcEtfFlow, ethEtfFlow }) {
@@ -125,193 +173,533 @@ function buildCapitalFlowSummary({ btcDominance, ethBtc, solEth, stablecoinCap, 
   const stableCapChange = stablecoinCap.changes["1m"];
 
   if (btcDomChange !== null) {
-    lines.push(`BTC Dominance는 1개월 기준 ${btcDomChange >= 0 ? "상승" : "하락"} 중입니다.`);
+    lines.push(`BTC Dominance is ${btcDomChange >= 0 ? "rising" : "falling"} on a 1 month basis.`);
+  } else {
+    lines.push("BTC Dominance 1 month change is unavailable.");
   }
 
-  lines.push(`ETH/BTC는 ${ethBtc.status === "Bullish" ? "강세" : ethBtc.status === "Bearish" ? "약세" : "중립"} 구조입니다.`);
-  lines.push(`SOL/ETH는 ${solEth.status === "Bullish" ? "강세" : solEth.status === "Bearish" ? "약세" : "중립"} 구조입니다.`);
+  lines.push(`ETH/BTC structure is ${describeRotation(ethBtc)}.`);
+  lines.push(`SOL/ETH structure is ${describeRotation(solEth)}.`);
 
   if (stableCapChange !== null) {
-    lines.push(`Stablecoin Market Cap은 1개월 기준 ${stableCapChange >= 0 ? "증가" : "감소"}했습니다.`);
+    lines.push(`Stablecoin Market Cap is ${stableCapChange >= 0 ? "expanding" : "contracting"} on a 1 month basis.`);
+  } else {
+    lines.push("Stablecoin Market Cap 1 month change is unavailable.");
   }
 
-  const btcEtfTone = btcEtfFlow.sum30d > 0 ? "순유입" : btcEtfFlow.sum30d < 0 ? "순유출" : "중립";
-  const ethEtfTone = ethEtfFlow.sum30d > 0 ? "순유입" : ethEtfFlow.sum30d < 0 ? "순유출" : "중립";
-  lines.push(`BTC ETF 30일 흐름은 ${btcEtfTone}, ETH ETF 30일 흐름은 ${ethEtfTone}입니다.`);
+  const btcEtfTone =
+    btcEtfFlow.sum30d === null ? "unavailable" : btcEtfFlow.sum30d > 0 ? "net inflow" : btcEtfFlow.sum30d < 0 ? "net outflow" : "flat";
+  const ethEtfTone =
+    ethEtfFlow.sum30d === null ? "unavailable" : ethEtfFlow.sum30d > 0 ? "net inflow" : ethEtfFlow.sum30d < 0 ? "net outflow" : "flat";
+  lines.push(`BTC ETF 30 day flow is ${btcEtfTone}; ETH ETF 30 day flow is ${ethEtfTone}.`);
 
-  const interpretation =
-    stableCapChange > 0 && ethBtc.status === "Bullish"
-      ? "현재 구조는 현금성 유동성 확대와 ETH 상대강도 회복을 함께 점검하는 국면으로 해석됩니다."
-      : stableCapChange > 0
-        ? "현재 구조는 유동성은 개선되지만 알트 확산 신호는 아직 제한적인 국면으로 해석됩니다."
-        : "현재 구조는 신규 유동성 확대보다 관망과 방어적 자금 흐름을 우선 점검하는 국면으로 해석됩니다.";
-
-  lines.push(interpretation);
+  if (stableCapChange > 0 && ethBtc.status === "Bullish") {
+    lines.push("Liquidity is improving and ETH relative strength is participating.");
+  } else if (stableCapChange > 0) {
+    lines.push("Liquidity is improving, but broad alt expansion is not fully confirmed.");
+  } else {
+    lines.push("Liquidity expansion is not confirmed; capital flow should be treated as defensive or mixed.");
+  }
 
   return lines;
 }
 
-/**
- * LiquidityDashboardProvider contract.
- *
- * Future real providers should implement:
- * - getBTCDominance()
- * - getETHBTC()
- * - getSOLETH()
- * - getStablecoinMarketCap()
- * - getStablecoinSupply(asset: "USDT" | "USDC")
- * - getETFNetFlow(asset: "BTC" | "ETH")
- * - getMarketCapIndex(index: "TOTAL" | "TOTAL2" | "TOTAL3")
- */
-function createMockLiquidityDashboardProvider() {
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      accept: "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+async function fetchText(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      accept: "text/html,application/xhtml+xml",
+      "user-agent": "Mozilla/5.0 (compatible; GainobLiquidityDashboard/1.0; +https://gainob.vercel.app)",
+      ...(options.headers || {})
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status} ${response.statusText}`);
+  }
+
+  return response.text();
+}
+
+async function cached(key, loader, ttlMs = PROVIDER_CACHE_TTL_MS) {
+  const existing = providerCache.get(key);
+  if (existing && existing.expiresAt > Date.now()) {
+    return existing.payload;
+  }
+
+  const payload = await loader();
+  providerCache.set(key, {
+    expiresAt: Date.now() + ttlMs,
+    payload
+  });
+  return payload;
+}
+
+function fromCurrentValue(value) {
+  return [point(Date.now(), value)];
+}
+
+function dailySeriesFromPairs(pairs) {
+  return pairs
+    .map(([timestamp, value]) => point(Number(timestamp), Number(value)))
+    .filter((item) => item.value !== null)
+    .slice(-210);
+}
+
+function dailySeriesFromSeconds(items, valueSelector) {
+  return items
+    .map((item) => point(Number(item.date) * 1000, valueSelector(item)))
+    .filter((item) => item.value !== null)
+    .slice(-210);
+}
+
+function unavailable(source, error) {
+  return {
+    series: [],
+    source,
+    status: "unavailable",
+    error: error ? String(error.message || error) : "unavailable"
+  };
+}
+
+async function safeLoad(source, loader) {
+  try {
+    const series = await loader();
+    return {
+      series,
+      source,
+      status: Array.isArray(series) && series.length ? "available" : "unavailable",
+      error: null
+    };
+  } catch (error) {
+    return unavailable(source, error);
+  }
+}
+
+async function getCoinGeckoGlobal() {
+  return cached("coingecko:global", () => fetchJson(`${COINGECKO_BASE_URL}/global`));
+}
+
+async function getCoinGeckoSimpleMarkets() {
+  return cached(
+    "coingecko:simple-markets",
+    () =>
+      fetchJson(
+        `${COINGECKO_BASE_URL}/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd,btc,eth&include_market_cap=true`
+      )
+  );
+}
+
+async function getBinanceKlines(pair, interval = "1d", limit = 210) {
+  return cached(
+    `binance:klines:${pair}:${interval}:${limit}`,
+    () => fetchJson(`${BINANCE_BASE_URL}/klines?symbol=${pair}&interval=${interval}&limit=${limit}`),
+    5 * 60 * 1000
+  );
+}
+
+async function getCoinGeckoMarketChart(coinId, vsCurrency, days = 210) {
+  return cached(
+    `coingecko:market-chart:${coinId}:${vsCurrency}:${days}`,
+    () => fetchJson(`${COINGECKO_BASE_URL}/coins/${coinId}/market_chart?vs_currency=${vsCurrency}&days=${days}&interval=daily`),
+    30 * 60 * 1000
+  );
+}
+
+async function getDefiLlamaStablecoinChartsAll() {
+  return cached(
+    "defillama:stablecoincharts:all",
+    () => fetchJson(`${DEFILLAMA_STABLECOINS_BASE_URL}/stablecoincharts/all`),
+    6 * 60 * 60 * 1000
+  );
+}
+
+async function getDefiLlamaStablecoin(assetId) {
+  return cached(
+    `defillama:stablecoin:${assetId}`,
+    () => fetchJson(`${DEFILLAMA_STABLECOINS_BASE_URL}/stablecoin/${assetId}`),
+    6 * 60 * 60 * 1000
+  );
+}
+
+async function getFarsideEtfHtml(asset) {
+  const slug = asset === "ETH" ? "ethereum-etf-flow-all-data" : "bitcoin-etf-flow-all-data";
+  return cached(
+    `farside:etf:${asset}`,
+    () => fetchText(`${FARSIDE_BASE_URL}/${slug}/`),
+    FARSIDE_ETF_CACHE_TTL_MS
+  );
+}
+
+function seriesFromBinanceClose(klines, transform = (close) => close) {
+  return klines
+    .map((entry) => point(Number(entry[0]), transform(Number(entry[4]))))
+    .filter((item) => item.value !== null);
+}
+
+function seriesFromPairedBinanceClose(leftKlines, rightKlines) {
+  const rightByTimestamp = new Map(rightKlines.map((entry) => [Number(entry[0]), Number(entry[4])]));
+  return leftKlines
+    .map((left) => {
+      const timestamp = Number(left[0]);
+      const rightClose = rightByTimestamp.get(timestamp);
+      if (!rightClose) {
+        return null;
+      }
+      return point(timestamp, Number(left[4]) / rightClose);
+    })
+    .filter(Boolean);
+}
+
+function getPeggedUsd(value) {
+  return Number(value?.peggedUSD || 0);
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#8211;|&ndash;/gi, "-")
+    .replace(/&#8212;|&mdash;/gi, "-")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function stripHtml(value) {
+  return decodeHtmlEntities(String(value || "").replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseFarsideAmount(value) {
+  const text = stripHtml(value).replace(/,/g, "").trim();
+  if (!text || /^(-|n\/a|na)$/i.test(text)) {
+    return null;
+  }
+
+  const isNegative = /^\(.+\)$/.test(text);
+  const numeric = Number(text.replace(/[()$]/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return (isNegative ? -numeric : numeric) * 1_000_000;
+}
+
+function parseFarsideDate(value) {
+  const text = stripHtml(value);
+  const parsed = Date.parse(`${text} UTC`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseFarsideEtfSeries(html) {
+  const rows = String(html || "").match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const series = [];
+
+  for (const row of rows) {
+    const cells = [...row.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)].map((match) => match[1]);
+    if (cells.length < 2) {
+      continue;
+    }
+
+    const timestamp = parseFarsideDate(cells[0]);
+    if (timestamp === null) {
+      continue;
+    }
+
+    const total = parseFarsideAmount(cells.at(-1));
+    if (total === null) {
+      continue;
+    }
+
+    series.push(point(timestamp, total));
+  }
+
+  return series
+    .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+    .slice(-210);
+}
+
+async function getFarsideEtfNetFlow(asset) {
+  const html = await getFarsideEtfHtml(asset);
+  const series = parseFarsideEtfSeries(html);
+  if (!series.length) {
+    throw new Error("Farside ETF table parse returned no rows");
+  }
+  return series;
+}
+
+function createRealLiquidityDashboardProvider() {
   return {
     async getBTCDominance() {
-      return buildSeries({ days: 210, start: 52.8, drift: -1.4, wave: 0.85, noise: 0.2 });
-    },
-    async getETHBTC() {
-      return buildSeries({ days: 210, start: 0.050, drift: -0.004, wave: 0.002, noise: 0.0008 });
-    },
-    async getSOLETH() {
-      return buildSeries({ days: 210, start: 2.55, drift: 0.25, wave: 0.18, noise: 0.05 });
-    },
-    async getStablecoinMarketCap() {
-      return buildSeries({ days: 210, start: 154_000_000_000, drift: 9_500_000_000, wave: 1_600_000_000, noise: 450_000_000 });
-    },
-    async getStablecoinSupply(asset) {
-      if (asset === "USDT") {
-        return buildSeries({ days: 210, start: 104_000_000_000, drift: 7_200_000_000, wave: 900_000_000, noise: 260_000_000 });
-      }
-      return buildSeries({ days: 210, start: 33_000_000_000, drift: 2_100_000_000, wave: 520_000_000, noise: 180_000_000 });
-    },
-    async getETFNetFlow(asset) {
-      const isBtc = asset === "BTC";
-      return buildSeries({
-        days: 180,
-        start: isBtc ? 95_000_000 : 18_000_000,
-        drift: isBtc ? 35_000_000 : -12_000_000,
-        wave: isBtc ? 140_000_000 : 42_000_000,
-        noise: isBtc ? 35_000_000 : 14_000_000
+      return safeLoad("CoinGecko /global", async () => {
+        const global = await getCoinGeckoGlobal();
+        return fromCurrentValue(global?.data?.market_cap_percentage?.btc);
       });
     },
+
+    async getETHDominance() {
+      return safeLoad("CoinGecko /global", async () => {
+        const global = await getCoinGeckoGlobal();
+        return fromCurrentValue(global?.data?.market_cap_percentage?.eth);
+      });
+    },
+
+    async getETHBTC() {
+      return safeLoad("Binance ETHBTC daily klines; CoinGecko fallback", async () => {
+        try {
+          const klines = await getBinanceKlines("ETHBTC");
+          return seriesFromBinanceClose(klines);
+        } catch (binanceError) {
+          try {
+            const chart = await getCoinGeckoMarketChart("ethereum", "btc");
+            return dailySeriesFromPairs(chart.prices || []);
+          } catch (_coinGeckoChartError) {
+            const simpleMarkets = await getCoinGeckoSimpleMarkets();
+            const current = simpleMarkets?.ethereum?.btc;
+            if (!Number.isFinite(Number(current))) {
+              throw binanceError;
+            }
+            return fromCurrentValue(current);
+          }
+        }
+      });
+    },
+
+    async getSOLETH() {
+      return safeLoad("Binance SOLUSDT/ETHUSDT daily klines; CoinGecko fallback", async () => {
+        try {
+          const [solKlines, ethKlines] = await Promise.all([getBinanceKlines("SOLUSDT"), getBinanceKlines("ETHUSDT")]);
+          return seriesFromPairedBinanceClose(solKlines, ethKlines);
+        } catch (binanceError) {
+          try {
+            const chart = await getCoinGeckoMarketChart("solana", "eth");
+            return dailySeriesFromPairs(chart.prices || []);
+          } catch (_coinGeckoChartError) {
+            const simpleMarkets = await getCoinGeckoSimpleMarkets();
+            const current = simpleMarkets?.solana?.eth;
+            if (!Number.isFinite(Number(current))) {
+              throw binanceError;
+            }
+            return fromCurrentValue(current);
+          }
+        }
+      });
+    },
+
+    async getStablecoinMarketCap() {
+      return safeLoad("DefiLlama stablecoincharts/all", async () => {
+        const chart = await getDefiLlamaStablecoinChartsAll();
+        return dailySeriesFromSeconds(chart, (item) => getPeggedUsd(item.totalCirculatingUSD || item.totalCirculating));
+      });
+    },
+
+    async getStablecoinSupply(asset) {
+      const assetId = asset === "USDC" ? "2" : "1";
+      return safeLoad(`DefiLlama stablecoin/${assetId}`, async () => {
+        const payload = await getDefiLlamaStablecoin(assetId);
+        return dailySeriesFromSeconds(payload.tokens || [], (item) => getPeggedUsd(item.circulating));
+      });
+    },
+
+    async getETFNetFlow(asset) {
+      return safeLoad("SoSoValue ETF historicalInflowChart; Farside public table fallback", async () => {
+        const apiKey = process.env.SOSO_API_KEY || process.env.SOSOVALUE_API_KEY;
+        if (!apiKey) {
+          return getFarsideEtfNetFlow(asset);
+        }
+
+        try {
+          const payload = await fetchJson(`${SOSOVALUE_BASE_URL}/etf/historicalInflowChart`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-soso-api-key": apiKey
+            },
+            body: JSON.stringify({ type: asset === "ETH" ? "us-eth-spot" : "us-btc-spot" })
+          });
+          const rows = payload?.data?.list || [];
+          const series = rows
+            .map((row) => point(`${row.date}T00:00:00Z`, Number(row.totalNetInflow)))
+            .filter((item) => item.value !== null)
+            .sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+            .slice(-210);
+
+          if (series.length) {
+            return series;
+          }
+        } catch (_error) {
+          // Fall through to the public table parser.
+        }
+
+        return getFarsideEtfNetFlow(asset);
+      });
+    },
+
     async getMarketCapIndex(index) {
-      if (index === "TOTAL") {
-        return buildSeries({ days: 210, start: 2_450_000_000_000, drift: 310_000_000_000, wave: 115_000_000_000, noise: 35_000_000_000 });
-      }
-      if (index === "TOTAL2") {
-        return buildSeries({ days: 210, start: 1_150_000_000_000, drift: 130_000_000_000, wave: 82_000_000_000, noise: 24_000_000_000 });
-      }
-      return buildSeries({ days: 210, start: 720_000_000_000, drift: 82_000_000_000, wave: 58_000_000_000, noise: 18_000_000_000 });
+      return safeLoad("CoinGecko /global and /simple/price", async () => {
+        const [global, simpleMarkets] = await Promise.all([getCoinGeckoGlobal(), getCoinGeckoSimpleMarkets()]);
+        const total = Number(global?.data?.total_market_cap?.usd);
+        const btcMarketCap = Number(simpleMarkets?.bitcoin?.usd_market_cap || 0);
+        const ethMarketCap = Number(simpleMarkets?.ethereum?.usd_market_cap || 0);
+
+        if (index === "TOTAL") {
+          return fromCurrentValue(total);
+        }
+        if (index === "TOTAL2") {
+          return fromCurrentValue(total - btcMarketCap);
+        }
+        return fromCurrentValue(total - btcMarketCap - ethMarketCap);
+      });
     }
   };
 }
 
-async function buildLiquidityDashboardSnapshot(provider = createMockLiquidityDashboardProvider()) {
+async function buildLiquidityDashboardSnapshot(provider = createRealLiquidityDashboardProvider()) {
   const [
-    btcDominanceSeries,
-    ethBtcSeries,
-    solEthSeries,
-    stablecoinCapSeries,
-    usdtSupplySeries,
-    usdcSupplySeries,
-    btcEtfSeries,
-    ethEtfSeries,
-    totalMarketCapSeries,
-    total2Series,
-    total3Series
-  ] =
-    await Promise.all([
-      provider.getBTCDominance(),
-      provider.getETHBTC(),
-      provider.getSOLETH(),
-      provider.getStablecoinMarketCap(),
-      provider.getStablecoinSupply("USDT"),
-      provider.getStablecoinSupply("USDC"),
-      provider.getETFNetFlow("BTC"),
-      provider.getETFNetFlow("ETH"),
-      provider.getMarketCapIndex("TOTAL"),
-      provider.getMarketCapIndex("TOTAL2"),
-      provider.getMarketCapIndex("TOTAL3")
-    ]);
+    btcDominanceResult,
+    ethDominanceResult,
+    ethBtcResult,
+    solEthResult,
+    stablecoinCapResult,
+    usdtSupplyResult,
+    usdcSupplyResult,
+    btcEtfResult,
+    ethEtfResult,
+    totalMarketCapResult,
+    total2Result,
+    total3Result
+  ] = await Promise.all([
+    provider.getBTCDominance(),
+    provider.getETHDominance(),
+    provider.getETHBTC(),
+    provider.getSOLETH(),
+    provider.getStablecoinMarketCap(),
+    provider.getStablecoinSupply("USDT"),
+    provider.getStablecoinSupply("USDC"),
+    provider.getETFNetFlow("BTC"),
+    provider.getETFNetFlow("ETH"),
+    provider.getMarketCapIndex("TOTAL"),
+    provider.getMarketCapIndex("TOTAL2"),
+    provider.getMarketCapIndex("TOTAL3")
+  ]);
 
   const btcDominance = buildMetric({
     id: "btc-dominance",
     label: "BTC Dominance",
     unit: "%",
-    series: btcDominanceSeries,
-    description: "전체 암호화폐 시가총액 중 BTC 비중"
+    result: btcDominanceResult,
+    source: "CoinGecko /global",
+    description: "BTC share of total crypto market capitalization"
+  });
+  const ethDominance = buildMetric({
+    id: "eth-dominance",
+    label: "ETH Dominance",
+    unit: "%",
+    result: ethDominanceResult,
+    source: "CoinGecko /global",
+    description: "ETH share of total crypto market capitalization"
   });
   const stablecoinCap = buildMetric({
     id: "stablecoin-market-cap",
     label: "Stablecoin Market Cap",
     unit: "USD",
-    series: stablecoinCapSeries,
-    description: "시장에 남아 있는 현금성 암호화폐 유동성"
+    result: stablecoinCapResult,
+    source: "DefiLlama stablecoincharts/all",
+    description: "Aggregate USD-pegged stablecoin circulating supply"
   });
   const usdtSupply = buildMetric({
     id: "usdt-supply",
     label: "USDT Supply",
     unit: "USD",
-    series: usdtSupplySeries,
-    description: "Mock USDT circulating supply"
+    result: usdtSupplyResult,
+    source: "DefiLlama stablecoin/1",
+    description: "USDT circulating supply"
   });
   const usdcSupply = buildMetric({
     id: "usdc-supply",
     label: "USDC Supply",
     unit: "USD",
-    series: usdcSupplySeries,
-    description: "Mock USDC circulating supply"
+    result: usdcSupplyResult,
+    source: "DefiLlama stablecoin/2",
+    description: "USDC circulating supply"
   });
-  const ethBtc = buildRotation({ id: "eth-btc", label: "ETH/BTC", unit: "ratio", series: ethBtcSeries });
-  const solEth = buildRotation({ id: "sol-eth", label: "SOL/ETH", unit: "ratio", series: solEthSeries });
+  const ethBtc = buildRotation({ id: "eth-btc", label: "ETH/BTC", unit: "ratio", result: ethBtcResult, source: "Binance ETHBTC" });
+  const solEth = buildRotation({ id: "sol-eth", label: "SOL/ETH", unit: "ratio", result: solEthResult, source: "Binance SOLUSDT/ETHUSDT" });
   const totalMarketCap = buildMetric({
     id: "total-market-cap",
     label: "TOTAL Market Cap",
     unit: "USD",
-    series: totalMarketCapSeries,
-    description: "Mock total crypto market capitalization"
+    result: totalMarketCapResult,
+    source: "CoinGecko /global",
+    description: "Total crypto market capitalization"
   });
   const total2 = buildMetric({
     id: "total2",
     label: "TOTAL2",
     unit: "USD",
-    series: total2Series,
-    description: "Mock crypto market cap excluding BTC"
+    result: total2Result,
+    source: "CoinGecko /global and /simple/price",
+    description: "Crypto market capitalization excluding BTC"
   });
   const total3 = buildMetric({
     id: "total3",
     label: "TOTAL3",
     unit: "USD",
-    series: total3Series,
-    description: "Mock crypto market cap excluding BTC and ETH"
+    result: total3Result,
+    source: "CoinGecko /global and /simple/price",
+    description: "Crypto market capitalization excluding BTC and ETH"
   });
   const btcEtfFlow = buildFlow({
     id: "btc-etf-net-flow",
     label: "BTC ETF Net Flow",
     unit: "USD/day",
-    series: btcEtfSeries,
-    description: "Mock daily net creation/redemption flow"
+    result: btcEtfResult,
+    source: "SoSoValue ETF historicalInflowChart",
+    description: "Daily net flow across US spot BTC ETFs"
   });
   const ethEtfFlow = buildFlow({
     id: "eth-etf-net-flow",
     label: "ETH ETF Net Flow",
     unit: "USD/day",
-    series: ethEtfSeries,
-    description: "Mock daily net creation/redemption flow"
+    result: ethEtfResult,
+    source: "SoSoValue ETF historicalInflowChart",
+    description: "Daily net flow across US spot ETH ETFs"
   });
 
   return {
     asOf: new Date().toISOString(),
     provider: {
-      id: "mock",
-      name: "Mock Liquidity Dashboard Provider",
-      mode: "mock",
-      note: "MVP uses deterministic mock data. Replace this provider with public data providers later."
+      id: "public-liquidity-v1",
+      name: "Public Liquidity Dashboard Provider",
+      mode: "real",
+      sources: ["CoinGecko", "Binance", "DefiLlama", "SoSoValue optional"],
+      cacheTtlSeconds: PROVIDER_CACHE_TTL_MS / 1000,
+      note: "ETF flow requires SOSO_API_KEY. Failed or unavailable upstream fields are isolated per metric."
     },
     scope: {
       purpose: "briefing",
       excludes: ["price_prediction", "trade_signal"]
     },
-    marketRegime: [btcDominance],
+    marketRegime: [btcDominance, ethDominance],
     cycleRotation: [ethBtc, solEth],
     cryptoLiquidity: [stablecoinCap, usdtSupply, usdcSupply],
     etfFlows: [btcEtfFlow, ethEtfFlow],
@@ -334,5 +722,5 @@ async function buildLiquidityDashboardSnapshot(provider = createMockLiquidityDas
 
 module.exports = {
   buildLiquidityDashboardSnapshot,
-  createMockLiquidityDashboardProvider
+  createRealLiquidityDashboardProvider
 };

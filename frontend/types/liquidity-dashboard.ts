@@ -1,4 +1,4 @@
-export type RotationStatus = "Bullish" | "Neutral" | "Bearish";
+export type RotationStatus = "Bullish" | "Neutral" | "Bearish" | "Unavailable";
 
 export type MetricPoint = {
   timestamp: string;
@@ -19,6 +19,9 @@ export type RegimeMetric = {
   current: number | null;
   changes: ChangeSet;
   description: string;
+  source?: string;
+  status?: string;
+  error?: string | null;
   series: MetricPoint[];
 };
 
@@ -31,6 +34,8 @@ export type RotationMetric = {
   ma50: number | null;
   ma200: number | null;
   status: RotationStatus;
+  source?: string;
+  error?: string | null;
   series: MetricPoint[];
 };
 
@@ -39,10 +44,13 @@ export type FlowMetric = {
   label: string;
   unit: string;
   current: number | null;
-  currentWeek: number;
-  sum30d: number;
-  sum90d: number;
+  currentWeek: number | null;
+  sum30d: number | null;
+  sum90d: number | null;
   description: string;
+  source?: string;
+  status?: string;
+  error?: string | null;
   series: MetricPoint[];
 };
 
@@ -51,7 +59,9 @@ export type LiquidityDashboardPayload = {
   provider: {
     id: string;
     name: string;
-    mode: "mock" | "live";
+    mode: "real" | "live";
+    sources?: string[];
+    cacheTtlSeconds?: number;
     note: string;
   };
   scope: {
