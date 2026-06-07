@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node src/dev-runner.js",
     "dev": "node --watch src/dev-runner.js",
+    "server:dev": "node --watch server/index.js",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend install && npm --prefix frontend run build",
     "smoke": "node scripts/smoke-test.js",
     "db:init": "node scripts/db-init.js"
   },
@@ -14,9 +17,9 @@
   },
   "dependencies": {
     "dotenv": "^17.2.3",
-    "node-fetch": "^2.6.7",
     "express": "^5.1.0",
     "lightweight-charts": "^5.1.0",
+    "node-fetch": "^2.6.7",
     "pg": "^8.16.3"
   }
 }

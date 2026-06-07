@@ -18,6 +18,7 @@ const { createModuleContext } = require("./core/module-context");
 const { getMarketSnapshot, getMultiTimeframeMarketPacket, getSupportedCoins, getSupportedTimeframes } = require("./market");
 const modules = require("./modules");
 const { getBinancePublicMetrics } = require("./onchain");
+const { buildLiquidityDashboardSnapshot } = require("./liquidity-dashboard");
 
 const moduleContext = createModuleContext(modules);
 const app = express();
@@ -389,6 +390,12 @@ function buildPublicEndpointDocs(baseUrl = "") {
           "바이낸스 메인 시세, 빗썸 비교가, 호가/매물벽 요약, 매크로/뉴스 요약, 차트 주석이 포함된 공개 브리핑"
       },
       {
+        path: `${baseUrl}/api/public/liquidity-dashboard`,
+        method: "GET",
+        query: {},
+        returns: "MVP liquidity dashboard aggregate payload. Mock Provider 기반 BTC Dominance, ETH/BTC, SOL/ETH, Stablecoin Market Cap, BTC/ETH ETF Net Flow를 반환합니다. 가격 예측과 매매 신호는 포함하지 않습니다."
+      },
+      {
         path: `${baseUrl}/api/public/market?symbol=BTC&timeframe=1h`,
         method: "GET",
         query: {
@@ -408,6 +415,16 @@ function buildPublicEndpointDocs(baseUrl = "") {
         method: "GET",
         query: { symbol: "조회할 심볼. 예: BTC" },
         returns: "호가/유동성 요약 (스프레드, 매물벽, 불균형 등)"
+      },
+      {
+        path: `${baseUrl}/api/public/liquidity/history?symbol=BTC&timeframe=1h&limit=48`,
+        method: "GET",
+        query: {
+          symbol: "조회할 심볼. 예: BTC",
+          timeframe: "기준 타임프레임. 예: 1h",
+          limit: "가져올 이력 수 (기본 48)"
+        },
+        returns: "저장된 호가/매물벽 요약 이력 (지지/저항 벽 가격, 불균형, 스프레드 등)"
       },
       {
         path: `${baseUrl}/api/public/structure?symbol=BTC`,
@@ -825,7 +842,291 @@ function isStablecoinLikeCoin(coin) {
 }
 
 function isMissingRelationError(error) {
-  return error?.code === "42P01" || String(error?.message || "").includes("market_direction_history");
+  const message = String(error?.message || "");
+  return error?.code === "42P01"
+    || message.includes("market_direction_history")
+    || message.includes("market_liquidity_history");
+}
+
+function isPublicStorageUnavailableError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toUpperCase();
+
+  return isMissingRelationError(error)
+    || ["ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "ECONNRESET"].includes(code)
+    || message.includes("enotfound")
+    || message.includes("econnrefused")
+    || message.includes("tenant/user")
+    || message.includes("not found")
+    || message.includes("database_url is not configured");
+}
+
+const LIQUIDITY_HISTORY_MIN_INTERVAL_MS = 60_000;
+const LIQUIDITY_HISTORY_IMBALANCE_DELTA_PCT = 3;
+
+function buildLiquidityHistorySnapshot(snapshot) {
+  const orderbook = snapshot?.orderbook || {};
+
+  return {
+    symbol: snapshot?.symbol || null,
+    timeframe: snapshot?.timeframe || null,
+    bestBid: orderbook.bestBid ?? null,
+    bestAsk: orderbook.bestAsk ?? null,
+    spreadUsdt: orderbook.spreadUsdt ?? null,
+    totalBidUnits: orderbook.totalBidUnits ?? null,
+    totalAskUnits: orderbook.totalAskUnits ?? null,
+    totalBidValueUsdt: orderbook.totalBidValueUsdt ?? null,
+    totalAskValueUsdt: orderbook.totalAskValueUsdt ?? null,
+    imbalancePct: orderbook.imbalancePct ?? null,
+    wallPressure: orderbook.wallPressure || null,
+    bidWallPrice: orderbook.bidWall?.price ?? null,
+    bidWallSize: orderbook.bidWall?.quantity ?? null,
+    bidWallValueUsdt: orderbook.bidWall?.valueUsdt ?? null,
+    askWallPrice: orderbook.askWall?.price ?? null,
+    askWallSize: orderbook.askWall?.quantity ?? null,
+    askWallValueUsdt: orderbook.askWall?.valueUsdt ?? null,
+    supportWallPrice: orderbook.supportWallPrice ?? null,
+    resistanceWallPrice: orderbook.resistanceWallPrice ?? null,
+    fetchedAt: snapshot?.fetchedAt || new Date().toISOString()
+  };
+}
+
+function shouldPersistLiquidityHistory(nextEntry, previousEntry) {
+  if (!previousEntry?.createdAt) {
+    return true;
+  }
+
+  const previousCapturedAt = new Date(previousEntry.createdAt).getTime();
+  if (!Number.isFinite(previousCapturedAt)) {
+    return true;
+  }
+
+  if (Date.now() - previousCapturedAt >= LIQUIDITY_HISTORY_MIN_INTERVAL_MS) {
+    return true;
+  }
+
+  const previousImbalance = Number(previousEntry.imbalancePct || 0);
+  const nextImbalance = Number(nextEntry.imbalancePct || 0);
+  if (Math.abs(nextImbalance - previousImbalance) >= LIQUIDITY_HISTORY_IMBALANCE_DELTA_PCT) {
+    return true;
+  }
+
+  if (String(previousEntry.wallPressure || "") !== String(nextEntry.wallPressure || "")) {
+    return true;
+  }
+
+  if (Number(previousEntry.bidWallPrice || 0) !== Number(nextEntry.bidWallPrice || 0)) {
+    return true;
+  }
+
+  if (Number(previousEntry.askWallPrice || 0) !== Number(nextEntry.askWallPrice || 0)) {
+    return true;
+  }
+
+  if (Number(previousEntry.supportWallPrice || 0) !== Number(nextEntry.supportWallPrice || 0)) {
+    return true;
+  }
+
+  if (Number(previousEntry.resistanceWallPrice || 0) !== Number(nextEntry.resistanceWallPrice || 0)) {
+    return true;
+  }
+
+  return false;
+}
+
+async function getLatestLiquidityHistoryEntry(symbol, timeframe) {
+  if (!hasDatabaseConfig()) {
+    return null;
+  }
+
+  let result;
+  try {
+    result = await query(
+      `
+        select
+          symbol,
+          timeframe,
+          imbalance_pct,
+          wall_pressure,
+          bid_wall_price,
+          ask_wall_price,
+          support_wall_price,
+          resistance_wall_price,
+          created_at
+        from market_liquidity_history
+        where symbol = $1
+          and timeframe = $2
+        order by created_at desc
+        limit 1
+      `,
+      [symbol, timeframe]
+    );
+  } catch (error) {
+    if (isPublicStorageUnavailableError(error)) {
+      return null;
+    }
+    throw error;
+  }
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  return {
+    symbol: row.symbol,
+    timeframe: row.timeframe,
+    imbalancePct: row.imbalance_pct === null ? null : Number(row.imbalance_pct),
+    wallPressure: row.wall_pressure,
+    bidWallPrice: row.bid_wall_price === null ? null : Number(row.bid_wall_price),
+    askWallPrice: row.ask_wall_price === null ? null : Number(row.ask_wall_price),
+    supportWallPrice: row.support_wall_price === null ? null : Number(row.support_wall_price),
+    resistanceWallPrice: row.resistance_wall_price === null ? null : Number(row.resistance_wall_price),
+    createdAt: row.created_at
+  };
+}
+
+async function persistLiquidityHistoryEntry(snapshot) {
+  if (!hasDatabaseConfig() || !snapshot?.symbol || !snapshot?.timeframe) {
+    return false;
+  }
+
+  const nextEntry = buildLiquidityHistorySnapshot(snapshot);
+  const previousEntry = await getLatestLiquidityHistoryEntry(snapshot.symbol, snapshot.timeframe);
+
+  if (!shouldPersistLiquidityHistory(nextEntry, previousEntry)) {
+    return false;
+  }
+
+  try {
+    await query(
+      `
+        insert into market_liquidity_history (
+          symbol,
+          timeframe,
+          best_bid,
+          best_ask,
+          spread_usdt,
+          total_bid_units,
+          total_ask_units,
+          total_bid_value_usdt,
+          total_ask_value_usdt,
+          imbalance_pct,
+          wall_pressure,
+          bid_wall_price,
+          bid_wall_size,
+          bid_wall_value_usdt,
+          ask_wall_price,
+          ask_wall_size,
+          ask_wall_value_usdt,
+          support_wall_price,
+          resistance_wall_price,
+          snapshot
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
+      `,
+      [
+        nextEntry.symbol,
+        nextEntry.timeframe,
+        nextEntry.bestBid,
+        nextEntry.bestAsk,
+        nextEntry.spreadUsdt,
+        nextEntry.totalBidUnits,
+        nextEntry.totalAskUnits,
+        nextEntry.totalBidValueUsdt,
+        nextEntry.totalAskValueUsdt,
+        nextEntry.imbalancePct,
+        nextEntry.wallPressure,
+        nextEntry.bidWallPrice,
+        nextEntry.bidWallSize,
+        nextEntry.bidWallValueUsdt,
+        nextEntry.askWallPrice,
+        nextEntry.askWallSize,
+        nextEntry.askWallValueUsdt,
+        nextEntry.supportWallPrice,
+        nextEntry.resistanceWallPrice,
+        JSON.stringify(nextEntry)
+      ]
+    );
+  } catch (error) {
+    if (isPublicStorageUnavailableError(error)) {
+      return false;
+    }
+    throw error;
+  }
+
+  return true;
+}
+
+async function getLiquidityHistory(symbol, timeframe, limit) {
+  if (!hasDatabaseConfig()) {
+    return [];
+  }
+
+  let result;
+  try {
+    result = await query(
+      `
+        select
+          symbol,
+          timeframe,
+          best_bid,
+          best_ask,
+          spread_usdt,
+          total_bid_units,
+          total_ask_units,
+          total_bid_value_usdt,
+          total_ask_value_usdt,
+          imbalance_pct,
+          wall_pressure,
+          bid_wall_price,
+          bid_wall_size,
+          bid_wall_value_usdt,
+          ask_wall_price,
+          ask_wall_size,
+          ask_wall_value_usdt,
+          support_wall_price,
+          resistance_wall_price,
+          snapshot,
+          created_at
+        from market_liquidity_history
+        where symbol = $1
+          and timeframe = $2
+        order by created_at desc
+        limit $3
+      `,
+      [symbol, timeframe, limit]
+    );
+  } catch (error) {
+    if (isPublicStorageUnavailableError(error)) {
+      return [];
+    }
+    throw error;
+  }
+
+  return result.rows.map((row) => ({
+    symbol: row.symbol,
+    timeframe: row.timeframe,
+    bestBid: row.best_bid === null ? null : Number(row.best_bid),
+    bestAsk: row.best_ask === null ? null : Number(row.best_ask),
+    spreadUsdt: row.spread_usdt === null ? null : Number(row.spread_usdt),
+    totalBidUnits: row.total_bid_units === null ? null : Number(row.total_bid_units),
+    totalAskUnits: row.total_ask_units === null ? null : Number(row.total_ask_units),
+    totalBidValueUsdt: row.total_bid_value_usdt === null ? null : Number(row.total_bid_value_usdt),
+    totalAskValueUsdt: row.total_ask_value_usdt === null ? null : Number(row.total_ask_value_usdt),
+    imbalancePct: row.imbalance_pct === null ? null : Number(row.imbalance_pct),
+    wallPressure: row.wall_pressure,
+    bidWallPrice: row.bid_wall_price === null ? null : Number(row.bid_wall_price),
+    bidWallSize: row.bid_wall_size === null ? null : Number(row.bid_wall_size),
+    bidWallValueUsdt: row.bid_wall_value_usdt === null ? null : Number(row.bid_wall_value_usdt),
+    askWallPrice: row.ask_wall_price === null ? null : Number(row.ask_wall_price),
+    askWallSize: row.ask_wall_size === null ? null : Number(row.ask_wall_size),
+    askWallValueUsdt: row.ask_wall_value_usdt === null ? null : Number(row.ask_wall_value_usdt),
+    supportWallPrice: row.support_wall_price === null ? null : Number(row.support_wall_price),
+    resistanceWallPrice: row.resistance_wall_price === null ? null : Number(row.resistance_wall_price),
+    snapshot: parseJsonColumn(row.snapshot, null),
+    createdAt: row.created_at
+  }));
 }
 
 function buildTrustProfile(packet, medianQuoteVolume, medianDepthValue) {
@@ -1338,7 +1639,7 @@ async function getLatestDirectionHistoryEntries(timeframe, symbols = []) {
       [timeframe, symbols]
     );
   } catch (error) {
-    if (isMissingRelationError(error)) {
+    if (isPublicStorageUnavailableError(error)) {
       return new Map();
     }
     throw error;
@@ -1412,7 +1713,7 @@ async function persistDirectionHistoryEntries(timeframe, candidates, previousEnt
         ]
       );
     } catch (error) {
-      if (isMissingRelationError(error)) {
+      if (isPublicStorageUnavailableError(error)) {
         return persistedCount;
       }
       throw error;
@@ -1454,7 +1755,7 @@ async function getDirectionHistory(symbol, timeframe, limit) {
       [symbol, timeframe, limit]
     );
   } catch (error) {
-    if (isMissingRelationError(error)) {
+    if (isPublicStorageUnavailableError(error)) {
       return [];
     }
     throw error;
@@ -1806,6 +2107,12 @@ async function buildPublicBriefing(symbol, timeframe) {
     getIntelligenceSnapshot(symbol, label)
   ]);
 
+  try {
+    await persistLiquidityHistoryEntry(market);
+  } catch (_error) {
+    // ignore persistence errors for public briefing responses
+  }
+
   return {
     fetchedAt: new Date().toISOString(),
     symbol,
@@ -1913,6 +2220,16 @@ async function handlePublicBriefingRequest(request, response) {
 
 app.get("/api/public/briefing", handlePublicBriefingRequest);
 app.get("/api/public/briefing/:symbol", handlePublicBriefingRequest);
+
+app.get("/api/public/liquidity-dashboard", async (_request, response) => {
+  try {
+    response.json(await buildLiquidityDashboardSnapshot());
+  } catch (error) {
+    response.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 // Serve project README as a public endpoint to make docs machine-readable
 app.get("/api/public/readme", (request, response) => {
@@ -2026,6 +2343,12 @@ app.get("/api/public/market", async (request, response) => {
     const conciseFlag = String(request.query.concise || "true").toLowerCase() !== "false";
     const snapshot = await getMarketSnapshot(symbol, { timeframe });
 
+    try {
+      await persistLiquidityHistoryEntry(snapshot);
+    } catch (_error) {
+      // ignore persistence errors for public market responses
+    }
+
     if (!conciseFlag) {
       response.json(snapshot);
       return;
@@ -2095,6 +2418,12 @@ app.get("/api/public/snapshot", async (request, response) => {
     const conciseFlag = String(request.query.concise || "true").toLowerCase() !== "false";
     const snapshot = await getMarketSnapshot(symbol, { timeframe });
 
+    try {
+      await persistLiquidityHistoryEntry(snapshot);
+    } catch (_error) {
+      // ignore persistence errors for public snapshot responses
+    }
+
     // attach macro stats (btc/eth dominance, total marketcap) for convenience
     const label = await getCoinLabel(symbol);
     let intelligence = getCachedIntelligence(symbol);
@@ -2154,12 +2483,21 @@ app.get("/api/public/liquidity", async (request, response) => {
     const symbol = String(request.query.symbol || "BTC").toUpperCase();
     const timeframe = String(request.query.timeframe || "1h").toLowerCase();
     const snapshot = await getMarketSnapshot(symbol, { timeframe });
+
+    let persisted = false;
+    try {
+      persisted = await persistLiquidityHistoryEntry(snapshot);
+    } catch (_error) {
+      persisted = false;
+    }
+
     const orderbookDepth = Number(request.query.orderbookDepth || 20);
     const ob = snapshot.orderbook || {};
 
     response.json({
       symbol: snapshot.symbol,
       timeframe: snapshot.timeframe,
+      fetchedAt: snapshot.fetchedAt,
       bestBid: ob.bestBid,
       bestAsk: ob.bestAsk,
       spreadUsdt: ob.spreadUsdt,
@@ -2172,7 +2510,31 @@ app.get("/api/public/liquidity", async (request, response) => {
       bidWall: ob.bidWall,
       askWall: ob.askWall,
       bids: (ob.bids || []).slice(0, orderbookDepth),
-      asks: (ob.asks || []).slice(0, orderbookDepth)
+      asks: (ob.asks || []).slice(0, orderbookDepth),
+      storage: {
+        enabled: hasDatabaseConfig(),
+        persisted
+      }
+    });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/public/liquidity/history", async (request, response) => {
+  try {
+    const symbol = String(request.query.symbol || "BTC").toUpperCase();
+    const timeframe = String(request.query.timeframe || "1h").toLowerCase();
+    const limit = Math.min(Math.max(Number(request.query.limit || 48), 1), 500);
+    const history = await getLiquidityHistory(symbol, timeframe, limit);
+
+    response.json({
+      symbol,
+      timeframe,
+      history,
+      storage: {
+        enabled: hasDatabaseConfig()
+      }
     });
   } catch (error) {
     response.status(400).json({ error: error.message });
