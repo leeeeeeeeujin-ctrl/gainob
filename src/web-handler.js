@@ -559,8 +559,8 @@ function normalizeGptBriefingRange(value) {
   return ["7d", "30d", "90d"].includes(range) ? range : "30d";
 }
 
-function normalizeGptBriefingFormat(value) {
-  const format = String(value || "text").toLowerCase();
+function normalizeGptBriefingMode(modeValue, formatValue) {
+  const format = String(modeValue || formatValue || "text").toLowerCase();
   return format === "json" ? "json" : "text";
 }
 
@@ -593,13 +593,15 @@ function summarizeMetricForBriefing(metric, range) {
   if (!metric) {
     return {
       current: "unavailable",
-      change_7d: "unavailable",
-      change_30d: "unavailable",
-      change_90d: "unavailable",
+      "1d": "unavailable",
+      "1w": "unavailable",
+      "1m": "unavailable",
+      "3m": "unavailable",
       trend: "unavailable"
     };
   }
 
+  const change1d = changeFromSeries(metric.series, 1);
   const change7d = changeFromSeries(metric.series, 7);
   const change30d = changeFromSeries(metric.series, 30);
   const change90d = changeFromSeries(metric.series, 90);
@@ -607,9 +609,14 @@ function summarizeMetricForBriefing(metric, range) {
 
   return {
     current: metric.current ?? null,
-    change_7d: change7d,
-    change_30d: change30d,
-    change_90d: change90d,
+    "1d": change1d,
+    "1w": change7d,
+    "1m": change30d,
+    "3m": change90d,
+    ma20: metric.ma20 ?? null,
+    ma50: metric.ma50 ?? null,
+    ma200: metric.ma200 ?? null,
+    status: metric.status ?? null,
     trend: trendFromChange(rangeChange)
   };
 }
@@ -617,15 +624,40 @@ function summarizeMetricForBriefing(metric, range) {
 function summarizeFlowForBriefing(flow, range) {
   const summary = summarizeMetricForBriefing(flow, range);
   if (!flow) {
-    return summary;
+    return {
+      ...summary,
+      current_week: "unavailable",
+      "30d": "unavailable",
+      "90d": "unavailable",
+      status: "unavailable"
+    };
   }
 
+  const status = flow.sum30d > 0 && flow.sum90d > 0
+    ? "Inflow"
+    : flow.sum30d < 0 && flow.sum90d < 0
+      ? "Outflow"
+      : "Mixed";
+
   return {
-    ...summary,
     current_week: flow.currentWeek ?? null,
-    sum_30d: flow.sum30d ?? null,
-    sum_90d: flow.sum90d ?? null
+    "30d": flow.sum30d ?? null,
+    "90d": flow.sum90d ?? null,
+    status,
+    trend: summary.trend
   };
+}
+
+function statusFromMetricChange(metric) {
+  const change30d = Number(metric?.["1m"]);
+  const change90d = Number(metric?.["3m"]);
+
+  if (!Number.isFinite(change30d) && !Number.isFinite(change90d)) {
+    return "unavailable";
+  }
+  if (change30d > 0.25 && change90d >= 0) return "Expanding";
+  if (change30d < -0.25 && change90d <= 0) return "Contracting";
+  return "Flat";
 }
 
 function findById(items, id) {
@@ -652,7 +684,7 @@ async function collectBriefingSection(name, loader) {
 
 function formatCandidateList(items, field = "symbol", max = 6) {
   if (!Array.isArray(items) || !items.length) {
-    return ["unavailable"];
+    return ["없음"];
   }
 
   return items.slice(0, max).map((item) => {
@@ -661,6 +693,109 @@ function formatCandidateList(items, field = "symbol", max = 6) {
     const score = item.score ?? item.averageScore;
     return score === undefined || score === null ? String(symbol) : `${symbol} (${score})`;
   });
+}
+
+function normalizeOpportunityList(items, max = 6) {
+  if (!Array.isArray(items) || !items.length) {
+    return "없음";
+  }
+
+  return items.slice(0, max).map((item) => ({
+    symbol: item.symbol || "unknown",
+    score: item.score ?? null,
+    sector: item.sector || null,
+    bias: item.bias || item.setup || item.risk || null
+  }));
+}
+
+function sectorBreadthScore(sector) {
+  const breadth = sector?.breadth || {};
+  return Number(breadth.positiveCount || 0) - Number(breadth.negativeCount || 0);
+}
+
+function sectorRankScore(sector) {
+  return Number(sector?.averageScore || 0)
+    + sectorBreadthScore(sector) * 0.25
+    + ((Number(sector?.averageTrustScore || 0) - 50) / 100);
+}
+
+function summarizeSector(sector) {
+  return {
+    label: sector?.label || "unknown",
+    averageScore: sector?.averageScore ?? null,
+    tone: sector?.tone || "unavailable",
+    memberCount: sector?.memberCount ?? null,
+    totalQuoteVolume24hUsdt: sector?.totalQuoteVolume24hUsdt ?? null
+  };
+}
+
+function pickStrongWeakSectors(sectors) {
+  if (!Array.isArray(sectors) || !sectors.length) {
+    return {
+      strong: ["없음"],
+      weak: ["없음"]
+    };
+  }
+
+  const ranked = sectors.slice().sort((left, right) => sectorRankScore(right) - sectorRankScore(left));
+  return {
+    strong: ranked.slice(0, 3).map(summarizeSector),
+    weak: ranked.slice(-3).reverse().map(summarizeSector)
+  };
+}
+
+function flowStatusFromSummary(flow) {
+  return flow?.status || "unavailable";
+}
+
+function buildSummaryFlags({ regime, capitalFlow, breadth }) {
+  const flags = [];
+  const btcDom1m = Number(regime?.btc_dominance?.["1m"]);
+
+  if (Number.isFinite(btcDom1m)) {
+    if (btcDom1m > 0.25) flags.push("btc_dominance_up");
+    if (btcDom1m < -0.25) flags.push("btc_dominance_down");
+  }
+
+  if (regime?.eth_btc?.status === "Bullish" || Number(regime?.eth_btc?.["1m"]) > 1) flags.push("eth_btc_strong");
+  if (regime?.eth_btc?.status === "Bearish" || Number(regime?.eth_btc?.["1m"]) < -1) flags.push("eth_btc_weak");
+  if (regime?.sol_eth?.status === "Bullish" || Number(regime?.sol_eth?.["1m"]) > 1) flags.push("sol_eth_strong");
+  if (capitalFlow?.stablecoin_market_cap?.status === "Expanding") flags.push("stablecoin_expanding");
+  if (capitalFlow?.btc_etf_net_flow?.status === "Inflow") flags.push("btc_etf_inflow");
+  if (capitalFlow?.btc_etf_net_flow?.status === "Outflow") flags.push("btc_etf_outflow");
+  if (capitalFlow?.eth_etf_net_flow?.status === "Inflow") flags.push("eth_etf_inflow");
+  if (capitalFlow?.eth_etf_net_flow?.status === "Outflow") flags.push("eth_etf_outflow");
+
+  if (breadth?.tone === "risk-on") flags.push("market_breadth_risk_on");
+  if (breadth?.tone === "risk-off") flags.push("market_breadth_risk_off");
+  if (breadth?.tone === "balanced") flags.push("market_breadth_balanced");
+
+  if (!flags.includes("eth_btc_strong") && !flags.includes("sol_eth_strong")) {
+    flags.push("alt_expansion_limited");
+  }
+
+  return flags;
+}
+
+function summarySentencesFromFlags(flags) {
+  const lines = [];
+  if (flags.includes("btc_dominance_up")) lines.push("BTC Dominance는 1개월 기준 상승 중입니다.");
+  if (flags.includes("btc_dominance_down")) lines.push("BTC Dominance는 1개월 기준 하락 중입니다.");
+  if (flags.includes("eth_btc_strong")) lines.push("ETH/BTC는 강세 구조입니다.");
+  else if (flags.includes("eth_btc_weak")) lines.push("ETH/BTC는 약세 구조입니다.");
+  else lines.push("ETH/BTC는 중립 구조입니다.");
+  if (flags.includes("sol_eth_strong")) lines.push("SOL/ETH는 강세 구조입니다.");
+  if (flags.includes("stablecoin_expanding")) lines.push("Stablecoin Market Cap은 증가 중입니다.");
+  if (flags.includes("btc_etf_inflow")) lines.push("BTC ETF는 30일 기준 순유입입니다.");
+  if (flags.includes("btc_etf_outflow")) lines.push("BTC ETF는 30일 기준 순유출입니다.");
+  if (flags.includes("eth_etf_inflow")) lines.push("ETH ETF는 30일 기준 순유입입니다.");
+  if (flags.includes("eth_etf_outflow")) lines.push("ETH ETF는 30일 기준 순유출입니다.");
+  if (flags.includes("market_breadth_risk_on")) lines.push("시장 breadth는 risk-on 쪽으로 기울어 있습니다.");
+  if (flags.includes("market_breadth_risk_off")) lines.push("시장 breadth는 risk-off 쪽으로 기울어 있습니다.");
+  if (flags.includes("market_breadth_balanced")) lines.push("시장 breadth는 균형 상태입니다.");
+  if (flags.includes("alt_expansion_limited")) lines.push("현재 구조는 유동성은 개선되더라도 알트 확산 신호는 제한적인 국면입니다.");
+
+  return lines;
 }
 
 function compactRawPayload(payload) {
@@ -675,7 +810,7 @@ function compactRawPayload(payload) {
   const copy = {};
   for (const [key, value] of Object.entries(payload)) {
     if (key === "series" && Array.isArray(value)) {
-      copy[key] = value.slice(-7);
+      continue;
     } else if (Array.isArray(value)) {
       copy[key] = value.slice(0, 12).map(compactRawPayload);
     } else if (value && typeof value === "object") {
@@ -717,12 +852,61 @@ async function buildGptBriefingPayload(options = {}) {
   const totalMarketCapMetric = findById(liquidity?.marketSize, "total-market-cap");
   const total2Metric = findById(liquidity?.marketSize, "total2");
   const total3Metric = findById(liquidity?.marketSize, "total3");
-  const strongSectors = Array.isArray(sectorFlow?.sectors)
-    ? sectorFlow.sectors.filter((sector) => Number(sector.averageScore || 0) >= 0).slice(0, 4)
-    : [];
-  const weakSectors = Array.isArray(sectorFlow?.sectors)
-    ? [...sectorFlow.sectors].sort((left, right) => Number(left.averageScore || 0) - Number(right.averageScore || 0)).slice(0, 4)
-    : [];
+  const sectorSummary = pickStrongWeakSectors(sectorFlow?.sectors);
+  const stablecoinMarketCap = summarizeMetricForBriefing(stablecoinCapMetric, range);
+  const usdtSupply = summarizeMetricForBriefing(usdtSupplyMetric, range);
+  const usdcSupply = summarizeMetricForBriefing(usdcSupplyMetric, range);
+  const btcEtfFlow = summarizeFlowForBriefing(btcEtfMetric, range);
+  const ethEtfFlow = summarizeFlowForBriefing(ethEtfMetric, range);
+  const total3 = summarizeMetricForBriefing(total3Metric, range);
+  stablecoinMarketCap.status = statusFromMetricChange(stablecoinMarketCap);
+  usdtSupply.status = statusFromMetricChange(usdtSupply);
+  usdcSupply.status = statusFromMetricChange(usdcSupply);
+  total3.status = statusFromMetricChange(total3);
+
+  const marketRegime = {
+    available: liquiditySection.available || directionSection.available,
+    btc_dominance: summarizeMetricForBriefing(btcDominanceMetric, range),
+    eth_dominance: {
+      current: direction?.dominance?.eth ?? null,
+      "1d": null,
+      "1w": null,
+      "1m": null,
+      "3m": null,
+      trend: "unavailable"
+    },
+    eth_btc: summarizeMetricForBriefing(ethBtcMetric, range),
+    sol_eth: summarizeMetricForBriefing(solEthMetric, range)
+  };
+  const capitalFlow = {
+    available: liquiditySection.available,
+    stablecoin_market_cap: stablecoinMarketCap,
+    usdt_supply: usdtSupply,
+    usdc_supply: usdcSupply,
+    btc_etf_net_flow: btcEtfFlow,
+    eth_etf_net_flow: ethEtfFlow,
+    total3
+  };
+  const marketBreadth = {
+    available: directionSection.available,
+    tone: direction?.breadth?.tone || "unavailable",
+    up: direction?.breadth?.upCount ?? null,
+    down: direction?.breadth?.downCount ?? null,
+    neutral: direction?.breadth?.neutralCount ?? null,
+    top_leaders: formatCandidateList(direction?.leaders),
+    top_laggards: formatCandidateList(direction?.laggards)
+  };
+  const opportunitySummary = {
+    available: opportunitySection.available,
+    momentum: normalizeOpportunityList(opportunity?.setups?.momentum),
+    rebound: normalizeOpportunityList(opportunity?.setups?.rebound),
+    avoid: normalizeOpportunityList(opportunity?.setups?.avoid)
+  };
+  const summaryFlags = buildSummaryFlags({
+    regime: marketRegime,
+    capitalFlow,
+    breadth: marketBreadth
+  });
 
   const briefing = {
     profile,
@@ -730,68 +914,19 @@ async function buildGptBriefingPayload(options = {}) {
     range,
     generated_at: generatedAt,
     sections: {
-      market_regime: {
-        available: liquiditySection.available || directionSection.available,
-        btc_dominance: summarizeMetricForBriefing(btcDominanceMetric, range),
-        eth_dominance: {
-          current: direction?.dominance?.eth ?? null,
-          change_7d: null,
-          change_30d: null,
-          change_90d: null,
-          trend: "unavailable"
-        },
-        eth_btc: summarizeMetricForBriefing(ethBtcMetric, range),
-        sol_eth: summarizeMetricForBriefing(solEthMetric, range)
-      },
-      crypto_liquidity: {
-        available: liquiditySection.available,
-        stablecoin_market_cap: summarizeMetricForBriefing(stablecoinCapMetric, range),
-        usdt_supply: summarizeMetricForBriefing(usdtSupplyMetric, range),
-        usdc_supply: summarizeMetricForBriefing(usdcSupplyMetric, range),
-        btc_etf_net_flow: summarizeFlowForBriefing(btcEtfMetric, range),
-        eth_etf_net_flow: summarizeFlowForBriefing(ethEtfMetric, range)
-      },
-      capital_flow: {
-        available: liquiditySection.available,
-        stablecoin_market_cap: summarizeMetricForBriefing(stablecoinCapMetric, range),
-        usdt_supply: summarizeMetricForBriefing(usdtSupplyMetric, range),
-        usdc_supply: summarizeMetricForBriefing(usdcSupplyMetric, range),
-        btc_etf_net_flow: summarizeFlowForBriefing(btcEtfMetric, range),
-        eth_etf_net_flow: summarizeFlowForBriefing(ethEtfMetric, range),
-        total_market_cap: summarizeMetricForBriefing(totalMarketCapMetric, range),
-        total2: summarizeMetricForBriefing(total2Metric, range),
-        total3: summarizeMetricForBriefing(total3Metric, range)
-      },
-      market_breadth: {
-        available: directionSection.available,
-        tone: direction?.breadth?.tone || "unavailable",
-        up_count: direction?.breadth?.upCount ?? null,
-        down_count: direction?.breadth?.downCount ?? null,
-        neutral_count: direction?.breadth?.neutralCount ?? null,
-        top_leaders: formatCandidateList(direction?.leaders),
-        top_laggards: formatCandidateList(direction?.laggards)
-      },
+      market_regime: marketRegime,
+      capital_flow: capitalFlow,
+      market_breadth: marketBreadth,
       sector_flow: {
         available: sectorSection.available,
-        strong_sectors: formatCandidateList(strongSectors, "label"),
-        weak_sectors: formatCandidateList(weakSectors, "label")
+        strong_sectors: sectorSummary.strong,
+        weak_sectors: sectorSummary.weak
       },
-      opportunity: {
-        available: opportunitySection.available,
-        trend_candidates: formatCandidateList(opportunity?.setups?.momentum),
-        bounce_watch: formatCandidateList(opportunity?.setups?.rebound),
-        avoid: formatCandidateList(opportunity?.setups?.avoid)
-      },
-      raw_summary: {
-        available: liquiditySection.available,
-        capital_flow_summary: Array.isArray(liquidity?.capitalFlowSummary) && liquidity.capitalFlowSummary.length
-          ? liquidity.capitalFlowSummary
-          : ["unavailable"]
-      },
-      notes: [
-        "This export is for analysis and briefing.",
-        "It does not include price prediction, trade signal, or target price."
-      ]
+      opportunity: opportunitySummary,
+      gpt_summary: {
+        flags: summaryFlags,
+        lines: summarySentencesFromFlags(summaryFlags)
+      }
     },
     source_status: {
       liquidity_dashboard: { available: liquiditySection.available, error: liquiditySection.error },
@@ -802,7 +937,7 @@ async function buildGptBriefingPayload(options = {}) {
   };
 
   if (includeRaw) {
-    briefing.raw = {
+    briefing.raw_compact = {
       liquidity_dashboard: compactRawPayload(liquidity),
       direction: compactRawPayload(direction),
       sector_flow: compactRawPayload(sectorFlow),
@@ -816,9 +951,10 @@ async function buildGptBriefingPayload(options = {}) {
 function formatBriefingMetricLines(metric, unit = "") {
   return [
     `Current: ${formatBriefingValue(metric?.current, unit)}`,
-    `7d: ${formatBriefingValue(metric?.change_7d, "%")}`,
-    `30d: ${formatBriefingValue(metric?.change_30d, "%")}`,
-    `90d: ${formatBriefingValue(metric?.change_90d, "%")}`,
+    `1d: ${formatBriefingValue(metric?.["1d"], "%")}`,
+    `1w: ${formatBriefingValue(metric?.["1w"], "%")}`,
+    `1m: ${formatBriefingValue(metric?.["1m"], "%")}`,
+    `3m: ${formatBriefingValue(metric?.["3m"], "%")}`,
     `Trend: ${metric?.trend || "unavailable"}`
   ];
 }
@@ -826,27 +962,46 @@ function formatBriefingMetricLines(metric, unit = "") {
 function formatBriefingFlowLines(flow) {
   return [
     `Current Week: ${formatBriefingValue(flow?.current_week, "USD/day")}`,
-    `30d: ${formatBriefingValue(flow?.sum_30d, "USD/day")}`,
-    `90d: ${formatBriefingValue(flow?.sum_90d, "USD/day")}`,
-    `Trend: ${flow?.trend || "unavailable"}`
+    `30d: ${formatBriefingValue(flow?.["30d"], "USD/day")}`,
+    `90d: ${formatBriefingValue(flow?.["90d"], "USD/day")}`,
+    `Status: ${flowStatusFromSummary(flow)}`
   ];
+}
+
+function formatSectorList(items) {
+  if (items === "없음" || !Array.isArray(items) || !items.length) {
+    return ["- 없음"];
+  }
+
+  return items.map((sector) => {
+    if (typeof sector === "string") return `- ${sector}`;
+    const volume = formatBriefingValue(sector.totalQuoteVolume24hUsdt, "USD");
+    return `- ${sector.label} | averageScore: ${sector.averageScore ?? "unavailable"} | tone: ${sector.tone || "unavailable"} | members: ${sector.memberCount ?? "unavailable"} | volume: ${volume}`;
+  });
+}
+
+function formatOpportunityList(items) {
+  if (items === "없음" || !Array.isArray(items) || !items.length) {
+    return "없음";
+  }
+
+  return items.map((item) => item.symbol || "unknown").join(", ");
 }
 
 function formatGptBriefingText(briefing) {
   const regime = briefing.sections.market_regime;
-  const liquidity = briefing.sections.crypto_liquidity;
   const capitalFlow = briefing.sections.capital_flow;
   const breadth = briefing.sections.market_breadth;
   const sector = briefing.sections.sector_flow;
   const opportunity = briefing.sections.opportunity;
-  const rawSummary = briefing.sections.raw_summary;
+  const summary = briefing.sections.gpt_summary;
 
   return [
     "=== GPT BRIEFING ===",
+    `GENERATED_AT: ${briefing.generated_at}`,
     `PROFILE: ${briefing.profile}`,
     `TIMEFRAME: ${briefing.timeframe}`,
     `RANGE: ${briefing.range}`,
-    `GENERATED_AT: ${briefing.generated_at}`,
     "",
     "[MARKET REGIME]",
     "BTC Dominance:",
@@ -858,59 +1013,45 @@ function formatGptBriefingText(briefing) {
     "SOL/ETH:",
     ...formatBriefingMetricLines(regime.sol_eth),
     "",
-    "[CRYPTO LIQUIDITY]",
-    "Stablecoin Market Cap:",
-    ...formatBriefingMetricLines(liquidity.stablecoin_market_cap, "USD"),
-    "USDT Supply:",
-    ...formatBriefingMetricLines(liquidity.usdt_supply, "USD"),
-    "USDC Supply:",
-    ...formatBriefingMetricLines(liquidity.usdc_supply, "USD"),
-    "BTC ETF Net Flow:",
-    ...formatBriefingFlowLines(liquidity.btc_etf_net_flow),
-    "ETH ETF Net Flow:",
-    ...formatBriefingFlowLines(liquidity.eth_etf_net_flow),
-    "",
     "[CAPITAL FLOW]",
     "Stablecoin Market Cap:",
     ...formatBriefingMetricLines(capitalFlow.stablecoin_market_cap, "USD"),
+    `Status: ${capitalFlow.stablecoin_market_cap?.status || "unavailable"}`,
     "USDT Supply:",
     ...formatBriefingMetricLines(capitalFlow.usdt_supply, "USD"),
+    `Status: ${capitalFlow.usdt_supply?.status || "unavailable"}`,
     "USDC Supply:",
     ...formatBriefingMetricLines(capitalFlow.usdc_supply, "USD"),
-    "BTC ETF Net Flow:",
+    `Status: ${capitalFlow.usdc_supply?.status || "unavailable"}`,
+    "BTC ETF:",
     ...formatBriefingFlowLines(capitalFlow.btc_etf_net_flow),
-    "ETH ETF Net Flow:",
+    "ETH ETF:",
     ...formatBriefingFlowLines(capitalFlow.eth_etf_net_flow),
-    "TOTAL Market Cap:",
-    ...formatBriefingMetricLines(capitalFlow.total_market_cap, "USD"),
-    "TOTAL2:",
-    ...formatBriefingMetricLines(capitalFlow.total2, "USD"),
     "TOTAL3:",
     ...formatBriefingMetricLines(capitalFlow.total3, "USD"),
+    `Status: ${capitalFlow.total3?.status || "unavailable"}`,
     "",
     "[MARKET BREADTH]",
     `Tone: ${breadth.tone}`,
-    `Up Count: ${breadth.up_count ?? "unavailable"}`,
-    `Down Count: ${breadth.down_count ?? "unavailable"}`,
-    `Neutral Count: ${breadth.neutral_count ?? "unavailable"}`,
+    `Up: ${breadth.up ?? "unavailable"}`,
+    `Down: ${breadth.down ?? "unavailable"}`,
+    `Neutral: ${breadth.neutral ?? "unavailable"}`,
     `Top Leaders: ${breadth.top_leaders.join(", ")}`,
     `Top Laggards: ${breadth.top_laggards.join(", ")}`,
     "",
     "[SECTOR FLOW]",
-    `Strong Sectors: ${sector.strong_sectors.join(", ")}`,
-    `Weak Sectors: ${sector.weak_sectors.join(", ")}`,
+    "Strong Sectors:",
+    ...formatSectorList(sector.strong_sectors),
+    "Weak Sectors:",
+    ...formatSectorList(sector.weak_sectors),
     "",
     "[OPPORTUNITY]",
-    `Trend Candidates: ${opportunity.trend_candidates.join(", ")}`,
-    `Bounce Watch: ${opportunity.bounce_watch.join(", ")}`,
-    `Avoid: ${opportunity.avoid.join(", ")}`,
+    `Momentum: ${formatOpportunityList(opportunity.momentum)}`,
+    `Rebound: ${formatOpportunityList(opportunity.rebound)}`,
+    `Avoid: ${formatOpportunityList(opportunity.avoid)}`,
     "",
-    "[RAW SUMMARY]",
-    "Capital Flow Summary:",
-    ...rawSummary.capital_flow_summary.map((line) => `- ${line}`),
-    "",
-    "[NOTES]",
-    ...briefing.sections.notes.map((line) => `* ${line}`),
+    "[GPT SUMMARY]",
+    ...summary.lines.map((line) => `- ${line}`),
     "",
     "=== END GPT BRIEFING ==="
   ].join("\n");
@@ -3037,7 +3178,7 @@ app.get("/api/public/opportunity", async (request, response) => {
 
 app.get("/api/public/gpt-briefing", async (request, response) => {
   try {
-    const format = normalizeGptBriefingFormat(request.query.format);
+    const format = normalizeGptBriefingMode(request.query.mode, request.query.format);
     const briefing = await buildGptBriefingPayload({
       profile: request.query.profile,
       timeframe: request.query.timeframe,

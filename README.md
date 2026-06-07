@@ -52,13 +52,24 @@ GET https://gainob.vercel.app/api/public/gpt-briefing?profile=liquidity_cycle_v1
 
 ChatGPT에 그대로 복사할 수 있는 단일 텍스트 브리핑을 반환합니다.
 
+GPT briefing is a compressed export format, not a raw data dump. It combines `liquidity-dashboard`, `direction`, `sector-flow`, and `opportunity`, then returns only current values, recent changes, status, trend, sector summaries, opportunity symbols, and rule-based GPT summary lines.
+
 Query parameters:
 
 - `profile`: `liquidity_cycle_v1` | `swing_v1` | `market_overview_v1` (default: `liquidity_cycle_v1`)
 - `timeframe`: default `1h`
 - `range`: `7d` | `30d` | `90d` (default: `30d`)
-- `format`: `text` | `json` (default: `text`)
+- `mode`: `text` | `json` (default: `text`)
+- `format`: `text` | `json` (legacy-compatible; `mode` takes priority)
 - `includeRaw`: `false` | `true` (default: `false`)
+
+Examples:
+
+```http
+GET /api/public/gpt-briefing
+GET /api/public/gpt-briefing?mode=json
+GET /api/public/gpt-briefing?format=json
+```
 
 `liquidity_cycle_v1` combines these public payloads internally:
 
@@ -67,9 +78,9 @@ Query parameters:
 - `/api/public/sector-flow?timeframe=<timeframe>&universe=24`
 - `/api/public/opportunity?timeframe=<timeframe>&universe=24&limit=6`
 
-The default export includes summarized values only: `current`, `change_7d`, `change_30d`, `change_90d`, and `trend`.
+The default export includes summarized values only: `current`, `1d`, `1w`, `1m`, `3m`, `ma20`, `ma50`, `ma200`, `status`, and `trend`.
 
-Full time series are not included by default. Use `includeRaw=true` only when limited raw context is needed.
+Full time series are never included in `gpt-briefing`. This endpoint is designed for copy-paste into GPT with minimal token waste.
 
 Capital Flow fields included in GPT export:
 
