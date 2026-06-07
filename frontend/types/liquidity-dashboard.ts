@@ -39,6 +39,7 @@ export type FlowMetric = {
   label: string;
   unit: string;
   current: number | null;
+  currentWeek: number;
   sum30d: number;
   sum90d: number;
   description: string;
@@ -61,5 +62,11 @@ export type LiquidityDashboardPayload = {
   cycleRotation: RotationMetric[];
   cryptoLiquidity: RegimeMetric[];
   etfFlows: FlowMetric[];
+  marketSize: RegimeMetric[];
+  capitalFlow: {
+    stablecoins: RegimeMetric[];
+    etfFlows: FlowMetric[];
+    marketSize: RegimeMetric[];
+  };
   capitalFlowSummary: string[];
 };

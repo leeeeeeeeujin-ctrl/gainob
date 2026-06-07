@@ -622,6 +622,7 @@ function summarizeFlowForBriefing(flow, range) {
 
   return {
     ...summary,
+    current_week: flow.currentWeek ?? null,
     sum_30d: flow.sum30d ?? null,
     sum_90d: flow.sum90d ?? null
   };
@@ -709,8 +710,13 @@ async function buildGptBriefingPayload(options = {}) {
   const ethBtcMetric = findById(liquidity?.cycleRotation, "eth-btc");
   const solEthMetric = findById(liquidity?.cycleRotation, "sol-eth");
   const stablecoinCapMetric = findById(liquidity?.cryptoLiquidity, "stablecoin-market-cap");
+  const usdtSupplyMetric = findById(liquidity?.cryptoLiquidity, "usdt-supply");
+  const usdcSupplyMetric = findById(liquidity?.cryptoLiquidity, "usdc-supply");
   const btcEtfMetric = findById(liquidity?.etfFlows, "btc-etf-net-flow");
   const ethEtfMetric = findById(liquidity?.etfFlows, "eth-etf-net-flow");
+  const totalMarketCapMetric = findById(liquidity?.marketSize, "total-market-cap");
+  const total2Metric = findById(liquidity?.marketSize, "total2");
+  const total3Metric = findById(liquidity?.marketSize, "total3");
   const strongSectors = Array.isArray(sectorFlow?.sectors)
     ? sectorFlow.sectors.filter((sector) => Number(sector.averageScore || 0) >= 0).slice(0, 4)
     : [];
@@ -740,8 +746,21 @@ async function buildGptBriefingPayload(options = {}) {
       crypto_liquidity: {
         available: liquiditySection.available,
         stablecoin_market_cap: summarizeMetricForBriefing(stablecoinCapMetric, range),
+        usdt_supply: summarizeMetricForBriefing(usdtSupplyMetric, range),
+        usdc_supply: summarizeMetricForBriefing(usdcSupplyMetric, range),
         btc_etf_net_flow: summarizeFlowForBriefing(btcEtfMetric, range),
         eth_etf_net_flow: summarizeFlowForBriefing(ethEtfMetric, range)
+      },
+      capital_flow: {
+        available: liquiditySection.available,
+        stablecoin_market_cap: summarizeMetricForBriefing(stablecoinCapMetric, range),
+        usdt_supply: summarizeMetricForBriefing(usdtSupplyMetric, range),
+        usdc_supply: summarizeMetricForBriefing(usdcSupplyMetric, range),
+        btc_etf_net_flow: summarizeFlowForBriefing(btcEtfMetric, range),
+        eth_etf_net_flow: summarizeFlowForBriefing(ethEtfMetric, range),
+        total_market_cap: summarizeMetricForBriefing(totalMarketCapMetric, range),
+        total2: summarizeMetricForBriefing(total2Metric, range),
+        total3: summarizeMetricForBriefing(total3Metric, range)
       },
       market_breadth: {
         available: directionSection.available,
@@ -796,17 +815,27 @@ async function buildGptBriefingPayload(options = {}) {
 
 function formatBriefingMetricLines(metric, unit = "") {
   return [
-    `  current: ${formatBriefingValue(metric?.current, unit)}`,
-    `  change_7d: ${formatBriefingValue(metric?.change_7d, "%")}`,
-    `  change_30d: ${formatBriefingValue(metric?.change_30d, "%")}`,
-    `  change_90d: ${formatBriefingValue(metric?.change_90d, "%")}`,
-    `  trend: ${metric?.trend || "unavailable"}`
+    `Current: ${formatBriefingValue(metric?.current, unit)}`,
+    `7d: ${formatBriefingValue(metric?.change_7d, "%")}`,
+    `30d: ${formatBriefingValue(metric?.change_30d, "%")}`,
+    `90d: ${formatBriefingValue(metric?.change_90d, "%")}`,
+    `Trend: ${metric?.trend || "unavailable"}`
+  ];
+}
+
+function formatBriefingFlowLines(flow) {
+  return [
+    `Current Week: ${formatBriefingValue(flow?.current_week, "USD/day")}`,
+    `30d: ${formatBriefingValue(flow?.sum_30d, "USD/day")}`,
+    `90d: ${formatBriefingValue(flow?.sum_90d, "USD/day")}`,
+    `Trend: ${flow?.trend || "unavailable"}`
   ];
 }
 
 function formatGptBriefingText(briefing) {
   const regime = briefing.sections.market_regime;
   const liquidity = briefing.sections.crypto_liquidity;
+  const capitalFlow = briefing.sections.capital_flow;
   const breadth = briefing.sections.market_breadth;
   const sector = briefing.sections.sector_flow;
   const opportunity = briefing.sections.opportunity;
@@ -832,10 +861,32 @@ function formatGptBriefingText(briefing) {
     "[CRYPTO LIQUIDITY]",
     "Stablecoin Market Cap:",
     ...formatBriefingMetricLines(liquidity.stablecoin_market_cap, "USD"),
+    "USDT Supply:",
+    ...formatBriefingMetricLines(liquidity.usdt_supply, "USD"),
+    "USDC Supply:",
+    ...formatBriefingMetricLines(liquidity.usdc_supply, "USD"),
     "BTC ETF Net Flow:",
-    ...formatBriefingMetricLines(liquidity.btc_etf_net_flow, "USD/day"),
+    ...formatBriefingFlowLines(liquidity.btc_etf_net_flow),
     "ETH ETF Net Flow:",
-    ...formatBriefingMetricLines(liquidity.eth_etf_net_flow, "USD/day"),
+    ...formatBriefingFlowLines(liquidity.eth_etf_net_flow),
+    "",
+    "[CAPITAL FLOW]",
+    "Stablecoin Market Cap:",
+    ...formatBriefingMetricLines(capitalFlow.stablecoin_market_cap, "USD"),
+    "USDT Supply:",
+    ...formatBriefingMetricLines(capitalFlow.usdt_supply, "USD"),
+    "USDC Supply:",
+    ...formatBriefingMetricLines(capitalFlow.usdc_supply, "USD"),
+    "BTC ETF Net Flow:",
+    ...formatBriefingFlowLines(capitalFlow.btc_etf_net_flow),
+    "ETH ETF Net Flow:",
+    ...formatBriefingFlowLines(capitalFlow.eth_etf_net_flow),
+    "TOTAL Market Cap:",
+    ...formatBriefingMetricLines(capitalFlow.total_market_cap, "USD"),
+    "TOTAL2:",
+    ...formatBriefingMetricLines(capitalFlow.total2, "USD"),
+    "TOTAL3:",
+    ...formatBriefingMetricLines(capitalFlow.total3, "USD"),
     "",
     "[MARKET BREADTH]",
     `Tone: ${breadth.tone}`,

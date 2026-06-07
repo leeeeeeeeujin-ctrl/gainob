@@ -71,6 +71,29 @@ The default export includes summarized values only: `current`, `change_7d`, `cha
 
 Full time series are not included by default. Use `includeRaw=true` only when limited raw context is needed.
 
+Capital Flow fields included in GPT export:
+
+- `Stablecoin Market Cap`
+- `USDT Supply`
+- `USDC Supply`
+- `BTC ETF Net Flow`
+- `ETH ETF Net Flow`
+- `TOTAL Market Cap`
+- `TOTAL2`
+- `TOTAL3`
+
+Current implementation status:
+
+- Already available in Gainob mock provider: `Stablecoin Market Cap`, `USDT Supply`, `USDC Supply`, `BTC ETF Net Flow`, `ETH ETF Net Flow`, `TOTAL Market Cap`, `TOTAL2`, `TOTAL3`
+- Already available from existing Gainob public scans: market breadth, sector flow, opportunity buckets, BTC/ETH dominance context
+- Needs real provider wiring: stablecoin supply, ETF flow, TOTAL/TOTAL2/TOTAL3 historical changes
+
+Potential public data sources:
+
+- Stablecoin supply: DeFiLlama stablecoins data (`stablecoins.llama.fi/stablecoins?includePrices=true`) can provide stablecoin circulating supply, including USDT and USDC.
+- ETF flows: SoSoValue ETF historical inflow API provides daily BTC/ETH spot ETF net inflow fields, including `totalNetInflow`.
+- Market size: CoinGecko global endpoints provide total crypto market cap and dominance data; TOTAL2/TOTAL3 can be derived from total market cap minus BTC/ETH market caps when historical market caps are available.
+
 MVP 범위:
 
 - BTC Dominance

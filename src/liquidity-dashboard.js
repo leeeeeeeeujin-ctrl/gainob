@@ -102,6 +102,7 @@ function buildRotation({ id, label, unit, series }) {
 
 function buildFlow({ id, label, unit, series, description }) {
   const current = latest(series);
+  const currentWeek = round(series.slice(-7).reduce((sum, item) => sum + item.value, 0), 2);
   const sum30d = round(series.slice(-30).reduce((sum, item) => sum + item.value, 0), 2);
   const sum90d = round(series.slice(-90).reduce((sum, item) => sum + item.value, 0), 2);
 
@@ -110,6 +111,7 @@ function buildFlow({ id, label, unit, series, description }) {
     label,
     unit,
     current,
+    currentWeek,
     sum30d,
     sum90d,
     description,
@@ -157,7 +159,9 @@ function buildCapitalFlowSummary({ btcDominance, ethBtc, solEth, stablecoinCap, 
  * - getETHBTC()
  * - getSOLETH()
  * - getStablecoinMarketCap()
+ * - getStablecoinSupply(asset: "USDT" | "USDC")
  * - getETFNetFlow(asset: "BTC" | "ETH")
+ * - getMarketCapIndex(index: "TOTAL" | "TOTAL2" | "TOTAL3")
  */
 function createMockLiquidityDashboardProvider() {
   return {
@@ -173,6 +177,12 @@ function createMockLiquidityDashboardProvider() {
     async getStablecoinMarketCap() {
       return buildSeries({ days: 210, start: 154_000_000_000, drift: 9_500_000_000, wave: 1_600_000_000, noise: 450_000_000 });
     },
+    async getStablecoinSupply(asset) {
+      if (asset === "USDT") {
+        return buildSeries({ days: 210, start: 104_000_000_000, drift: 7_200_000_000, wave: 900_000_000, noise: 260_000_000 });
+      }
+      return buildSeries({ days: 210, start: 33_000_000_000, drift: 2_100_000_000, wave: 520_000_000, noise: 180_000_000 });
+    },
     async getETFNetFlow(asset) {
       const isBtc = asset === "BTC";
       return buildSeries({
@@ -182,19 +192,45 @@ function createMockLiquidityDashboardProvider() {
         wave: isBtc ? 140_000_000 : 42_000_000,
         noise: isBtc ? 35_000_000 : 14_000_000
       });
+    },
+    async getMarketCapIndex(index) {
+      if (index === "TOTAL") {
+        return buildSeries({ days: 210, start: 2_450_000_000_000, drift: 310_000_000_000, wave: 115_000_000_000, noise: 35_000_000_000 });
+      }
+      if (index === "TOTAL2") {
+        return buildSeries({ days: 210, start: 1_150_000_000_000, drift: 130_000_000_000, wave: 82_000_000_000, noise: 24_000_000_000 });
+      }
+      return buildSeries({ days: 210, start: 720_000_000_000, drift: 82_000_000_000, wave: 58_000_000_000, noise: 18_000_000_000 });
     }
   };
 }
 
 async function buildLiquidityDashboardSnapshot(provider = createMockLiquidityDashboardProvider()) {
-  const [btcDominanceSeries, ethBtcSeries, solEthSeries, stablecoinCapSeries, btcEtfSeries, ethEtfSeries] =
+  const [
+    btcDominanceSeries,
+    ethBtcSeries,
+    solEthSeries,
+    stablecoinCapSeries,
+    usdtSupplySeries,
+    usdcSupplySeries,
+    btcEtfSeries,
+    ethEtfSeries,
+    totalMarketCapSeries,
+    total2Series,
+    total3Series
+  ] =
     await Promise.all([
       provider.getBTCDominance(),
       provider.getETHBTC(),
       provider.getSOLETH(),
       provider.getStablecoinMarketCap(),
+      provider.getStablecoinSupply("USDT"),
+      provider.getStablecoinSupply("USDC"),
       provider.getETFNetFlow("BTC"),
-      provider.getETFNetFlow("ETH")
+      provider.getETFNetFlow("ETH"),
+      provider.getMarketCapIndex("TOTAL"),
+      provider.getMarketCapIndex("TOTAL2"),
+      provider.getMarketCapIndex("TOTAL3")
     ]);
 
   const btcDominance = buildMetric({
@@ -211,8 +247,43 @@ async function buildLiquidityDashboardSnapshot(provider = createMockLiquidityDas
     series: stablecoinCapSeries,
     description: "시장에 남아 있는 현금성 암호화폐 유동성"
   });
+  const usdtSupply = buildMetric({
+    id: "usdt-supply",
+    label: "USDT Supply",
+    unit: "USD",
+    series: usdtSupplySeries,
+    description: "Mock USDT circulating supply"
+  });
+  const usdcSupply = buildMetric({
+    id: "usdc-supply",
+    label: "USDC Supply",
+    unit: "USD",
+    series: usdcSupplySeries,
+    description: "Mock USDC circulating supply"
+  });
   const ethBtc = buildRotation({ id: "eth-btc", label: "ETH/BTC", unit: "ratio", series: ethBtcSeries });
   const solEth = buildRotation({ id: "sol-eth", label: "SOL/ETH", unit: "ratio", series: solEthSeries });
+  const totalMarketCap = buildMetric({
+    id: "total-market-cap",
+    label: "TOTAL Market Cap",
+    unit: "USD",
+    series: totalMarketCapSeries,
+    description: "Mock total crypto market capitalization"
+  });
+  const total2 = buildMetric({
+    id: "total2",
+    label: "TOTAL2",
+    unit: "USD",
+    series: total2Series,
+    description: "Mock crypto market cap excluding BTC"
+  });
+  const total3 = buildMetric({
+    id: "total3",
+    label: "TOTAL3",
+    unit: "USD",
+    series: total3Series,
+    description: "Mock crypto market cap excluding BTC and ETH"
+  });
   const btcEtfFlow = buildFlow({
     id: "btc-etf-net-flow",
     label: "BTC ETF Net Flow",
@@ -242,8 +313,14 @@ async function buildLiquidityDashboardSnapshot(provider = createMockLiquidityDas
     },
     marketRegime: [btcDominance],
     cycleRotation: [ethBtc, solEth],
-    cryptoLiquidity: [stablecoinCap],
+    cryptoLiquidity: [stablecoinCap, usdtSupply, usdcSupply],
     etfFlows: [btcEtfFlow, ethEtfFlow],
+    marketSize: [totalMarketCap, total2, total3],
+    capitalFlow: {
+      stablecoins: [stablecoinCap, usdtSupply, usdcSupply],
+      etfFlows: [btcEtfFlow, ethEtfFlow],
+      marketSize: [totalMarketCap, total2, total3]
+    },
     capitalFlowSummary: buildCapitalFlowSummary({
       btcDominance,
       ethBtc,
