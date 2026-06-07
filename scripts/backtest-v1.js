@@ -13,6 +13,24 @@ const DEFAULT_HORIZONS = [30, 60, 90];
 const DEFAULT_INTERVAL = "1d";
 const DEFAULT_OUT_DIR = "backtests";
 const DEFAULT_INPUT_DIR = path.join(DEFAULT_OUT_DIR, "input");
+const DEFAULT_CACHE_DIR = path.join(DEFAULT_OUT_DIR, "cache");
+const FEATURE_LAGS = {
+  BTC_price: 1,
+  ETH_price: 1,
+  SOL_price: 1,
+  ETH_BTC: 1,
+  SOL_ETH: 1,
+  BTC_dominance: 1,
+  ETH_dominance: 1,
+  TOTAL3: 1,
+  Stablecoin_Market_Cap: 1,
+  DXY: 1,
+  US10Y: 1,
+  QQQ: 1,
+  RRPONTSYD: 1,
+  TGA: 1,
+  M2SL: 30
+};
 
 const YAHOO_SYMBOLS = {
   BTC: "BTC-USD",
@@ -94,7 +112,9 @@ function usage() {
     "  --horizons=30d,60d,90d",
     "  --symbols=BTC,ETH,SOL",
     "  --outDir=backtests",
-    "  --inputDir=backtests/input"
+    "  --inputDir=backtests/input",
+    "  --cacheDir=backtests/cache",
+    "  --refreshCache=true"
   ].join("\n");
 }
 
@@ -128,6 +148,29 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function slug(value) {
+  return String(value).replace(/[^a-z0-9._-]+/gi, "_");
+}
+
+function cacheFile(cacheDir, name) {
+  return path.join(cacheDir, `${slug(name)}.json`);
+}
+
+function readCache(cacheDir, name) {
+  const file = cacheFile(cacheDir, name);
+  if (!fs.existsSync(file)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(cacheDir, name, payload) {
+  ensureDir(cacheDir);
+  fs.writeFileSync(cacheFile(cacheDir, name), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -151,7 +194,13 @@ function yahooUrl(symbol, startMs, endMs, interval) {
   return `${YAHOO_CHART_BASE}/${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
 }
 
-async function fetchYahooSeries(label, yahooSymbol, startMs, endMs, interval = "1d") {
+async function fetchYahooSeries(label, yahooSymbol, startMs, endMs, interval = "1d", options = {}) {
+  const cacheName = `yahoo_${label}_${yahooSymbol}_${isoDate(startMs)}_${isoDate(endMs)}_${interval}`;
+  if (options.cacheDir && !options.refreshCache) {
+    const cached = readCache(options.cacheDir, cacheName);
+    if (cached?.series) return { label, series: cached.series, error: null, source: `cache:${cacheName}` };
+  }
+
   try {
     const payload = await fetchJson(yahooUrl(yahooSymbol, startMs, endMs, interval));
     const result = payload?.chart?.result?.[0];
@@ -164,13 +213,20 @@ async function fetchYahooSeries(label, yahooSymbol, startMs, endMs, interval = "
       }))
       .filter((point) => Number.isFinite(point.value));
 
-    return { label, series, error: null };
+    if (options.cacheDir) writeCache(options.cacheDir, cacheName, { label, yahooSymbol, startDate: isoDate(startMs), endDate: isoDate(endMs), interval, series });
+    return { label, series, error: null, source: "Yahoo Finance chart" };
   } catch (error) {
     return { label, series: [], error: error.message };
   }
 }
 
-async function fetchStablecoinSeries() {
+async function fetchStablecoinSeries(options = {}) {
+  const cacheName = "defillama_stablecoincharts_all";
+  if (options.cacheDir && !options.refreshCache) {
+    const cached = readCache(options.cacheDir, cacheName);
+    if (cached?.series) return { label: "Stablecoin_Market_Cap", series: cached.series, error: null, source: `cache:${cacheName}` };
+  }
+
   try {
     const payload = await fetchJson(`${DEFILLAMA_STABLECOINS_BASE}/stablecoincharts/all`);
     const series = (Array.isArray(payload) ? payload : [])
@@ -179,7 +235,8 @@ async function fetchStablecoinSeries() {
         value: Number(item.totalCirculatingUSD?.peggedUSD ?? item.totalCirculating?.peggedUSD)
       }))
       .filter((point) => Number.isFinite(point.value));
-    return { label: "Stablecoin_Market_Cap", series, error: null };
+    if (options.cacheDir) writeCache(options.cacheDir, cacheName, { label: "Stablecoin_Market_Cap", series });
+    return { label: "Stablecoin_Market_Cap", series, error: null, source: "DefiLlama stablecoincharts/all" };
   } catch (error) {
     return { label: "Stablecoin_Market_Cap", series: [], error: error.message };
   }
@@ -211,6 +268,20 @@ function valueOnOrAfter(series, date) {
   return null;
 }
 
+function valueOnOrAfterWithin(series, date, maxForwardDays = 7) {
+  if (!Array.isArray(series) || !series.length) return null;
+  const target = parseDate(date, "date");
+  const maxTime = target + maxForwardDays * DAY_MS;
+  for (const point of series) {
+    const pointTime = parseDate(point.date, "series date");
+    if (pointTime >= target && pointTime <= maxTime) {
+      return point.value;
+    }
+    if (pointTime > maxTime) return null;
+  }
+  return null;
+}
+
 function pctChange(current, previous) {
   if (
     current === null ||
@@ -227,15 +298,25 @@ function pctChange(current, previous) {
 }
 
 function futureReturn(series, date, horizonDays) {
-  const current = valueOnOrBefore(series, date);
-  const futureDate = isoDate(parseDate(date, "date") + horizonDays * DAY_MS);
-  const future = valueOnOrAfter(series, futureDate);
+  const labelStartDate = isoDate(parseDate(date, "date") + DAY_MS);
+  const current = valueOnOrAfterWithin(series, labelStartDate, 7);
+  const futureDate = isoDate(parseDate(date, "date") + (horizonDays + 1) * DAY_MS);
+  const future = valueOnOrAfterWithin(series, futureDate, 7);
   return pctChange(future, current);
 }
 
-function laggedChange(series, date, lagDays = 30) {
-  const current = valueOnOrBefore(series, date);
-  const previousDate = isoDate(parseDate(date, "date") - lagDays * DAY_MS);
+function availableDate(date, lagDays = 1) {
+  return isoDate(parseDate(date, "date") - lagDays * DAY_MS);
+}
+
+function laggedValue(series, date, lagDays = 1) {
+  return valueOnOrBefore(series, availableDate(date, lagDays));
+}
+
+function laggedChange(series, date, lookbackDays = 30, featureLagDays = 1) {
+  const usableDate = availableDate(date, featureLagDays);
+  const current = valueOnOrBefore(series, usableDate);
+  const previousDate = isoDate(parseDate(usableDate, "date") - lookbackDays * DAY_MS);
   const previous = valueOnOrBefore(series, previousDate);
   return pctChange(current, previous);
 }
@@ -249,10 +330,28 @@ function dateRange(startMs, endMs, stepDays = 1) {
 }
 
 function divide(a, b) {
-  if (!Number.isFinite(Number(a)) || !Number.isFinite(Number(b)) || Number(b) === 0) {
+  if (
+    a === null ||
+    a === undefined ||
+    b === null ||
+    b === undefined ||
+    !Number.isFinite(Number(a)) ||
+    !Number.isFinite(Number(b)) ||
+    Number(b) === 0
+  ) {
     return null;
   }
   return Number((Number(a) / Number(b)).toFixed(8));
+}
+
+function ratioSeries(dates, numerator, denominator, lagDays = 0) {
+  return dates.map((date) => ({
+    date,
+    value: divide(
+      lagDays ? laggedValue(numerator, date, lagDays) : valueOnOrBefore(numerator, date),
+      lagDays ? laggedValue(denominator, date, lagDays) : valueOnOrBefore(denominator, date)
+    )
+  }));
 }
 
 function boolValue(value) {
@@ -364,47 +463,37 @@ function buildRows({ dates, seriesByLabel, horizons }) {
   const rrp = seriesByLabel.RRPONTSYD || [];
   const tga = seriesByLabel.TGA || [];
 
-  const ethBtcSeries = [];
-  const solEthSeries = [];
-
-  for (const date of dates) {
-    const btcPrice = valueOnOrBefore(btc, date);
-    const ethPrice = valueOnOrBefore(eth, date);
-    const solPrice = valueOnOrBefore(sol, date);
-    const ethBtc = divide(ethPrice, btcPrice);
-    const solEth = divide(solPrice, ethPrice);
-    ethBtcSeries.push({ date, value: ethBtc });
-    solEthSeries.push({ date, value: solEth });
-  }
+  const ethBtcSeries = ratioSeries(dates, eth, btc);
+  const solEthSeries = ratioSeries(dates, sol, eth);
 
   return dates.map((date) => {
     const row = {
       date,
-      BTC_price: valueOnOrBefore(btc, date),
-      ETH_price: valueOnOrBefore(eth, date),
-      SOL_price: valueOnOrBefore(sol, date),
-      ETH_BTC: valueOnOrBefore(ethBtcSeries, date),
-      SOL_ETH: valueOnOrBefore(solEthSeries, date),
-      BTC_dominance: valueOnOrBefore(btcDominance, date),
-      ETH_dominance: valueOnOrBefore(ethDominance, date),
-      TOTAL3: valueOnOrBefore(total3Series, date),
-      M2SL: valueOnOrBefore(m2, date),
-      RRPONTSYD: valueOnOrBefore(rrp, date),
-      TGA: valueOnOrBefore(tga, date),
-      Stablecoin_Market_Cap: valueOnOrBefore(stablecoins, date),
-      DXY: valueOnOrBefore(dxy, date),
-      US10Y: valueOnOrBefore(seriesByLabel.US10Y || [], date),
-      QQQ: valueOnOrBefore(qqq, date),
-      ETH_BTC_1m_change: laggedChange(ethBtcSeries, date, 30),
-      BTC_dominance_1m_change: laggedChange(btcDominance, date, 30),
-      ETH_dominance_1m_change: laggedChange(ethDominance, date, 30),
-      TOTAL3_1m_change: laggedChange(total3Series, date, 30),
-      Stablecoin_Market_Cap_1m_change: laggedChange(stablecoins, date, 30),
-      M2SL_1m_change: laggedChange(m2, date, 30),
-      RRPONTSYD_1m_change: laggedChange(rrp, date, 30),
-      TGA_1m_change: laggedChange(tga, date, 30),
-      DXY_1m_change: laggedChange(dxy, date, 30),
-      QQQ_1m_change: laggedChange(qqq, date, 30)
+      BTC_price: laggedValue(btc, date, FEATURE_LAGS.BTC_price),
+      ETH_price: laggedValue(eth, date, FEATURE_LAGS.ETH_price),
+      SOL_price: laggedValue(sol, date, FEATURE_LAGS.SOL_price),
+      ETH_BTC: laggedValue(ethBtcSeries, date, FEATURE_LAGS.ETH_BTC),
+      SOL_ETH: laggedValue(solEthSeries, date, FEATURE_LAGS.SOL_ETH),
+      BTC_dominance: laggedValue(btcDominance, date, FEATURE_LAGS.BTC_dominance),
+      ETH_dominance: laggedValue(ethDominance, date, FEATURE_LAGS.ETH_dominance),
+      TOTAL3: laggedValue(total3Series, date, FEATURE_LAGS.TOTAL3),
+      M2SL: laggedValue(m2, date, FEATURE_LAGS.M2SL),
+      RRPONTSYD: laggedValue(rrp, date, FEATURE_LAGS.RRPONTSYD),
+      TGA: laggedValue(tga, date, FEATURE_LAGS.TGA),
+      Stablecoin_Market_Cap: laggedValue(stablecoins, date, FEATURE_LAGS.Stablecoin_Market_Cap),
+      DXY: laggedValue(dxy, date, FEATURE_LAGS.DXY),
+      US10Y: laggedValue(seriesByLabel.US10Y || [], date, FEATURE_LAGS.US10Y),
+      QQQ: laggedValue(qqq, date, FEATURE_LAGS.QQQ),
+      ETH_BTC_1m_change: laggedChange(ethBtcSeries, date, 30, FEATURE_LAGS.ETH_BTC),
+      BTC_dominance_1m_change: laggedChange(btcDominance, date, 30, FEATURE_LAGS.BTC_dominance),
+      ETH_dominance_1m_change: laggedChange(ethDominance, date, 30, FEATURE_LAGS.ETH_dominance),
+      TOTAL3_1m_change: laggedChange(total3Series, date, 30, FEATURE_LAGS.TOTAL3),
+      Stablecoin_Market_Cap_1m_change: laggedChange(stablecoins, date, 30, FEATURE_LAGS.Stablecoin_Market_Cap),
+      M2SL_1m_change: laggedChange(m2, date, 30, FEATURE_LAGS.M2SL),
+      RRPONTSYD_1m_change: laggedChange(rrp, date, 30, FEATURE_LAGS.RRPONTSYD),
+      TGA_1m_change: laggedChange(tga, date, 30, FEATURE_LAGS.TGA),
+      DXY_1m_change: laggedChange(dxy, date, 30, FEATURE_LAGS.DXY),
+      QQQ_1m_change: laggedChange(qqq, date, 30, FEATURE_LAGS.QQQ)
     };
 
     for (const horizon of horizons) {
@@ -466,6 +555,8 @@ async function runBacktest(args) {
   const symbols = parseList(args.symbols, DEFAULT_SYMBOLS).map((symbol) => symbol.toUpperCase());
   const outDir = args.outDir || DEFAULT_OUT_DIR;
   const inputDir = args.inputDir || DEFAULT_INPUT_DIR;
+  const cacheDir = args.cacheDir || DEFAULT_CACHE_DIR;
+  const refreshCache = String(args.refreshCache || "false").toLowerCase() === "true";
   ensureDir(outDir);
 
   const fetchStartMs = startMs - 45 * DAY_MS;
@@ -492,11 +583,11 @@ async function runBacktest(args) {
     dbResults[5]
   ];
   const tasks = [
-    ...symbols.map((symbol) => fetchYahooSeries(symbol, YAHOO_SYMBOLS[symbol] || `${symbol}-USD`, fetchStartMs, fetchEndMs, interval)),
-    fetchYahooSeries("DXY", YAHOO_SYMBOLS.DXY, fetchStartMs, fetchEndMs, interval),
-    fetchYahooSeries("US10Y", YAHOO_SYMBOLS.US10Y, fetchStartMs, fetchEndMs, interval),
-    fetchYahooSeries("QQQ", YAHOO_SYMBOLS.QQQ, fetchStartMs, fetchEndMs, interval),
-    fetchStablecoinSeries()
+    ...symbols.map((symbol) => fetchYahooSeries(symbol, YAHOO_SYMBOLS[symbol] || `${symbol}-USD`, fetchStartMs, fetchEndMs, interval, { cacheDir, refreshCache })),
+    fetchYahooSeries("DXY", YAHOO_SYMBOLS.DXY, fetchStartMs, fetchEndMs, interval, { cacheDir, refreshCache }),
+    fetchYahooSeries("US10Y", YAHOO_SYMBOLS.US10Y, fetchStartMs, fetchEndMs, interval, { cacheDir, refreshCache }),
+    fetchYahooSeries("QQQ", YAHOO_SYMBOLS.QQQ, fetchStartMs, fetchEndMs, interval, { cacheDir, refreshCache }),
+    fetchStablecoinSeries({ cacheDir, refreshCache })
   ];
 
   const results = await Promise.all(tasks);
@@ -517,6 +608,10 @@ async function runBacktest(args) {
       interval,
       horizons: horizons.map((horizon) => `${horizon}d`),
       symbols,
+      cache: {
+        cacheDir,
+        refreshCache
+      },
       sources: {
         prices: "Yahoo Finance chart",
         macro: "Yahoo Finance chart",
@@ -524,6 +619,11 @@ async function runBacktest(args) {
         dominance: "optional local CSV import from backtests/input or tradingview_series DB",
         total3: "optional local CSV import from backtests/input or tradingview_series DB",
         macroLiquidity: "macro_series DB"
+      },
+      alignment: {
+        asOfDate: "Each row is an as_of_date snapshot.",
+        labels: "Future return labels start from the first available close after as_of_date.",
+        featureLags: FEATURE_LAGS
       },
       localCsv: Object.fromEntries(localCsvResults.map((result) => [result.label, {
         source: result.source,
@@ -621,6 +721,32 @@ function fmtSignedPct(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return "n/a";
   const numeric = Number(value);
   return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(4)}%`;
+}
+
+function coverageStats(rows, columns) {
+  return columns.map((column) => {
+    const usableRows = rows.filter((row) => row[column] !== null && row[column] !== undefined && row[column] !== "" && Number.isFinite(Number(row[column])));
+    return {
+      column,
+      startDate: usableRows.length ? usableRows[0].date : null,
+      endDate: usableRows.length ? usableRows[usableRows.length - 1].date : null,
+      rowCount: usableRows.length,
+      nullRatio: rows.length ? 1 - usableRows.length / rows.length : null
+    };
+  });
+}
+
+function regimeForRow(row) {
+  if (Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0 && Number(row.TGA_1m_change) < 0) {
+    return "macro_friendly";
+  }
+  if (Number(row.DXY_1m_change) < 0 && Number(row.QQQ_1m_change) > 0) {
+    return "risk_on";
+  }
+  if (Number(row.DXY_1m_change) > 0 && Number(row.QQQ_1m_change) < 0) {
+    return "risk_off";
+  }
+  return "mixed";
 }
 
 function relativeReturn(row, longSymbol, shortSymbol, horizon = 30) {
@@ -978,7 +1104,7 @@ function pushStats(lines, label, stats, indent = "") {
 function robustnessStats(rows) {
   const targetHorizon = 60;
   const target = solVsEthStats(rows, strongestSignal, targetHorizon);
-  const years = ["2024", "2025", "2026"].map((year) => ({
+  const years = [...new Set(rows.map((row) => String(row.date).slice(0, 4)))].filter(Boolean).sort().map((year) => ({
     year,
     stats: solVsEthStats(rows, (row) => strongestSignal(row) && String(row.date).startsWith(year), targetHorizon)
   }));
@@ -1046,6 +1172,28 @@ function summarize(args) {
     `DXY down + QQQ up -> risk asset avg 30d return: ${fmtNumber(average(riskReturns))}% (n=${dxyDownQqqUp.length})`
   ];
 
+  lines.push("");
+  lines.push("=== HISTORICAL COVERAGE ===");
+  for (const item of coverageStats(rows, [
+    "BTC_price",
+    "ETH_price",
+    "SOL_price",
+    "ETH_BTC",
+    "SOL_ETH",
+    "BTC_dominance",
+    "ETH_dominance",
+    "TOTAL3",
+    "Stablecoin_Market_Cap",
+    "M2SL",
+    "RRPONTSYD",
+    "TGA",
+    "DXY",
+    "US10Y",
+    "QQQ"
+  ])) {
+    lines.push(`${item.column}: start=${item.startDate || "n/a"} end=${item.endDate || "n/a"} rows=${item.rowCount} null_ratio=${fmtPct(item.nullRatio)}`);
+  }
+
   const horizons = parseHorizons(args.horizons || "30d,60d,90d");
   const signals = buildSignals();
   const signalResults = signals.flatMap((signal) => horizons.map((horizon) => ({
@@ -1087,6 +1235,17 @@ function summarize(args) {
   }
 
   const robustness = robustnessStats(rows);
+  lines.push("");
+  lines.push("=== REGIME BREAKDOWN ===");
+  for (const regime of ["macro_friendly", "risk_on", "risk_off", "mixed"]) {
+    pushStats(
+      lines,
+      `${regime}: Macro Friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH`,
+      solVsEthStats(rows, (row) => strongestSignal(row) && regimeForRow(row) === regime, 60),
+      "  "
+    );
+  }
+
   lines.push("");
   lines.push("=== ROBUSTNESS CHECK: STRONGEST SIGNAL ===");
   lines.push("Signal: Macro Friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH");
@@ -1137,8 +1296,8 @@ function summarize(args) {
   lines.push("Strongest signal confidence:");
   lines.push(`  confidence: ${robustness.confidence}`);
   lines.push(`  sample count: ${robustness.target.samples}`);
-  lines.push(`  active years: ${robustness.years.filter((item) => item.stats.samples > 0).length}/3`);
-  lines.push(`  positive years: ${robustness.years.filter((item) => Number(item.stats.expectancy) > 0 && item.stats.samples >= 10).length}/3`);
+  lines.push(`  active years: ${robustness.years.filter((item) => item.stats.samples > 0).length}/${robustness.years.length}`);
+  lines.push(`  positive years: ${robustness.years.filter((item) => Number(item.stats.expectancy) > 0 && item.stats.samples >= 10).length}/${robustness.years.length}`);
   lines.push(`  max year sample share: ${fmtPct(robustness.target.samples ? Math.max(...robustness.years.map((item) => item.stats.samples)) / robustness.target.samples : null)}`);
   lines.push(`  random baseline advantage: ${fmtSignedPct(Number(robustness.target.expectancy) - Number(robustness.random.avgExpectancy))}`);
 

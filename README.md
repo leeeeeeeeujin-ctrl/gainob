@@ -203,6 +203,7 @@ Local-only backtest utility for checking whether briefing signals had useful for
 
 ```bash
 node scripts/backtest-v1.js run --start=2024-01-01 --end=2026-06-01
+node scripts/backtest-v1.js run --start=2016-01-01 --end=2026-06-01 --out=backtest-v1-2016
 node scripts/backtest-v1.js summarize --file=backtests/backtest-v1.csv
 ```
 
@@ -213,6 +214,14 @@ Defaults:
 - `symbols`: `BTC,ETH,SOL`
 - output: `backtests/backtest-v1.csv` and `backtests/backtest-v1.json`
 - optional input: `backtests/input/*.csv`
+- local provider cache: `backtests/cache/*.json`
+
+Local cache:
+
+- Yahoo Finance and DefiLlama responses are cached locally under `backtests/cache/`.
+- Re-running the same date range uses the local cache first.
+- Use `--refreshCache=true` to fetch fresh provider responses.
+- Generated cache files are local research artifacts and are not committed.
 
 Current no-key sources:
 
@@ -224,6 +233,18 @@ Current limitation:
 
 - Historical BTC dominance, ETH dominance, and TOTAL3 are written as `null` unless optional local CSV inputs are present.
 - Missing source values are written as `null`; the run continues.
+- 2016+ runs are supported, but each metric starts only when its provider has data. Earlier rows remain `null`.
+
+Feature alignment and leakage policy:
+
+- Each row is an `as_of_date` snapshot.
+- Labels start from the first available close after `as_of_date`, not the same-day close.
+- Price and market-structure features use a 1d lag.
+- DXY, US10Y, QQQ use a 1d lag.
+- RRP and TGA use at least a 1d lag.
+- M2SL uses a 30d lag to account for monthly publication delay.
+- Stablecoin Market Cap uses a 1d lag.
+- Same-day close features are not used to predict returns after that same close.
 
 Signal validation summary includes:
 
@@ -250,6 +271,14 @@ Current v1 validation signals:
 
 For TradingView-based signals to produce useful samples, import daily `BTC.D`, `ETH.D`, and `TOTAL3` history from at least `2024-01-01`. If those rows are absent, BTC dominance, ETH dominance, and TOTAL3 signals correctly report `samples: 0`.
 
+For wider historical tests, import TradingView daily history from `2016-01-01` if available:
+
+- `CRYPTOCAP:BTC.D`
+- `CRYPTOCAP:ETH.D`
+- `CRYPTOCAP:TOTAL3`
+
+If only 2024+ TradingView data is present, 2016~2023 rows remain valid but these market-structure fields are `null`.
+
 Validation v2 additions:
 
 - Signal statistics are printed for `30d`, `60d`, and `90d` horizons.
@@ -263,7 +292,7 @@ Validation v3 robustness checks:
   - `Macro Friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH`
   - default robustness horizon: `60d`
 - Robustness output includes:
-  - yearly decomposition for `2024`, `2025`, `2026`
+  - yearly decomposition for every year present in the file
   - BTC dominance regime decomposition: rising, sideways, falling
   - ETH/BTC 1m strength buckets: `0-5%`, `5-10%`, `10%+`
   - TOTAL3 1m strength buckets: `0-5%`, `5-10%`, `10%+`
@@ -332,6 +361,7 @@ It is not an automated trading system, not a production API, and not a confirmed
 
 ```bash
 node scripts/feature-lab-v1.js build --start=2024-01-01 --end=2026-06-01
+node scripts/feature-lab-v1.js build --start=2016-01-01 --end=2026-06-01 --split=walk-forward
 node scripts/feature-lab-v1.js train --target=SOL_outperform_ETH_60d
 node scripts/feature-lab-v1.js report --target=SOL_outperform_ETH_60d
 ```
@@ -340,7 +370,7 @@ What `build` does:
 
 - Runs `backtest_v1` as the source table unless `--source=<csv>` is provided.
 - Builds `feature_lab/feature-lab-v1.csv`.
-- Uses only current and past values for features.
+- Uses the `backtest_v1` as-of-date feature alignment and lag policy.
 - Creates labels from future returns, then excludes every label column from model training.
 
 Feature families:
@@ -367,6 +397,14 @@ Split:
 - validation: `2025`
 - test: `2026`
 - no random shuffle
+
+Walk-forward split:
+
+- Use `--split=walk-forward` for wider historical runs.
+- train: `2016-01-01` through `2023-12-31`
+- validation: `2024`
+- test: `2025+`
+- This is preparation for regime-aware validation; regime-level summary is still reported separately by `backtest_v1 summarize`.
 
 Model v1:
 

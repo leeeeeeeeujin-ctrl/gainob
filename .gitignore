@@ -9,4 +9,5 @@ frontend/.env.local
 backtests/*.csv
 backtests/*.json
 backtests/tmp-*/
+backtests/cache/
 feature_lab/

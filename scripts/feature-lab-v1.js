@@ -9,6 +9,14 @@ const DEFAULT_OUT_DIR = "feature_lab";
 const DEFAULT_FEATURE_FILE = path.join(DEFAULT_OUT_DIR, "feature-lab-v1.csv");
 const DEFAULT_MODEL_DIR = path.join(DEFAULT_OUT_DIR, "models");
 const HORIZONS = [30, 60, 90];
+const FEATURE_LAGS = {
+  price_market_structure: "1d",
+  stablecoin_market_cap: "1d",
+  dxy_us10y_qqq: "1d",
+  rrp_tga: "1d",
+  m2sl: "30d",
+  labels: "start from as_of_date + 1d"
+};
 
 const METRICS = [
   "BTC_price",
@@ -45,6 +53,7 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/feature-lab-v1.js build --start=2024-01-01 --end=2026-06-01",
+    "  node scripts/feature-lab-v1.js build --start=2016-01-01 --end=2026-06-01 --split=walk-forward",
     "  node scripts/feature-lab-v1.js train --target=SOL_outperform_ETH_60d",
     "  node scripts/feature-lab-v1.js report --target=SOL_outperform_ETH_60d"
   ].join("\n");
@@ -158,7 +167,13 @@ function trendDirection(value) {
   return 0;
 }
 
-function splitForDate(date) {
+function splitForDate(date, mode = "legacy") {
+  if (mode === "walk-forward") {
+    if (date >= "2016-01-01" && date < "2024-01-01") return "train";
+    if (date >= "2024-01-01" && date < "2025-01-01") return "validation";
+    if (date >= "2025-01-01") return "test";
+    return "ignore";
+  }
   if (date.startsWith("2024")) return "train";
   if (date.startsWith("2025")) return "validation";
   if (date.startsWith("2026")) return "test";
@@ -184,13 +199,13 @@ function outperformsLabel(leftReturn, rightReturn) {
   return boolNumber(Number(leftReturn) > Number(rightReturn));
 }
 
-function buildFeatureRows(sourceRows) {
+function buildFeatureRows(sourceRows, splitMode = "legacy") {
   const rowsByDate = new Map(sourceRows.map((row) => [row.date, row]));
 
   return sourceRows.map((row) => {
     const out = {
       date: row.date,
-      split: splitForDate(String(row.date))
+      split: splitForDate(String(row.date), splitMode)
     };
 
     for (const metric of METRICS) {
@@ -248,8 +263,10 @@ function runBuild(args) {
         `--start=${args.start}`,
         `--end=${args.end}`,
         `--outDir=${outDir}`,
-        "--out=feature-lab-v1-source"
-      ],
+        "--out=feature-lab-v1-source",
+        args.cacheDir ? `--cacheDir=${args.cacheDir}` : null,
+        args.refreshCache ? `--refreshCache=${args.refreshCache}` : null
+      ].filter(Boolean),
       { stdio: "inherit", shell: false }
     );
     if (result.status !== 0) {
@@ -258,12 +275,13 @@ function runBuild(args) {
   }
 
   const sourceRows = readCsv(sourceFile);
-  const featureRows = buildFeatureRows(sourceRows);
+  const splitMode = args.split || "legacy";
+  const featureRows = buildFeatureRows(sourceRows, splitMode);
   const featureFile = args.out || DEFAULT_FEATURE_FILE;
   writeCsv(featureFile, featureRows);
   fs.writeFileSync(
     featureFile.replace(/\.csv$/i, ".json"),
-    `${JSON.stringify({ meta: buildMeta(featureRows), rows: featureRows }, null, 2)}\n`,
+    `${JSON.stringify({ meta: buildMeta(featureRows, splitMode), rows: featureRows }, null, 2)}\n`,
     "utf8"
   );
 
@@ -273,13 +291,15 @@ function runBuild(args) {
   console.log(`JSON: ${featureFile.replace(/\.csv$/i, ".json")}`);
 }
 
-function buildMeta(rows) {
+function buildMeta(rows, splitMode = "legacy") {
   return {
     generatedAt: new Date().toISOString(),
     rowCount: rows.length,
     featureCount: featureColumns(rows).length,
+    splitMode,
     splitCounts: splitCounts(rows),
-    note: "Feature rows use current and past data only. Labels use future returns and are excluded from model features."
+    lagPolicy: FEATURE_LAGS,
+    note: "Feature rows are built from backtest_v1 as_of_date snapshots. Labels use future returns starting after as_of_date and are excluded from model features."
   };
 }
 
