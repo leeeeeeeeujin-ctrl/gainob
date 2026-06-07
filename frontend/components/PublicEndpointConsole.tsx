@@ -21,6 +21,13 @@ type EndpointResult = {
   error: string | null;
 };
 
+type BatchEntry = {
+  label: string;
+  source: string;
+  url: string | null;
+  manualText: string | null;
+};
+
 const endpointPresets: EndpointPreset[] = [
   {
     id: "gpt-briefing",
@@ -101,6 +108,44 @@ function downloadText(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
+function cleanBatchLine(line: string) {
+  return line
+    .trim()
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/^GET\s+/i, "")
+    .trim();
+}
+
+function parseBatchInput(input: string): BatchEntry[] {
+  return input
+    .split(/\r?\n/)
+    .map(cleanBatchLine)
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("#"))
+    .map((line, index) => {
+      const match = line.match(/https?:\/\/[^\s)]+|\/api\/[^\s)]+/);
+
+      if (!match) {
+        return {
+          label: `Text ${index + 1}`,
+          source: line,
+          url: null,
+          manualText: line
+        };
+      }
+
+      const rawUrl = match[0];
+      const labelPart = line.slice(0, match.index).replace(/[:|-]\s*$/, "").trim();
+      return {
+        label: labelPart || `Endpoint ${index + 1}`,
+        source: line,
+        url: rawUrl.startsWith("/api/") ? buildPublicApiUrl(rawUrl) : rawUrl,
+        manualText: null
+      };
+    });
+}
+
 export function PublicEndpointConsole() {
   const [selectedId, setSelectedId] = useState(endpointPresets[0].id);
   const [paramsById, setParamsById] = useState<Record<string, Record<string, string>>>(
@@ -108,6 +153,16 @@ export function PublicEndpointConsole() {
   );
   const [results, setResults] = useState<EndpointResult[]>([]);
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [batchInput, setBatchInput] = useState(
+    [
+      "GET /api/public/gpt-briefing?profile=liquidity_cycle_v1&timeframe=1h&range=30d",
+      "GET /api/public/direction?timeframe=1h&limit=5&universe=24",
+      "GET /api/public/sector-flow?timeframe=1h&universe=24",
+      "GET /api/public/opportunity?timeframe=1h&universe=24&limit=6"
+    ].join("\n")
+  );
+  const [batchOutput, setBatchOutput] = useState("");
+  const [batchRunning, setBatchRunning] = useState(false);
 
   const selectedPreset = useMemo(
     () => endpointPresets.find((preset) => preset.id === selectedId) || endpointPresets[0],
@@ -200,6 +255,75 @@ export function PublicEndpointConsole() {
     downloadText(`gainob-public-api-results-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`, body || "No results.");
   }
 
+  async function runBatch() {
+    const entries = parseBatchInput(batchInput);
+    const generatedAt = new Date().toISOString();
+    const sections = [
+      "=== GPT PASTED BATCH EXPORT ===",
+      `GENERATED_AT: ${generatedAt}`,
+      `ITEM_COUNT: ${entries.length}`,
+      ""
+    ];
+
+    if (!entries.length) {
+      setBatchOutput([...sections, "No batch items.", "", "=== END GPT PASTED BATCH EXPORT ==="].join("\n"));
+      return;
+    }
+
+    setBatchRunning(true);
+
+    try {
+      for (const entry of entries) {
+        sections.push(`## ${entry.label}`);
+        sections.push(`SOURCE: ${entry.source}`);
+
+        if (entry.manualText) {
+          sections.push("TYPE: text");
+          sections.push("");
+          sections.push(entry.manualText);
+          sections.push("");
+          continue;
+        }
+
+        if (!entry.url) {
+          sections.push("STATUS: unavailable");
+          sections.push("");
+          continue;
+        }
+
+        sections.push(`URL: ${entry.url}`);
+
+        try {
+          const response = await fetch(entry.url, {
+            headers: { accept: "application/json,text/markdown,text/plain" }
+          });
+          const text = prettyPrint(await response.text());
+          sections.push(`STATUS: ${response.status}`);
+          sections.push("");
+          sections.push(text);
+        } catch (error) {
+          sections.push("STATUS: unavailable");
+          sections.push("");
+          sections.push(error instanceof Error ? error.message : "Request failed");
+        }
+
+        sections.push("");
+      }
+
+      sections.push("=== END GPT PASTED BATCH EXPORT ===");
+      setBatchOutput(sections.join("\n"));
+    } finally {
+      setBatchRunning(false);
+    }
+  }
+
+  function downloadBatch() {
+    downloadText(
+      `gainob-gpt-pasted-batch-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.txt`,
+      batchOutput || "No batch output."
+    );
+  }
+
   return (
     <section className="rounded-lg border border-line bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -280,6 +404,46 @@ export function PublicEndpointConsole() {
           </div>
 
           <div className="mt-4 space-y-3">
+            <section className="rounded-lg border border-line bg-white p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink">GPT Paste Batch</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    GPT가 출력한 여러 줄의 endpoint나 텍스트 항목을 그대로 붙여넣고, 하나의 텍스트 결과로 합칩니다.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={runBatch}
+                    disabled={batchRunning}
+                    className="rounded-md bg-moss px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Run Pasted Batch
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadBatch}
+                    disabled={!batchOutput}
+                    className="rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Download Batch TXT
+                  </button>
+                </div>
+              </div>
+              <textarea
+                value={batchInput}
+                onChange={(event) => setBatchInput(event.target.value)}
+                className="mt-3 min-h-36 w-full resize-y rounded-md border border-line bg-slate-50 px-3 py-2 font-mono text-xs leading-5 text-ink outline-none focus:border-moss"
+                spellCheck={false}
+              />
+              {batchOutput && (
+                <pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+                  {batchOutput}
+                </pre>
+              )}
+            </section>
+
             {results.length ? (
               results.map((result) => (
                 <article key={result.id} className="overflow-hidden rounded-lg border border-line bg-white">
