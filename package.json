@@ -12,6 +12,7 @@
     "smoke": "node scripts/smoke-test.js",
     "backtest:v1": "node scripts/backtest-v1.js",
     "feature-lab:v1": "node scripts/feature-lab-v1.js",
+    "feature-lab:v2": "node scripts/feature-lab-v2.js",
     "db:init": "node scripts/db-init.js"
   },
   "engines": {

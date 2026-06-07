@@ -412,6 +412,41 @@ Model v1:
 - No deep learning, no LLM prediction, no production endpoint.
 - Reports train/validation/test accuracy, baseline accuracy, precision, recall, feature importance, overfit warnings, and leakage warnings.
 
+## Feature Lab v2 CLI
+
+Local-only research tool for checking whether Gainob's feature space is compressible into latent factors.
+
+This is not a new prediction model and does not change production APIs. It asks whether 114 feature columns behave like independent variables or whether a smaller market meaning space exists.
+
+```bash
+node scripts/feature-lab-v2.js analyze --file=feature_lab/feature-lab-v1.csv --date=2026-06-01
+```
+
+Outputs:
+
+- `feature_lab/pca_summary.json`
+- `feature_lab/factor_loadings.json`
+- `feature_lab/cluster_summary.json`
+- `feature_lab/compression_test.json`
+- `feature_lab/similar_day_examples.json`
+
+Analysis included:
+
+- Correlation matrix and absolute correlation ranking.
+- Highly correlated feature pairs for `|corr| > 0.8` and `|corr| > 0.9`.
+- PCA explained variance and dimensions needed for 80%, 90%, and 95% cumulative variance.
+- Factor loading summaries for interpreting principal components.
+- KMeans latent regime discovery on 5D, 10D, and 20D PCA spaces with k = 3, 5, 8, 12.
+- Cluster-level year distribution and forward 30d/60d/90d outcomes.
+- PCA compression test for `TOTAL3_positive_60d` using 50, 20, 10, 5, and 3 dimensions.
+- Similar-day search using PCA-space distance.
+
+Interpretation limit:
+
+- A cluster or similar-day match is a structural comparison, not a price prediction.
+- Compression accuracy is diagnostic only. It measures information loss after PCA compression, not trade readiness.
+- If `TOTAL3` history is missing, the `TOTAL3_positive_60d` compression test reports zero usable samples instead of fabricating labels.
+
 Optional local CSV import:
 
 - Put local CSV files under `backtests/input/`.
