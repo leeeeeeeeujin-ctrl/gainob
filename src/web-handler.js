@@ -24,6 +24,7 @@ const { buildLiquidityDashboardSnapshot } = require("./liquidity-dashboard");
 const moduleContext = createModuleContext(modules);
 const app = express();
 const YAHOO_FINANCE_CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
+const COINGECKO_API_BASE_URL = "https://api.coingecko.com/api/v3";
 const SITE_AUTH_COOKIE_NAME = "gainob_site_auth";
 
 // Enable CORS for public API endpoints so external tools (browsers, parsers) can fetch them
@@ -262,14 +263,69 @@ async function upsertTradingViewRows(metric, rows, source = "manual_csv") {
   return written;
 }
 
+async function fetchJsonWithTimeout(url, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "Mozilla/5.0 (compatible; Gainob/1.0)"
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Request failed: ${response.status} ${response.statusText}`);
+    }
+
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function syncLatestTradingViewCurrent() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [global, simple] = await Promise.all([
+    fetchJsonWithTimeout(`${COINGECKO_API_BASE_URL}/global`),
+    fetchJsonWithTimeout(
+      `${COINGECKO_API_BASE_URL}/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_market_cap=true`
+    )
+  ]);
+
+  const btcDominance = Number(global?.data?.market_cap_percentage?.btc);
+  const ethDominance = Number(global?.data?.market_cap_percentage?.eth);
+  const totalMarketCap = Number(global?.data?.total_market_cap?.usd);
+  const btcMarketCap = Number(simple?.bitcoin?.usd_market_cap);
+  const ethMarketCap = Number(simple?.ethereum?.usd_market_cap);
+  const total3 = totalMarketCap - btcMarketCap - ethMarketCap;
+  const rows = [
+    ["BTC_D", btcDominance],
+    ["ETH_D", ethDominance],
+    ["TOTAL3", total3]
+  ].filter(([, value]) => Number.isFinite(value) && value > 0);
+
+  for (const [metric, close] of rows) {
+    await upsertTradingViewRows(metric, [{ date: today, close }], "CoinGecko current");
+  }
+
+  return {
+    date: today,
+    rows: rows.length,
+    source: "CoinGecko current"
+  };
+}
+
 async function getTradingViewSeriesSummary() {
   const result = await query(
     `
       select
         metric,
         count(*)::int as rows,
-        min(date) as start_date,
-        max(date) as end_date,
+        min(date)::text as start_date,
+        max(date)::text as end_date,
         max(updated_at) as updated_at
       from tradingview_series
       group by metric
@@ -3322,10 +3378,18 @@ app.get("/api/private/tradingview", async (request, response) => {
   if (!requireSiteAuth(request, response)) return;
 
   try {
+    let syncError = "";
+    if (hasDatabaseConfig()) {
+      try {
+        await syncLatestTradingViewCurrent();
+      } catch (error) {
+        syncError = error.message;
+      }
+    }
     const summary = hasDatabaseConfig() ? await getTradingViewSeriesSummary() : [];
     response.type("text/html; charset=utf-8").send(renderTradingViewImportPage({
       summary,
-      error: hasDatabaseConfig() ? "" : "DATABASE_URL이 없어 저장소를 사용할 수 없습니다."
+      error: hasDatabaseConfig() ? syncError : "DATABASE_URL이 없어 저장소를 사용할 수 없습니다."
     }));
   } catch (error) {
     response.status(500).type("text/html; charset=utf-8").send(renderTradingViewImportPage({ error: error.message }));
@@ -3340,7 +3404,14 @@ app.get("/api/private/tradingview/summary", async (request, response) => {
       response.status(503).json({ error: "database_not_configured" });
       return;
     }
-    response.json({ series: await getTradingViewSeriesSummary() });
+    let latestSync = null;
+    let syncError = null;
+    try {
+      latestSync = await syncLatestTradingViewCurrent();
+    } catch (error) {
+      syncError = error.message;
+    }
+    response.json({ latestSync, syncError, series: await getTradingViewSeriesSummary() });
   } catch (error) {
     response.status(500).json({ error: error.message });
   }
