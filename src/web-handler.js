@@ -25,6 +25,8 @@ const moduleContext = createModuleContext(modules);
 const app = express();
 const YAHOO_FINANCE_CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 const COINGECKO_API_BASE_URL = "https://api.coingecko.com/api/v3";
+const FRED_GRAPH_CSV_BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv";
+const TREASURY_FISCAL_DATA_BASE_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service";
 const SITE_AUTH_COOKIE_NAME = "gainob_site_auth";
 
 // Enable CORS for public API endpoints so external tools (browsers, parsers) can fetch them
@@ -331,6 +333,210 @@ async function getTradingViewSeriesSummary() {
       group by metric
       order by metric
     `
+  );
+  return result.rows;
+}
+
+function parseFredCsvSeries(text, metric) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  const [headerLine, ...lines] = trimmed.split(/\r?\n/);
+  const headers = splitCsvLine(headerLine).map((header) => String(header).trim());
+  const dateIndex = headers.findIndex((header) => header.toLowerCase() === "observation_date" || header.toLowerCase() === "date");
+  const valueIndex = headers.findIndex((header) => header.toUpperCase() === metric);
+
+  if (dateIndex === -1 || valueIndex === -1) {
+    throw new Error(`FRED CSV missing date or ${metric} column.`);
+  }
+
+  return lines
+    .filter(Boolean)
+    .map((line) => {
+      const values = splitCsvLine(line);
+      const date = String(values[dateIndex] || "").slice(0, 10);
+      const close = Number(values[valueIndex]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close)) {
+        return null;
+      }
+      return { date, close };
+    })
+    .filter(Boolean);
+}
+
+async function fetchFredSeries(metric, startDate) {
+  const url = `${FRED_GRAPH_CSV_BASE_URL}?id=${encodeURIComponent(metric)}&cosd=${encodeURIComponent(startDate)}`;
+  const response = await fetch(url, {
+    headers: {
+      accept: "text/csv,*/*",
+      "user-agent": "Mozilla/5.0 (compatible; Gainob/1.0)"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`FRED ${metric} request failed: ${response.status}`);
+  }
+
+  return parseFredCsvSeries(await response.text(), metric);
+}
+
+async function fetchTreasuryTgaSeries(startDate) {
+  const url = new URL(`${TREASURY_FISCAL_DATA_BASE_URL}/v1/accounting/dts/operating_cash_balance`);
+  url.searchParams.set("fields", "record_date,account_type,open_today_bal");
+  url.searchParams.set("filter", `record_date:gte:${startDate},account_type:eq:Treasury General Account (TGA) Closing Balance`);
+  url.searchParams.set("sort", "record_date");
+  url.searchParams.set("page[size]", "10000");
+
+  const payload = await fetchJsonWithTimeout(url.toString(), 20_000);
+  return (Array.isArray(payload?.data) ? payload.data : [])
+    .map((row) => {
+      const date = String(row.record_date || "").slice(0, 10);
+      const valueMillions = Number(row.open_today_bal);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(valueMillions)) {
+        return null;
+      }
+      return {
+        date,
+        close: Number((valueMillions / 1000).toFixed(4))
+      };
+    })
+    .filter(Boolean);
+}
+
+async function upsertMacroRows(metric, rows, source) {
+  if (!rows.length) return 0;
+  let written = 0;
+
+  for (let index = 0; index < rows.length; index += 500) {
+    const chunk = rows.slice(index, index + 500);
+    const values = [];
+    const placeholders = chunk.map((row, rowIndex) => {
+      const base = rowIndex * 4;
+      values.push(metric, row.date, row.close, source);
+      return `($${base + 1}, $${base + 2}::date, $${base + 3}::numeric, $${base + 4})`;
+    });
+
+    await query(
+      `
+        insert into macro_series (metric, date, close, source)
+        values ${placeholders.join(",")}
+        on conflict (metric, date)
+        do update set
+          close = excluded.close,
+          source = excluded.source,
+          updated_at = now()
+      `,
+      values
+    );
+    written += chunk.length;
+  }
+
+  return written;
+}
+
+function normalizeMacroMetric(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  const aliases = {
+    M2: "M2SL",
+    M2SL: "M2SL",
+    RRP: "RRPONTSYD",
+    RRPONTSYD: "RRPONTSYD",
+    TGA: "TGA"
+  };
+  return aliases[normalized] || null;
+}
+
+function defaultMacroStartDate() {
+  return process.env.MACRO_SYNC_START_DATE || "2024-01-01";
+}
+
+async function syncMacroLiquiditySeries(startDate = defaultMacroStartDate()) {
+  const tasks = [
+    ["M2SL", "FRED M2SL", () => fetchFredSeries("M2SL", startDate)],
+    ["RRPONTSYD", "FRED RRPONTSYD", () => fetchFredSeries("RRPONTSYD", startDate)],
+    ["TGA", "Treasury FiscalData DTS", () => fetchTreasuryTgaSeries(startDate)]
+  ];
+  const results = [];
+
+  for (const [metric, source, loader] of tasks) {
+    try {
+      const rows = await loader();
+      const written = await upsertMacroRows(metric, rows, source);
+      results.push({ metric, source, rows: written, error: null });
+    } catch (error) {
+      results.push({ metric, source, rows: 0, error: error.message });
+    }
+  }
+
+  return {
+    startDate,
+    syncedAt: new Date().toISOString(),
+    results
+  };
+}
+
+function valueOnOrBeforeRows(rows, date) {
+  const target = Date.parse(`${date}T00:00:00Z`);
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (Date.parse(`${rows[index].date}T00:00:00Z`) <= target) {
+      return Number(rows[index].close);
+    }
+  }
+  return null;
+}
+
+function pctChangeBetween(current, previous) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
+  return Number((((current - previous) / previous) * 100).toFixed(4));
+}
+
+async function getMacroSeriesSummary() {
+  const result = await query(
+    `
+      select metric, date::text as date, close::float as close, source, updated_at
+      from macro_series
+      order by metric, date
+    `
+  );
+  const grouped = new Map();
+
+  for (const row of result.rows) {
+    if (!grouped.has(row.metric)) grouped.set(row.metric, []);
+    grouped.get(row.metric).push(row);
+  }
+
+  return Array.from(grouped.entries()).map(([metric, rows]) => {
+    const latest = rows.at(-1) || null;
+    const latestDate = latest?.date || null;
+    const current = latest ? Number(latest.close) : null;
+    const dateMinus = (days) => latestDate ? new Date(Date.parse(`${latestDate}T00:00:00Z`) - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : null;
+
+    return {
+      metric,
+      rows: rows.length,
+      start_date: rows[0]?.date || null,
+      end_date: latestDate,
+      current,
+      unit: "USD billions",
+      source: latest?.source || null,
+      updated_at: latest?.updated_at || null,
+      changes: {
+        "7d": pctChangeBetween(current, valueOnOrBeforeRows(rows, dateMinus(7))),
+        "30d": pctChangeBetween(current, valueOnOrBeforeRows(rows, dateMinus(30))),
+        "90d": pctChangeBetween(current, valueOnOrBeforeRows(rows, dateMinus(90)))
+      }
+    };
+  });
+}
+
+async function getMacroSeries(metric) {
+  const result = await query(
+    `
+      select metric, date::text as date, close::float as close, source, updated_at
+      from macro_series
+      where metric = $1
+      order by date
+    `,
+    [metric]
   );
   return result.rows;
 }
@@ -3452,6 +3658,76 @@ app.post("/api/private/tradingview/import", async (request, response) => {
       return;
     }
     response.status(400).type("text/html; charset=utf-8").send(renderTradingViewImportPage({ error: error.message }));
+  }
+});
+
+app.get("/api/private/macro/summary", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      response.status(503).json({ error: "database_not_configured" });
+      return;
+    }
+
+    const sync = String(request.query.sync || "true").toLowerCase() !== "false";
+    const startDate = String(request.query.startDate || defaultMacroStartDate());
+    let latestSync = null;
+
+    if (sync) {
+      latestSync = await syncMacroLiquiditySeries(startDate);
+    }
+
+    response.json({
+      latestSync,
+      series: await getMacroSeriesSummary()
+    });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/private/macro/sync", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      response.status(503).json({ error: "database_not_configured" });
+      return;
+    }
+
+    const startDate = String(request.body?.startDate || request.query.startDate || defaultMacroStartDate());
+    response.json({
+      latestSync: await syncMacroLiquiditySeries(startDate),
+      series: await getMacroSeriesSummary()
+    });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/private/macro/series", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      response.status(503).json({ error: "database_not_configured" });
+      return;
+    }
+
+    const metric = normalizeMacroMetric(request.query.metric);
+    if (!metric) {
+      response.status(400).json({ error: "Unsupported metric. Use M2SL, RRPONTSYD, or TGA." });
+      return;
+    }
+
+    response.json({
+      metric,
+      unit: "USD billions",
+      series: await getMacroSeries(metric)
+    });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
   }
 });
 

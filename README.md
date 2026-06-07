@@ -299,6 +299,44 @@ Database setup:
 npm run db:init
 ```
 
+## Private Macro Liquidity Data
+
+Macro liquidity data is stored separately from TradingView market structure data.
+
+Private endpoints:
+
+```http
+GET /api/private/macro/summary
+GET /api/private/macro/summary?sync=false
+POST /api/private/macro/sync
+GET /api/private/macro/series?metric=M2SL
+```
+
+Supported v1 metrics:
+
+- `M2SL`: FRED M2 money stock, monthly, USD billions
+- `RRPONTSYD`: FRED overnight reverse repo, daily, USD billions
+- `TGA`: Treasury FiscalData Daily Treasury Statement TGA closing balance, daily, normalized to USD billions
+
+Storage:
+
+```text
+macro_series
+- metric
+- date
+- close
+- source
+- updated_at
+```
+
+Usage in the frontend:
+
+- Open the main dashboard.
+- Use `Public Endpoint Console`.
+- `Macro Liquidity Data` is a separate panel from `TradingView Data`.
+- `Refresh Macro` reads current DB rows.
+- `Sync Macro` pulls official no-key source data and upserts it.
+
 Historical dominance / TOTAL3 provider TODO:
 
 - CoinGecko Pro:

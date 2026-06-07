@@ -36,6 +36,18 @@ type TradingViewSummaryRow = {
   updated_at: string | null;
 };
 
+type MacroSummaryRow = {
+  metric: string;
+  rows: number;
+  start_date: string | null;
+  end_date: string | null;
+  current: number | null;
+  unit: string;
+  source: string | null;
+  updated_at: string | null;
+  changes?: Record<string, number | null>;
+};
+
 const endpointPresets: EndpointPreset[] = [
   {
     id: "gpt-briefing",
@@ -99,6 +111,13 @@ const endpointPresets: EndpointPreset[] = [
     path: "/api/private/tradingview/summary",
     params: {},
     description: "Private imported BTC.D, ETH.D, TOTAL3 storage status"
+  },
+  {
+    id: "macro-summary",
+    label: "Macro Liquidity Summary",
+    path: "/api/private/macro/summary",
+    params: { sync: "true" },
+    description: "Private M2, RRP, TGA macro liquidity storage status"
   }
 ];
 
@@ -174,7 +193,8 @@ export function PublicEndpointConsole() {
       "GET /api/public/direction?timeframe=1h&limit=5&universe=24",
       "GET /api/public/sector-flow?timeframe=1h&universe=24",
       "GET /api/public/opportunity?timeframe=1h&universe=24&limit=6",
-      "GET /api/private/tradingview/summary"
+      "GET /api/private/tradingview/summary",
+      "GET /api/private/macro/summary"
     ].join("\n")
   );
   const [batchOutput, setBatchOutput] = useState("");
@@ -186,6 +206,11 @@ export function PublicEndpointConsole() {
   const [tradingViewMessage, setTradingViewMessage] = useState("");
   const [tradingViewError, setTradingViewError] = useState("");
   const [tradingViewLoading, setTradingViewLoading] = useState(false);
+  const [macroSummary, setMacroSummary] = useState<MacroSummaryRow[]>([]);
+  const [macroMessage, setMacroMessage] = useState("");
+  const [macroError, setMacroError] = useState("");
+  const [macroLoading, setMacroLoading] = useState(false);
+  const [macroStartDate, setMacroStartDate] = useState("2024-01-01");
 
   const selectedPreset = useMemo(
     () => endpointPresets.find((preset) => preset.id === selectedId) || endpointPresets[0],
@@ -195,6 +220,7 @@ export function PublicEndpointConsole() {
 
   useEffect(() => {
     void loadTradingViewSummary();
+    void loadMacroSummary(false);
   }, []);
 
   function updateParam(key: string, value: string) {
@@ -309,6 +335,40 @@ export function PublicEndpointConsole() {
       setTradingViewError(error instanceof Error ? error.message : "TradingView CSV import failed");
     } finally {
       setTradingViewLoading(false);
+    }
+  }
+
+  async function loadMacroSummary(sync = false) {
+    setMacroLoading(true);
+    setMacroError("");
+    if (sync) setMacroMessage("");
+
+    try {
+      const response = await fetch(buildPublicApiUrl("/api/private/macro/summary", {
+        sync,
+        startDate: sync ? macroStartDate : ""
+      }), {
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      setMacroSummary(Array.isArray(payload.series) ? payload.series : []);
+      if (sync) {
+        const resultText = Array.isArray(payload.latestSync?.results)
+          ? payload.latestSync.results.map((item: { metric: string; rows: number; error: string | null }) => `${item.metric}:${item.error ? "error" : item.rows}`).join(", ")
+          : "sync complete";
+        setMacroMessage(resultText);
+      }
+    } catch (error) {
+      setMacroSummary([]);
+      setMacroError(error instanceof Error ? error.message : "Macro summary request failed");
+    } finally {
+      setMacroLoading(false);
     }
   }
 
@@ -579,6 +639,83 @@ export function PublicEndpointConsole() {
                 </button>
                 {tradingViewMessage && <span className="text-xs font-semibold text-moss">{tradingViewMessage}</span>}
                 {tradingViewError && <span className="text-xs font-semibold text-brick">{tradingViewError}</span>}
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-line bg-white p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-ink">Macro Liquidity Data</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    M2, RRP, TGA를 공식 no-key 소스에서 동기화하고 별도 거시 요약으로 조회합니다.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => loadMacroSummary(false)}
+                    disabled={macroLoading}
+                    className="rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Refresh Macro
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => loadMacroSummary(true)}
+                    disabled={macroLoading}
+                    className="rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Sync Macro
+                  </button>
+                </div>
+              </div>
+
+              <label className="mt-3 block text-xs font-semibold text-slate-500">
+                Sync Start Date
+                <input
+                  value={macroStartDate}
+                  onChange={(event) => setMacroStartDate(event.target.value)}
+                  className="mt-1 w-full rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-ink outline-none focus:border-moss md:max-w-48"
+                />
+              </label>
+
+              <div className="mt-3 overflow-hidden rounded-md border border-line">
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Metric</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Rows</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Current</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">30d</th>
+                      <th className="border-b border-line px-3 py-2 font-semibold">Range</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {macroSummary.length ? (
+                      macroSummary.map((row) => (
+                        <tr key={row.metric}>
+                          <td className="border-b border-line px-3 py-2 font-semibold text-ink">{row.metric}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.rows}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.current === null ? "-" : Number(row.current).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.changes?.["30d"] === null || row.changes?.["30d"] === undefined ? "-" : `${row.changes["30d"]}%`}</td>
+                          <td className="border-b border-line px-3 py-2 text-slate-600">{row.start_date || "-"} to {row.end_date || "-"}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="px-3 py-3 text-slate-500">
+                          {macroLoading ? "Loading..." : "No macro liquidity rows stored yet."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-500">Endpoints: /api/private/macro/summary, /api/private/macro/sync, /api/private/macro/series?metric=M2SL</span>
+                {macroMessage && <span className="text-xs font-semibold text-moss">{macroMessage}</span>}
+                {macroError && <span className="text-xs font-semibold text-brick">{macroError}</span>}
               </div>
             </section>
 

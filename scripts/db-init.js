@@ -163,6 +163,20 @@ const statements = [
   `
     create index if not exists tradingview_series_metric_date_idx
     on tradingview_series(metric, date);
+  `,
+  `
+    create table if not exists macro_series (
+      metric text not null,
+      date date not null,
+      close numeric not null,
+      source text,
+      updated_at timestamptz not null default now(),
+      primary key (metric, date)
+    );
+  `,
+  `
+    create index if not exists macro_series_metric_date_idx
+    on macro_series(metric, date);
   `
 ];
 
