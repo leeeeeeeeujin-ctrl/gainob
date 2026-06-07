@@ -210,7 +210,15 @@ function valueOnOrAfter(series, date) {
 }
 
 function pctChange(current, previous) {
-  if (!Number.isFinite(Number(current)) || !Number.isFinite(Number(previous)) || Number(previous) === 0) {
+  if (
+    current === null ||
+    current === undefined ||
+    previous === null ||
+    previous === undefined ||
+    !Number.isFinite(Number(current)) ||
+    !Number.isFinite(Number(previous)) ||
+    Number(previous) === 0
+  ) {
     return null;
   }
   return Number((((Number(current) - Number(previous)) / Number(previous)) * 100).toFixed(4));
