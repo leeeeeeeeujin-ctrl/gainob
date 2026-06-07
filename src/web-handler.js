@@ -2167,6 +2167,31 @@ async function createUserSession(userId, request, response) {
 }
 
 app.use(express.json());
+app.get("/api/frontend", (request, response, next) => {
+  const frontendOutDir = path.join(__dirname, "..", "frontend", "out");
+  const requestedPath = String(request.query.path || "").replace(/^\/+/, "");
+  const targetPath = requestedPath ? path.join(frontendOutDir, requestedPath) : path.join(frontendOutDir, "index.html");
+  const resolvedTarget = path.resolve(targetPath);
+  const resolvedRoot = path.resolve(frontendOutDir);
+
+  if (!resolvedTarget.startsWith(resolvedRoot)) {
+    response.status(400).send("Invalid frontend path.");
+    return;
+  }
+
+  fs.stat(resolvedTarget, (statError, stats) => {
+    if (!statError && stats.isFile()) {
+      response.sendFile(resolvedTarget);
+      return;
+    }
+
+    response.sendFile(path.join(frontendOutDir, "index.html"), (sendError) => {
+      if (sendError) {
+        next();
+      }
+    });
+  });
+});
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.get("/api/health", (_request, response) => {
