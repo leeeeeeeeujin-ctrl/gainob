@@ -324,6 +324,56 @@ Sample Size Warning:
 Data Gaps:
 ```
 
+## Feature Lab v1 CLI
+
+Local-only research tool for moving from hand-written signal checks to feature-based validation.
+
+It is not an automated trading system, not a production API, and not a confirmed prediction engine. It is only for checking which Gainob features survive time-based validation without future data leakage.
+
+```bash
+node scripts/feature-lab-v1.js build --start=2024-01-01 --end=2026-06-01
+node scripts/feature-lab-v1.js train --target=SOL_outperform_ETH_60d
+node scripts/feature-lab-v1.js report --target=SOL_outperform_ETH_60d
+```
+
+What `build` does:
+
+- Runs `backtest_v1` as the source table unless `--source=<csv>` is provided.
+- Builds `feature_lab/feature-lab-v1.csv`.
+- Uses only current and past values for features.
+- Creates labels from future returns, then excludes every label column from model training.
+
+Feature families:
+
+- BTC/ETH/SOL prices
+- ETH/BTC and SOL/ETH
+- BTC.D, ETH.D, TOTAL3
+- Stablecoin Market Cap
+- M2SL, RRPONTSYD, TGA
+- DXY, US10Y, QQQ
+- 7d, 30d, 90d changes and trend direction
+- rule flags such as `macro_friendly`, `eth_btc_up`, `total3_up`, `btc_d_down`, `qqq_up`, `dxy_down`
+
+Labels:
+
+- BTC/ETH/SOL future returns for 30d, 60d, 90d
+- ETH outperform BTC for 30d, 60d, 90d
+- SOL outperform ETH for 30d, 60d, 90d
+- TOTAL3 positive for 30d, 60d, 90d
+
+Split:
+
+- train: `2024`
+- validation: `2025`
+- test: `2026`
+- no random shuffle
+
+Model v1:
+
+- Logistic regression only.
+- No deep learning, no LLM prediction, no production endpoint.
+- Reports train/validation/test accuracy, baseline accuracy, precision, recall, feature importance, overfit warnings, and leakage warnings.
+
 Optional local CSV import:
 
 - Put local CSV files under `backtests/input/`.
