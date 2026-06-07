@@ -245,9 +245,69 @@ Current v1 validation signals:
 - `ETH/BTC up + TOTAL3 up -> SOL outperform ETH`
 - `M2 up + RRP down -> BTC/ETH/SOL average return`
 - `M2 up + RRP down + TGA down -> BTC/ETH/SOL average return`
+- `M2 up + RRP down + TGA down + TOTAL3 up -> BTC/ETH/SOL average return`
 - `Macro friendly + ETH/BTC up + TOTAL3 up`
 
 For TradingView-based signals to produce useful samples, import daily `BTC.D`, `ETH.D`, and `TOTAL3` history from at least `2024-01-01`. If those rows are absent, BTC dominance, ETH dominance, and TOTAL3 signals correctly report `samples: 0`.
+
+Validation v2 additions:
+
+- Signal statistics are printed for `30d`, `60d`, and `90d` horizons.
+- Ranking now includes expectancy, sample count, win rate, and a confidence score.
+- Signals with fewer than 20 samples are flagged `LOW_SAMPLE`; fewer than 50 samples are flagged `THIN_SAMPLE`.
+- Lead-lag output checks whether `M2 up + RRP down + TGA down` is followed by changes in `BTC.D`, `ETH.D`, `TOTAL3`, and `SOL vs ETH`.
+
+Credit spread research TODO:
+
+- `BAMLH0A0HYM2`: ICE BofA US High Yield Index Option-Adjusted Spread.
+  - Source: FRED.
+  - Units: percent.
+  - Frequency: daily on FRED series pages and CSV graph endpoint.
+  - History: available historically on FRED, but availability can be subject to FRED/ICE access changes.
+  - No-key: FRED graph CSV generally works without an API key, using `https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLH0A0HYM2`.
+- `BAMLC0A4CBBB`: ICE BofA BBB US Corporate Index Option-Adjusted Spread.
+  - Source: FRED.
+  - Units: percent.
+  - Frequency: daily.
+  - History: historical series available from the FRED graph endpoint.
+  - No-key: FRED graph CSV generally works without an API key, using `https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLC0A4CBBB`.
+- These are candidates for `macro_series`, but they are not part of default briefings yet.
+
+full_cycle_v1 draft:
+
+```text
+[MACRO LIQUIDITY]
+M2:
+RRP:
+TGA:
+Net Liquidity Proxy:
+Credit Spread:
+
+[MARKET STRUCTURE]
+BTC.D:
+ETH.D:
+TOTAL3:
+ETH/BTC:
+SOL/ETH:
+
+[CRYPTO INTERNAL FLOW]
+Stablecoin Market Cap:
+BTC ETF Flow:
+ETH ETF Flow:
+Sector Breadth:
+
+[POSITION EV]
+Top Positive Expectancy Signals:
+Weak / Low Sample Signals:
+Current Horizon Preference:
+
+[RISKS]
+Macro Deterioration:
+Credit Spread Widening:
+Dominance Reversal:
+Sample Size Warning:
+Data Gaps:
+```
 
 Optional local CSV import:
 

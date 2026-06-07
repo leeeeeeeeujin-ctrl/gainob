@@ -63,7 +63,9 @@ const CSV_COLUMNS = [
   "TGA_1m_change",
   "DXY_1m_change",
   "QQQ_1m_change",
-  "future_return_TOTAL3_30d"
+  "future_return_TOTAL3_30d",
+  "future_return_TOTAL3_60d",
+  "future_return_TOTAL3_90d"
 ];
 
 function parseArgs(argv) {
@@ -376,7 +378,6 @@ function buildRows({ dates, seriesByLabel, horizons }) {
   }
 
   return dates.map((date) => {
-    const total3Return30d = futureReturn(total3Series, date, 30);
     const row = {
       date,
       BTC_price: valueOnOrBefore(btc, date),
@@ -403,14 +404,14 @@ function buildRows({ dates, seriesByLabel, horizons }) {
       RRPONTSYD_1m_change: laggedChange(rrp, date, 30),
       TGA_1m_change: laggedChange(tga, date, 30),
       DXY_1m_change: laggedChange(dxy, date, 30),
-      QQQ_1m_change: laggedChange(qqq, date, 30),
-      future_return_TOTAL3_30d: total3Return30d
+      QQQ_1m_change: laggedChange(qqq, date, 30)
     };
 
     for (const horizon of horizons) {
       for (const symbol of DEFAULT_SYMBOLS) {
         row[`future_return_${symbol}_${horizon}d`] = futureReturn(seriesByLabel[symbol] || [], date, horizon);
       }
+      row[`future_return_TOTAL3_${horizon}d`] = futureReturn(total3Series, date, horizon);
     }
 
     row.ETH_outperforms_BTC_30d = boolValue(row.future_return_ETH_30d !== null && row.future_return_BTC_30d !== null
@@ -419,7 +420,7 @@ function buildRows({ dates, seriesByLabel, horizons }) {
     row.SOL_outperforms_ETH_30d = boolValue(row.future_return_SOL_30d !== null && row.future_return_ETH_30d !== null
       ? row.future_return_SOL_30d > row.future_return_ETH_30d
       : null);
-    row.TOTAL3_positive_30d = boolValue(total3Return30d !== null ? total3Return30d > 0 : null);
+    row.TOTAL3_positive_30d = boolValue(row.future_return_TOTAL3_30d !== null ? row.future_return_TOTAL3_30d > 0 : null);
     row.BTC_positive_30d = boolValue(row.future_return_BTC_30d !== null ? row.future_return_BTC_30d > 0 : null);
 
     return row;
@@ -622,24 +623,28 @@ function fmtSignedPct(value) {
   return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(4)}%`;
 }
 
-function relativeReturn(row, longSymbol, shortSymbol) {
-  const longReturn = row[`future_return_${longSymbol}_30d`];
-  const shortReturn = row[`future_return_${shortSymbol}_30d`];
+function relativeReturn(row, longSymbol, shortSymbol, horizon = 30) {
+  const longReturn = row[`future_return_${longSymbol}_${horizon}d`];
+  const shortReturn = row[`future_return_${shortSymbol}_${horizon}d`];
   if (!Number.isFinite(Number(longReturn)) || !Number.isFinite(Number(shortReturn))) return null;
   return Number((Number(longReturn) - Number(shortReturn)).toFixed(4));
 }
 
-function averageAssetReturn(row) {
-  return average([row.future_return_BTC_30d, row.future_return_ETH_30d, row.future_return_SOL_30d]);
+function averageAssetReturn(row, horizon = 30) {
+  return average([
+    row[`future_return_BTC_${horizon}d`],
+    row[`future_return_ETH_${horizon}d`],
+    row[`future_return_SOL_${horizon}d`]
+  ]);
 }
 
-function signalStats(rows, signal) {
+function signalStats(rows, signal, horizon) {
   const samples = rows
     .filter(signal.condition)
     .map((row) => ({
       row,
-      win: signal.win(row),
-      ret: signal.ret(row)
+      win: signal.win(row, horizon),
+      ret: signal.ret(row, horizon)
     }))
     .filter((sample) => sample.win !== null && sample.win !== undefined && Number.isFinite(Number(sample.ret)));
   const returns = samples.map((sample) => Number(sample.ret));
@@ -651,8 +656,23 @@ function signalStats(rows, signal) {
     avgReturn: average(returns),
     medianReturn: median(returns),
     maxDrawdown: minValue(returns),
-    expectancy: average(returns)
+    expectancy: average(returns),
+    confidenceScore: confidenceScore(samples.length, samples.length ? samples.filter((sample) => sample.win).length / samples.length : null, average(returns))
   };
+}
+
+function confidenceScore(samples, winRate, expectancy) {
+  if (!samples || winRate === null || expectancy === null || !Number.isFinite(Number(expectancy))) return null;
+  const sampleFactor = Math.min(1, Math.log10(samples + 1) / Math.log10(200));
+  const winFactor = Math.max(0, Math.min(1, Number(winRate)));
+  const expectancyFactor = Math.max(0, Math.min(1, (Number(expectancy) + 10) / 30));
+  return Number(((sampleFactor * 0.4 + winFactor * 0.3 + expectancyFactor * 0.3) * 100).toFixed(2));
+}
+
+function sampleWarning(samples) {
+  if (samples < 20) return "LOW_SAMPLE";
+  if (samples < 50) return "THIN_SAMPLE";
+  return "";
 }
 
 function buildSignals() {
@@ -660,44 +680,47 @@ function buildSignals() {
     {
       name: "ETH/BTC up -> ETH outperform BTC",
       condition: (row) => Number(row.ETH_BTC_1m_change) > 0,
-      win: (row) => row.ETH_outperforms_BTC_30d,
-      ret: (row) => relativeReturn(row, "ETH", "BTC")
+      win: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon)
     },
     {
       name: "TOTAL3 1m up -> TOTAL3 future positive",
       condition: (row) => Number(row.TOTAL3_1m_change) > 0,
-      win: (row) => row.TOTAL3_positive_30d,
-      ret: (row) => row.future_return_TOTAL3_30d
+      win: (row, horizon) => {
+        const ret = row[`future_return_TOTAL3_${horizon}d`];
+        return ret === null || ret === undefined ? null : Number(ret) > 0;
+      },
+      ret: (row, horizon) => row[`future_return_TOTAL3_${horizon}d`]
     },
     {
       name: "BTC.D 1m down -> ETH outperform BTC",
       condition: (row) => Number(row.BTC_dominance_1m_change) < 0,
-      win: (row) => row.ETH_outperforms_BTC_30d,
-      ret: (row) => relativeReturn(row, "ETH", "BTC")
+      win: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon)
     },
     {
       name: "BTC.D down + ETH.D up -> ETH outperform BTC",
       condition: (row) => Number(row.BTC_dominance_1m_change) < 0 && Number(row.ETH_dominance_1m_change) > 0,
-      win: (row) => row.ETH_outperforms_BTC_30d,
-      ret: (row) => relativeReturn(row, "ETH", "BTC")
+      win: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon)
     },
     {
       name: "ETH/BTC up + TOTAL3 up -> ETH outperform BTC",
       condition: (row) => Number(row.ETH_BTC_1m_change) > 0 && Number(row.TOTAL3_1m_change) > 0,
-      win: (row) => row.ETH_outperforms_BTC_30d,
-      ret: (row) => relativeReturn(row, "ETH", "BTC")
+      win: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon)
     },
     {
       name: "ETH/BTC up + TOTAL3 up -> SOL outperform ETH",
       condition: (row) => Number(row.ETH_BTC_1m_change) > 0 && Number(row.TOTAL3_1m_change) > 0,
-      win: (row) => row.SOL_outperforms_ETH_30d,
-      ret: (row) => relativeReturn(row, "SOL", "ETH")
+      win: (row, horizon) => relativeReturn(row, "SOL", "ETH", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "SOL", "ETH", horizon)
     },
     {
       name: "M2 up + RRP down -> BTC/ETH/SOL average return",
       condition: (row) => Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0,
-      win: (row) => {
-        const ret = averageAssetReturn(row);
+      win: (row, horizon) => {
+        const ret = averageAssetReturn(row, horizon);
         return ret === null ? null : ret > 0;
       },
       ret: averageAssetReturn
@@ -705,8 +728,21 @@ function buildSignals() {
     {
       name: "M2 up + RRP down + TGA down -> BTC/ETH/SOL average return",
       condition: (row) => Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0 && Number(row.TGA_1m_change) < 0,
-      win: (row) => {
-        const ret = averageAssetReturn(row);
+      win: (row, horizon) => {
+        const ret = averageAssetReturn(row, horizon);
+        return ret === null ? null : ret > 0;
+      },
+      ret: averageAssetReturn
+    },
+    {
+      name: "M2 up + RRP down + TGA down + TOTAL3 up -> BTC/ETH/SOL average return",
+      condition: (row) =>
+        Number(row.M2SL_1m_change) > 0 &&
+        Number(row.RRPONTSYD_1m_change) < 0 &&
+        Number(row.TGA_1m_change) < 0 &&
+        Number(row.TOTAL3_1m_change) > 0,
+      win: (row, horizon) => {
+        const ret = averageAssetReturn(row, horizon);
         return ret === null ? null : ret > 0;
       },
       ret: averageAssetReturn
@@ -719,8 +755,8 @@ function buildSignals() {
         Number(row.TGA_1m_change) < 0 &&
         Number(row.ETH_BTC_1m_change) > 0 &&
         Number(row.TOTAL3_1m_change) > 0,
-      win: (row) => row.ETH_outperforms_BTC_30d,
-      ret: (row) => relativeReturn(row, "ETH", "BTC")
+      win: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "ETH", "BTC", horizon)
     },
     {
       name: "Macro friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH",
@@ -730,10 +766,62 @@ function buildSignals() {
         Number(row.TGA_1m_change) < 0 &&
         Number(row.ETH_BTC_1m_change) > 0 &&
         Number(row.TOTAL3_1m_change) > 0,
-      win: (row) => row.SOL_outperforms_ETH_30d,
-      ret: (row) => relativeReturn(row, "SOL", "ETH")
+      win: (row, horizon) => relativeReturn(row, "SOL", "ETH", horizon) > 0,
+      ret: (row, horizon) => relativeReturn(row, "SOL", "ETH", horizon)
     }
   ];
+}
+
+function rowsByDate(rows) {
+  return new Map(rows.map((row) => [row.date, row]));
+}
+
+function rowAfter(dateMap, date, horizon) {
+  const target = isoDate(parseDate(date, "date") + horizon * DAY_MS);
+  return dateMap.get(target) || null;
+}
+
+function forwardPctChange(row, futureRow, field) {
+  if (!row || !futureRow) return null;
+  return pctChange(futureRow[field], row[field]);
+}
+
+function macroFriendly(row) {
+  return Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0 && Number(row.TGA_1m_change) < 0;
+}
+
+function leadLagStats(rows, horizons) {
+  const dateMap = rowsByDate(rows);
+  const macroRows = rows.filter(macroFriendly);
+
+  return horizons.map((horizon) => {
+    const btcDomChanges = [];
+    const ethDomChanges = [];
+    const total3Changes = [];
+    const solOutperformance = [];
+
+    for (const row of macroRows) {
+      const future = rowAfter(dateMap, row.date, horizon);
+      const btcDom = forwardPctChange(row, future, "BTC_dominance");
+      const ethDom = forwardPctChange(row, future, "ETH_dominance");
+      const total3 = forwardPctChange(row, future, "TOTAL3");
+      const solEth = future ? relativeReturn(row, "SOL", "ETH", horizon) : null;
+      if (btcDom !== null) btcDomChanges.push(btcDom);
+      if (ethDom !== null) ethDomChanges.push(ethDom);
+      if (total3 !== null) total3Changes.push(total3);
+      if (solEth !== null) solOutperformance.push(solEth);
+    }
+
+    return {
+      horizon,
+      samples: macroRows.length,
+      usableSamples: Math.max(btcDomChanges.length, ethDomChanges.length, total3Changes.length, solOutperformance.length),
+      btcDominanceAvgChange: average(btcDomChanges),
+      ethDominanceAvgChange: average(ethDomChanges),
+      total3AvgChange: average(total3Changes),
+      solOutperformEthAvg: average(solOutperformance)
+    };
+  });
 }
 
 function summarize(args) {
@@ -769,24 +857,45 @@ function summarize(args) {
     `DXY down + QQQ up -> risk asset avg 30d return: ${fmtNumber(average(riskReturns))}% (n=${dxyDownQqqUp.length})`
   ];
 
-  const signalResults = buildSignals().map((signal) => signalStats(rows, signal));
+  const horizons = parseHorizons(args.horizons || "30d,60d,90d");
+  const signals = buildSignals();
+  const signalResults = signals.flatMap((signal) => horizons.map((horizon) => ({
+    ...signalStats(rows, signal, horizon),
+    horizon
+  })));
   lines.push("");
   lines.push("=== SIGNAL VALIDATION ===");
-  for (const result of signalResults) {
+  for (const signal of signals) {
     lines.push("");
-    lines.push(result.name);
-    lines.push(`samples: ${result.samples}`);
-    lines.push(`win rate: ${fmtPct(result.winRate)}`);
-    lines.push(`avg return: ${fmtSignedPct(result.avgReturn)}`);
-    lines.push(`median return: ${fmtSignedPct(result.medianReturn)}`);
-    lines.push(`max drawdown: ${fmtSignedPct(result.maxDrawdown)}`);
-    lines.push(`expectancy: ${fmtSignedPct(result.expectancy)}`);
+    lines.push(signal.name);
+    for (const horizon of horizons) {
+      const result = signalResults.find((item) => item.name === signal.name && item.horizon === horizon);
+      lines.push(`${horizon}d:`);
+      lines.push(`  samples: ${result.samples}${sampleWarning(result.samples) ? ` (${sampleWarning(result.samples)})` : ""}`);
+      lines.push(`  win rate: ${fmtPct(result.winRate)}`);
+      lines.push(`  avg return: ${fmtSignedPct(result.avgReturn)}`);
+      lines.push(`  median return: ${fmtSignedPct(result.medianReturn)}`);
+      lines.push(`  max drawdown: ${fmtSignedPct(result.maxDrawdown)}`);
+      lines.push(`  expectancy: ${fmtSignedPct(result.expectancy)}`);
+      lines.push(`  confidence score: ${result.confidenceScore === null ? "n/a" : result.confidenceScore}`);
+    }
   }
 
   const ranked = signalResults
     .filter((result) => result.samples > 0 && Number.isFinite(Number(result.expectancy)))
-    .sort((a, b) => Number(b.expectancy) - Number(a.expectancy))
+    .sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0))
     .slice(0, 10);
+
+  lines.push("");
+  lines.push("=== LEAD-LAG: MACRO FRIENDLY -> MARKET STRUCTURE ===");
+  for (const item of leadLagStats(rows, horizons)) {
+    lines.push(`${item.horizon}d:`);
+    lines.push(`  samples: ${item.usableSamples}/${item.samples}`);
+    lines.push(`  BTC.D avg change: ${fmtSignedPct(item.btcDominanceAvgChange)}`);
+    lines.push(`  ETH.D avg change: ${fmtSignedPct(item.ethDominanceAvgChange)}`);
+    lines.push(`  TOTAL3 avg change: ${fmtSignedPct(item.total3AvgChange)}`);
+    lines.push(`  SOL vs ETH avg relative return: ${fmtSignedPct(item.solOutperformEthAvg)}`);
+  }
 
   lines.push("");
   lines.push("=== SIGNAL RANKING TOP 10 ===");
@@ -794,9 +903,11 @@ function summarize(args) {
     lines.push("No ranked signals with usable samples.");
   } else {
     ranked.forEach((result, index) => {
-      lines.push(`#${index + 1} ${result.name}`);
-      lines.push(`samples: ${result.samples}`);
+      lines.push(`#${index + 1} ${result.name} (${result.horizon}d)`);
+      lines.push(`samples: ${result.samples}${sampleWarning(result.samples) ? ` (${sampleWarning(result.samples)})` : ""}`);
+      lines.push(`win rate: ${fmtPct(result.winRate)}`);
       lines.push(`expectancy: ${fmtSignedPct(result.expectancy)}`);
+      lines.push(`confidence score: ${result.confidenceScore === null ? "n/a" : result.confidenceScore}`);
     });
   }
 
