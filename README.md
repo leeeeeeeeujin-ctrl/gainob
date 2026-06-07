@@ -257,6 +257,21 @@ Validation v2 additions:
 - Signals with fewer than 20 samples are flagged `LOW_SAMPLE`; fewer than 50 samples are flagged `THIN_SAMPLE`.
 - Lead-lag output checks whether `M2 up + RRP down + TGA down` is followed by changes in `BTC.D`, `ETH.D`, `TOTAL3`, and `SOL vs ETH`.
 
+Validation v3 robustness checks:
+
+- The strongest signal is stress-tested before adoption:
+  - `Macro Friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH`
+  - default robustness horizon: `60d`
+- Robustness output includes:
+  - yearly decomposition for `2024`, `2025`, `2026`
+  - BTC dominance regime decomposition: rising, sideways, falling
+  - ETH/BTC 1m strength buckets: `0-5%`, `5-10%`, `10%+`
+  - TOTAL3 1m strength buckets: `0-5%`, `5-10%`, `10%+`
+  - opposite direction check: `Macro Friendly + ETH/BTC down + TOTAL3 down`
+  - random baseline with equal sample count, 100 iterations
+  - final confidence label: `Weak`, `Moderate`, or `Strong`
+- Confidence is deliberately conservative. A high expectancy can still be `Weak` if samples cluster in one year or later years fail to confirm the signal.
+
 Credit spread research TODO:
 
 - `BAMLH0A0HYM2`: ICE BofA US High Yield Index Option-Adjusted Spread.

@@ -790,6 +790,14 @@ function macroFriendly(row) {
   return Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0 && Number(row.TGA_1m_change) < 0;
 }
 
+function strongestSignal(row) {
+  return macroFriendly(row) && Number(row.ETH_BTC_1m_change) > 0 && Number(row.TOTAL3_1m_change) > 0;
+}
+
+function oppositeSignal(row) {
+  return macroFriendly(row) && Number(row.ETH_BTC_1m_change) < 0 && Number(row.TOTAL3_1m_change) < 0;
+}
+
 function leadLagStats(rows, horizons) {
   const dateMap = rowsByDate(rows);
   const macroRows = rows.filter(macroFriendly);
@@ -822,6 +830,187 @@ function leadLagStats(rows, horizons) {
       solOutperformEthAvg: average(solOutperformance)
     };
   });
+}
+
+function conditionStats(rows, condition, retFn, winFn) {
+  const samples = rows
+    .filter(condition)
+    .map((row) => ({
+      ret: retFn(row),
+      win: winFn(row)
+    }))
+    .filter((sample) => Number.isFinite(Number(sample.ret)) && sample.win !== null && sample.win !== undefined);
+  const returns = samples.map((sample) => Number(sample.ret));
+
+  return {
+    samples: samples.length,
+    winRate: samples.length ? samples.filter((sample) => sample.win).length / samples.length : null,
+    avgReturn: average(returns),
+    medianReturn: median(returns),
+    maxDrawdown: minValue(returns),
+    expectancy: average(returns)
+  };
+}
+
+function solVsEthStats(rows, condition, horizon = 60) {
+  return conditionStats(
+    rows,
+    condition,
+    (row) => relativeReturn(row, "SOL", "ETH", horizon),
+    (row) => {
+      const ret = relativeReturn(row, "SOL", "ETH", horizon);
+      return ret === null ? null : ret > 0;
+    }
+  );
+}
+
+function ethVsBtcStats(rows, condition, horizon = 60) {
+  return conditionStats(
+    rows,
+    condition,
+    (row) => relativeReturn(row, "ETH", "BTC", horizon),
+    (row) => {
+      const ret = relativeReturn(row, "ETH", "BTC", horizon);
+      return ret === null ? null : ret > 0;
+    }
+  );
+}
+
+function avgAssetStats(rows, condition, horizon = 60) {
+  return conditionStats(
+    rows,
+    condition,
+    (row) => averageAssetReturn(row, horizon),
+    (row) => {
+      const ret = averageAssetReturn(row, horizon);
+      return ret === null ? null : ret > 0;
+    }
+  );
+}
+
+function btcDominanceRegime(row) {
+  const change = Number(row.BTC_dominance_1m_change);
+  if (!Number.isFinite(change)) return "unavailable";
+  if (change > 0.25) return "rising";
+  if (change < -0.25) return "falling";
+  return "sideways";
+}
+
+function strengthBucket(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  if (numeric < 5) return "0-5%";
+  if (numeric < 10) return "5-10%";
+  return "10%+";
+}
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+function randomBaseline(rows, sampleCount, horizon = 60, iterations = 100) {
+  const eligible = rows
+    .map((row) => ({
+      row,
+      ret: relativeReturn(row, "SOL", "ETH", horizon)
+    }))
+    .filter((item) => Number.isFinite(Number(item.ret)));
+
+  if (!eligible.length || sampleCount <= 0) {
+    return { iterations: 0, sampleCount, avgExpectancy: null, medianExpectancy: null, bestExpectancy: null, worstExpectancy: null };
+  }
+
+  const random = seededRandom(20240607);
+  const expectancies = [];
+  const drawCount = Math.min(sampleCount, eligible.length);
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const picked = [];
+    const used = new Set();
+    while (picked.length < drawCount) {
+      const index = Math.floor(random() * eligible.length);
+      if (used.has(index)) continue;
+      used.add(index);
+      picked.push(eligible[index].ret);
+    }
+    expectancies.push(average(picked));
+  }
+
+  return {
+    iterations,
+    sampleCount: drawCount,
+    avgExpectancy: average(expectancies),
+    medianExpectancy: median(expectancies),
+    bestExpectancy: expectancies.length ? Math.max(...expectancies) : null,
+    worstExpectancy: expectancies.length ? Math.min(...expectancies) : null
+  };
+}
+
+function confidenceLabel({ signal, random, yearStats }) {
+  const positiveYears = yearStats.filter((item) => Number(item.stats.expectancy) > 0 && item.stats.samples >= 10).length;
+  const activeYears = yearStats.filter((item) => item.stats.samples > 0).length;
+  const maxYearShare = signal.samples ? Math.max(...yearStats.map((item) => item.stats.samples)) / signal.samples : 1;
+  const advantage = Number(signal.expectancy) - Number(random.avgExpectancy);
+
+  if (signal.samples >= 50 && activeYears >= 2 && positiveYears >= 2 && advantage > 5 && Number(signal.winRate) >= 0.55) {
+    return "Strong";
+  }
+  if (signal.samples >= 30 && activeYears >= 2 && positiveYears >= 2 && maxYearShare <= 0.7 && advantage > 0 && Number(signal.expectancy) > 0) {
+    return "Moderate";
+  }
+  return "Weak";
+}
+
+function pushStats(lines, label, stats, indent = "") {
+  lines.push(`${indent}${label}`);
+  lines.push(`${indent}samples: ${stats.samples}${sampleWarning(stats.samples) ? ` (${sampleWarning(stats.samples)})` : ""}`);
+  lines.push(`${indent}win rate: ${fmtPct(stats.winRate)}`);
+  lines.push(`${indent}expectancy: ${fmtSignedPct(stats.expectancy)}`);
+  lines.push(`${indent}avg return: ${fmtSignedPct(stats.avgReturn)}`);
+  lines.push(`${indent}median return: ${fmtSignedPct(stats.medianReturn)}`);
+  lines.push(`${indent}max drawdown: ${fmtSignedPct(stats.maxDrawdown)}`);
+}
+
+function robustnessStats(rows) {
+  const targetHorizon = 60;
+  const target = solVsEthStats(rows, strongestSignal, targetHorizon);
+  const years = ["2024", "2025", "2026"].map((year) => ({
+    year,
+    stats: solVsEthStats(rows, (row) => strongestSignal(row) && String(row.date).startsWith(year), targetHorizon)
+  }));
+  const regimes = ["rising", "sideways", "falling"].map((regime) => ({
+    regime,
+    stats: solVsEthStats(rows, (row) => strongestSignal(row) && btcDominanceRegime(row) === regime, targetHorizon)
+  }));
+  const ethBuckets = ["0-5%", "5-10%", "10%+"].map((bucket) => ({
+    bucket,
+    stats: solVsEthStats(rows, (row) => macroFriendly(row) && Number(row.TOTAL3_1m_change) > 0 && strengthBucket(row.ETH_BTC_1m_change) === bucket, targetHorizon)
+  }));
+  const total3Buckets = ["0-5%", "5-10%", "10%+"].map((bucket) => ({
+    bucket,
+    stats: solVsEthStats(rows, (row) => macroFriendly(row) && Number(row.ETH_BTC_1m_change) > 0 && strengthBucket(row.TOTAL3_1m_change) === bucket, targetHorizon)
+  }));
+  const oppositeEthBtc = ethVsBtcStats(rows, oppositeSignal, targetHorizon);
+  const oppositeSolEth = solVsEthStats(rows, oppositeSignal, targetHorizon);
+  const random = randomBaseline(rows, target.samples, targetHorizon, 100);
+  const confidence = confidenceLabel({ signal: target, random, yearStats: years });
+
+  return {
+    horizon: targetHorizon,
+    target,
+    years,
+    regimes,
+    ethBuckets,
+    total3Buckets,
+    oppositeEthBtc,
+    oppositeSolEth,
+    random,
+    confidence
+  };
 }
 
 function summarize(args) {
@@ -896,6 +1085,62 @@ function summarize(args) {
     lines.push(`  TOTAL3 avg change: ${fmtSignedPct(item.total3AvgChange)}`);
     lines.push(`  SOL vs ETH avg relative return: ${fmtSignedPct(item.solOutperformEthAvg)}`);
   }
+
+  const robustness = robustnessStats(rows);
+  lines.push("");
+  lines.push("=== ROBUSTNESS CHECK: STRONGEST SIGNAL ===");
+  lines.push("Signal: Macro Friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH");
+  lines.push(`Horizon: ${robustness.horizon}d`);
+  pushStats(lines, "Overall:", robustness.target, "  ");
+
+  lines.push("");
+  lines.push("Year breakdown:");
+  for (const item of robustness.years) {
+    pushStats(lines, `${item.year}:`, item.stats, "  ");
+  }
+
+  lines.push("");
+  lines.push("BTC.D regime breakdown:");
+  for (const item of robustness.regimes) {
+    pushStats(lines, `${item.regime}:`, item.stats, "  ");
+  }
+
+  lines.push("");
+  lines.push("ETH/BTC 1m strength buckets:");
+  for (const item of robustness.ethBuckets) {
+    pushStats(lines, `${item.bucket}:`, item.stats, "  ");
+  }
+
+  lines.push("");
+  lines.push("TOTAL3 1m strength buckets:");
+  for (const item of robustness.total3Buckets) {
+    pushStats(lines, `${item.bucket}:`, item.stats, "  ");
+  }
+
+  lines.push("");
+  lines.push("Opposite direction check: Macro Friendly + ETH/BTC down + TOTAL3 down");
+  pushStats(lines, "ETH vs BTC:", robustness.oppositeEthBtc, "  ");
+  pushStats(lines, "SOL vs ETH:", robustness.oppositeSolEth, "  ");
+
+  lines.push("");
+  lines.push("Random baseline:");
+  lines.push(`  iterations: ${robustness.random.iterations}`);
+  lines.push(`  sample count: ${robustness.random.sampleCount}`);
+  lines.push(`  random avg expectancy: ${fmtSignedPct(robustness.random.avgExpectancy)}`);
+  lines.push(`  random median expectancy: ${fmtSignedPct(robustness.random.medianExpectancy)}`);
+  lines.push(`  random best expectancy: ${fmtSignedPct(robustness.random.bestExpectancy)}`);
+  lines.push(`  random worst expectancy: ${fmtSignedPct(robustness.random.worstExpectancy)}`);
+  lines.push(`  signal expectancy: ${fmtSignedPct(robustness.target.expectancy)}`);
+  lines.push(`  advantage vs random avg: ${fmtSignedPct(Number(robustness.target.expectancy) - Number(robustness.random.avgExpectancy))}`);
+
+  lines.push("");
+  lines.push("Strongest signal confidence:");
+  lines.push(`  confidence: ${robustness.confidence}`);
+  lines.push(`  sample count: ${robustness.target.samples}`);
+  lines.push(`  active years: ${robustness.years.filter((item) => item.stats.samples > 0).length}/3`);
+  lines.push(`  positive years: ${robustness.years.filter((item) => Number(item.stats.expectancy) > 0 && item.stats.samples >= 10).length}/3`);
+  lines.push(`  max year sample share: ${fmtPct(robustness.target.samples ? Math.max(...robustness.years.map((item) => item.stats.samples)) / robustness.target.samples : null)}`);
+  lines.push(`  random baseline advantage: ${fmtSignedPct(Number(robustness.target.expectancy) - Number(robustness.random.avgExpectancy))}`);
 
   lines.push("");
   lines.push("=== SIGNAL RANKING TOP 10 ===");
