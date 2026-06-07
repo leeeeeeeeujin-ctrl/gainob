@@ -22,6 +22,7 @@ const { buildLiquidityDashboardSnapshot } = require("./liquidity-dashboard");
 
 const moduleContext = createModuleContext(modules);
 const app = express();
+const YAHOO_FINANCE_CHART_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 // Enable CORS for public API endpoints so external tools (browsers, parsers) can fetch them
 app.use((req, res, next) => {
@@ -45,6 +46,8 @@ app.use((req, res, next) => {
 // simple in-memory cache for intelligence (macro) to reduce latency on /api/public/market
 const macroCache = new Map();
 const MACRO_CACHE_TTL_MS = 15_000; // keep macro stats for 15s
+const macroConditionsCache = new Map();
+const MACRO_CONDITIONS_CACHE_TTL_MS = 30 * 60 * 1000;
 
 async function fetchAndCacheIntelligence(symbol, label) {
   const key = String(symbol).toUpperCase();
@@ -399,9 +402,9 @@ function buildPublicEndpointDocs(baseUrl = "") {
         path: `${baseUrl}/api/public/gpt-briefing?profile=liquidity_cycle_v1&timeframe=1h&range=30d`,
         method: "GET",
         query: {
-          profile: "liquidity_cycle_v1 | swing_v1 | market_overview_v1",
+          profile: "liquidity_cycle_v1 | swing_v1 | market_overview_v1 | macro_cycle_v1",
           timeframe: "15m | 1h | 4h | 1d | 1w",
-          range: "7d | 30d | 90d",
+          range: "7d | 30d | 90d | 180d",
           format: "text | json",
           includeRaw: "false | true"
         },
@@ -549,7 +552,7 @@ function formatBriefingValue(value, unit = "") {
 
 function normalizeGptBriefingProfile(value) {
   const profile = String(value || "liquidity_cycle_v1").toLowerCase();
-  return ["liquidity_cycle_v1", "swing_v1", "market_overview_v1"].includes(profile)
+  return ["liquidity_cycle_v1", "swing_v1", "market_overview_v1", "macro_cycle_v1"].includes(profile)
     ? profile
     : "liquidity_cycle_v1";
 }
@@ -664,6 +667,220 @@ function applyCurrentFallback(summary, current, status = "available") {
     ...summary,
     current: Number(current),
     status: summary?.status || status
+  };
+}
+
+function yahooChartUrl(symbol) {
+  return `${YAHOO_FINANCE_CHART_BASE_URL}/${encodeURIComponent(symbol)}?range=6mo&interval=1d`;
+}
+
+async function fetchYahooChart(symbol) {
+  const cacheKey = `yahoo-chart:${symbol}`;
+  const cached = macroConditionsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.payload;
+  }
+
+  const response = await fetch(yahooChartUrl(symbol), {
+    headers: {
+      accept: "application/json",
+      "user-agent": "Mozilla/5.0 (compatible; GainobMacroBriefing/1.0; +https://gainob.vercel.app)"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Yahoo Finance request failed: ${response.status} ${response.statusText}`);
+  }
+
+  const payload = await response.json();
+  macroConditionsCache.set(cacheKey, {
+    payload,
+    expiresAt: Date.now() + MACRO_CONDITIONS_CACHE_TTL_MS
+  });
+  return payload;
+}
+
+function chartSeriesFromYahoo(payload) {
+  const result = payload?.chart?.result?.[0];
+  const timestamps = result?.timestamp || [];
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+
+  return timestamps
+    .map((timestamp, index) => ({
+      timestamp: new Date(Number(timestamp) * 1000).toISOString(),
+      value: closes[index] === null || closes[index] === undefined ? null : Number(closes[index])
+    }))
+    .filter((item) => Number.isFinite(item.value));
+}
+
+function changeFromSeriesByCalendarDays(series, days) {
+  if (!Array.isArray(series) || series.length < 2) {
+    return null;
+  }
+
+  const currentPoint = series.at(-1);
+  const current = Number(currentPoint?.value);
+  const targetTime = new Date(currentPoint.timestamp).getTime() - days * 24 * 60 * 60 * 1000;
+  const previousPoint = [...series].reverse().find((item) => new Date(item.timestamp).getTime() <= targetTime) || series[0];
+  const previous = Number(previousPoint?.value);
+
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0 || previousPoint === currentPoint) {
+    return null;
+  }
+
+  return Number((((current - previous) / previous) * 100).toFixed(2));
+}
+
+function classifyMacroStatus(id, summary) {
+  const change1m = Number(summary?.["1m"]);
+
+  if (!Number.isFinite(change1m)) {
+    return "unavailable";
+  }
+
+  if (id === "dxy") {
+    if (change1m >= 1) return "Dollar Strength";
+    if (change1m <= -1) return "Dollar Weakness";
+    return "Neutral";
+  }
+
+  if (id === "us10y") {
+    if (change1m >= 1) return "Yield Rising";
+    if (change1m <= -1) return "Yield Falling";
+    return "Neutral";
+  }
+
+  if (change1m >= 1) return "Risk-On";
+  if (change1m <= -1) return "Risk-Off";
+  return "Neutral";
+}
+
+function summarizeMacroMetric(metric, range) {
+  if (!metric || !Array.isArray(metric.series) || !metric.series.length) {
+    return {
+      label: metric?.label || "unknown",
+      current: "unavailable",
+      "1d": "unavailable",
+      "1w": "unavailable",
+      "1m": "unavailable",
+      "3m": "unavailable",
+      "6m": "unavailable",
+      trend: "unavailable",
+      status: "unavailable",
+      source: metric?.source || "Yahoo Finance chart",
+      error: metric?.error || "unavailable"
+    };
+  }
+
+  const change1d = changeFromSeriesByCalendarDays(metric.series, 1);
+  const change7d = changeFromSeriesByCalendarDays(metric.series, 7);
+  const change30d = changeFromSeriesByCalendarDays(metric.series, 30);
+  const change90d = changeFromSeriesByCalendarDays(metric.series, 90);
+  const change180d = changeFromSeriesByCalendarDays(metric.series, 180);
+  const rangeChange = range === "7d" ? change7d : range === "90d" ? change90d : range === "180d" ? change180d : change30d;
+  const summary = {
+    label: metric.label,
+    current: Number(metric.series.at(-1)?.value ?? null),
+    "1d": change1d,
+    "1w": change7d,
+    "1m": change30d,
+    "3m": change90d,
+    "6m": change180d,
+    trend: trendFromChange(rangeChange),
+    source: metric.source,
+    error: null
+  };
+
+  summary.status = classifyMacroStatus(metric.id, summary);
+  return summary;
+}
+
+async function getMacroMetric({ id, label, symbol, source }) {
+  try {
+    const payload = await fetchYahooChart(symbol);
+    const series = chartSeriesFromYahoo(payload);
+    if (!series.length) {
+      throw new Error("Yahoo Finance chart returned no close series");
+    }
+
+    return {
+      id,
+      label,
+      symbol,
+      source,
+      series
+    };
+  } catch (error) {
+    return {
+      id,
+      label,
+      symbol,
+      source,
+      series: [],
+      error: error.message
+    };
+  }
+}
+
+function buildMacroSummaryLines(macro) {
+  const lines = [];
+  const dxyStatus = macro?.dxy?.status;
+  const us10yStatus = macro?.us10y?.status;
+  const nasdaqStatus = macro?.nasdaq?.status;
+
+  if (dxyStatus === "Dollar Strength") lines.push("DXY 상승은 코인에 역풍입니다.");
+  if (dxyStatus === "Dollar Weakness") lines.push("DXY 하락은 코인에 우호적입니다.");
+  if (dxyStatus === "Neutral") lines.push("DXY는 중립권입니다.");
+
+  if (us10yStatus === "Yield Rising") lines.push("US10Y 상승은 위험자산에 역풍입니다.");
+  if (us10yStatus === "Yield Falling") lines.push("US10Y 하락은 위험자산에 우호적입니다.");
+  if (us10yStatus === "Neutral") lines.push("US10Y는 중립권입니다.");
+
+  if (nasdaqStatus === "Risk-On") lines.push("NASDAQ 강세는 위험선호 유지 신호입니다.");
+  if (nasdaqStatus === "Risk-Off") lines.push("NASDAQ 약세는 위험선호 둔화 신호입니다.");
+  if (nasdaqStatus === "Neutral") lines.push("NASDAQ은 중립권입니다.");
+
+  if (!lines.length) {
+    lines.push("Macro conditions are unavailable.");
+  }
+
+  return lines;
+}
+
+async function buildMacroCycleBriefingPayload(options = {}) {
+  const profile = normalizeGptBriefingProfile(options.profile);
+  const timeframe = String(options.timeframe || "1h").toLowerCase();
+  const range = normalizeGptBriefingRange(options.range);
+  const generatedAt = new Date().toISOString();
+  const definitions = [
+    { id: "dxy", label: "DXY", symbol: "DX-Y.NYB", source: "Yahoo Finance chart DX-Y.NYB" },
+    { id: "us10y", label: "US10Y", symbol: "^TNX", source: "Yahoo Finance chart ^TNX" },
+    { id: "nasdaq", label: "NASDAQ / QQQ", symbol: "QQQ", source: "Yahoo Finance chart QQQ" }
+  ];
+  const metrics = await Promise.all(definitions.map(getMacroMetric));
+  const byId = Object.fromEntries(metrics.map((metric) => [metric.id, summarizeMacroMetric(metric, range)]));
+
+  return {
+    profile,
+    timeframe,
+    range,
+    generated_at: generatedAt,
+    sections: {
+      macro_conditions: byId,
+      macro_summary: {
+        lines: buildMacroSummaryLines(byId)
+      }
+    },
+    source_status: {
+      macro: {
+        available: metrics.some((metric) => Array.isArray(metric.series) && metric.series.length),
+        provider: "Yahoo Finance chart",
+        cache_ttl_seconds: MACRO_CONDITIONS_CACHE_TTL_MS / 1000,
+        metrics: Object.fromEntries(metrics.map((metric) => [
+          metric.id,
+          { available: Array.isArray(metric.series) && metric.series.length > 0, error: metric.error || null }
+        ]))
+      }
+    }
   };
 }
 
@@ -844,6 +1061,10 @@ function compactRawPayload(payload) {
 
 async function buildGptBriefingPayload(options = {}) {
   const profile = normalizeGptBriefingProfile(options.profile);
+  if (profile === "macro_cycle_v1") {
+    return buildMacroCycleBriefingPayload({ ...options, profile });
+  }
+
   const timeframe = String(options.timeframe || "1h").toLowerCase();
   const range = normalizeGptBriefingRange(options.range);
   const includeRaw = String(options.includeRaw || "false").toLowerCase() === "true";
@@ -1002,7 +1223,52 @@ function formatOpportunityList(items) {
   return items.map((item) => item.symbol || "unknown").join(", ");
 }
 
+function formatMacroMetricLines(metric) {
+  return [
+    `Current: ${formatBriefingValue(metric?.current)}`,
+    `1d: ${formatBriefingValue(metric?.["1d"], "%")}`,
+    `1w: ${formatBriefingValue(metric?.["1w"], "%")}`,
+    `1m: ${formatBriefingValue(metric?.["1m"], "%")}`,
+    `3m: ${formatBriefingValue(metric?.["3m"], "%")}`,
+    `6m: ${formatBriefingValue(metric?.["6m"], "%")}`,
+    `Trend: ${metric?.trend || "unavailable"}`,
+    `Status: ${metric?.status || "unavailable"}`
+  ];
+}
+
+function formatMacroBriefingText(briefing) {
+  const macro = briefing.sections.macro_conditions;
+  const summary = briefing.sections.macro_summary;
+
+  return [
+    "=== GPT BRIEFING ===",
+    `GENERATED_AT: ${briefing.generated_at}`,
+    `PROFILE: ${briefing.profile}`,
+    `TIMEFRAME: ${briefing.timeframe}`,
+    `RANGE: ${briefing.range}`,
+    "",
+    "[MACRO CONDITIONS]",
+    "DXY:",
+    ...formatMacroMetricLines(macro.dxy),
+    "",
+    "US10Y:",
+    ...formatMacroMetricLines(macro.us10y),
+    "",
+    "NASDAQ:",
+    ...formatMacroMetricLines(macro.nasdaq),
+    "",
+    "[MACRO SUMMARY]",
+    ...summary.lines.map((line) => `- ${line}`),
+    "",
+    "=== END GPT BRIEFING ==="
+  ].join("\n");
+}
+
 function formatGptBriefingText(briefing) {
+  if (briefing.profile === "macro_cycle_v1") {
+    return formatMacroBriefingText(briefing);
+  }
+
   const regime = briefing.sections.market_regime;
   const capitalFlow = briefing.sections.capital_flow;
   const breadth = briefing.sections.market_breadth;
