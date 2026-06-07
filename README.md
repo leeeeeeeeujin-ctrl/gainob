@@ -225,6 +225,30 @@ Current limitation:
 - Historical BTC dominance, ETH dominance, and TOTAL3 are written as `null` unless optional local CSV inputs are present.
 - Missing source values are written as `null`; the run continues.
 
+Signal validation summary includes:
+
+- sample count
+- win rate
+- avg return
+- median return
+- max drawdown, reported as the worst 30d forward return in the sample
+- expectancy, currently equal to average 30d forward return for the signal sample
+- top 10 signal ranking by expectancy
+
+Current v1 validation signals:
+
+- `ETH/BTC up -> ETH outperform BTC`
+- `TOTAL3 1m up -> TOTAL3 future positive`
+- `BTC.D 1m down -> ETH outperform BTC`
+- `BTC.D down + ETH.D up -> ETH outperform BTC`
+- `ETH/BTC up + TOTAL3 up -> ETH outperform BTC`
+- `ETH/BTC up + TOTAL3 up -> SOL outperform ETH`
+- `M2 up + RRP down -> BTC/ETH/SOL average return`
+- `M2 up + RRP down + TGA down -> BTC/ETH/SOL average return`
+- `Macro friendly + ETH/BTC up + TOTAL3 up`
+
+For TradingView-based signals to produce useful samples, import daily `BTC.D`, `ETH.D`, and `TOTAL3` history from at least `2024-01-01`. If those rows are absent, BTC dominance, ETH dominance, and TOTAL3 signals correctly report `samples: 0`.
+
 Optional local CSV import:
 
 - Put local CSV files under `backtests/input/`.

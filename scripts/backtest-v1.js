@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { Pool } = require("pg");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -50,10 +51,19 @@ const CSV_COLUMNS = [
   "TOTAL3_positive_30d",
   "BTC_positive_30d",
   "ETH_BTC_1m_change",
+  "BTC_dominance_1m_change",
+  "ETH_dominance_1m_change",
   "TOTAL3_1m_change",
   "Stablecoin_Market_Cap_1m_change",
+  "M2SL",
+  "RRPONTSYD",
+  "TGA",
+  "M2SL_1m_change",
+  "RRPONTSYD_1m_change",
+  "TGA_1m_change",
   "DXY_1m_change",
-  "QQQ_1m_change"
+  "QQQ_1m_change",
+  "future_return_TOTAL3_30d"
 ];
 
 function parseArgs(argv) {
@@ -287,6 +297,49 @@ function readLocalCsvSeries(inputDir, label, fileName) {
   }
 }
 
+function databaseUrl() {
+  return process.env.DATABASE_URL || "";
+}
+
+async function readDbSeries(table, metric, label) {
+  if (!databaseUrl()) {
+    return { label, series: [], error: null, source: "database not configured" };
+  }
+
+  const pool = new Pool({
+    connectionString: databaseUrl(),
+    ssl: { rejectUnauthorized: false }
+  });
+
+  try {
+    const result = await pool.query(
+      `
+        select date::text as date, close::float as close
+        from ${table}
+        where metric = $1
+        order by date
+      `,
+      [metric]
+    );
+    return {
+      label,
+      series: result.rows
+        .map((row) => ({ date: row.date, value: Number(row.close) }))
+        .filter((point) => Number.isFinite(point.value)),
+      error: null,
+      source: `${table}:${metric}`
+    };
+  } catch (error) {
+    return { label, series: [], error: error.message, source: `${table}:${metric}` };
+  } finally {
+    await pool.end();
+  }
+}
+
+function preferSeries(primary, fallback) {
+  return primary?.series?.length ? primary : fallback;
+}
+
 function buildRows({ dates, seriesByLabel, horizons }) {
   const btc = seriesByLabel.BTC || [];
   const eth = seriesByLabel.ETH || [];
@@ -297,6 +350,9 @@ function buildRows({ dates, seriesByLabel, horizons }) {
   const btcDominance = seriesByLabel.BTC_dominance || [];
   const ethDominance = seriesByLabel.ETH_dominance || [];
   const total3Series = seriesByLabel.TOTAL3 || [];
+  const m2 = seriesByLabel.M2SL || [];
+  const rrp = seriesByLabel.RRPONTSYD || [];
+  const tga = seriesByLabel.TGA || [];
 
   const ethBtcSeries = [];
   const solEthSeries = [];
@@ -323,15 +379,24 @@ function buildRows({ dates, seriesByLabel, horizons }) {
       BTC_dominance: valueOnOrBefore(btcDominance, date),
       ETH_dominance: valueOnOrBefore(ethDominance, date),
       TOTAL3: valueOnOrBefore(total3Series, date),
+      M2SL: valueOnOrBefore(m2, date),
+      RRPONTSYD: valueOnOrBefore(rrp, date),
+      TGA: valueOnOrBefore(tga, date),
       Stablecoin_Market_Cap: valueOnOrBefore(stablecoins, date),
       DXY: valueOnOrBefore(dxy, date),
       US10Y: valueOnOrBefore(seriesByLabel.US10Y || [], date),
       QQQ: valueOnOrBefore(qqq, date),
       ETH_BTC_1m_change: laggedChange(ethBtcSeries, date, 30),
+      BTC_dominance_1m_change: laggedChange(btcDominance, date, 30),
+      ETH_dominance_1m_change: laggedChange(ethDominance, date, 30),
       TOTAL3_1m_change: laggedChange(total3Series, date, 30),
       Stablecoin_Market_Cap_1m_change: laggedChange(stablecoins, date, 30),
+      M2SL_1m_change: laggedChange(m2, date, 30),
+      RRPONTSYD_1m_change: laggedChange(rrp, date, 30),
+      TGA_1m_change: laggedChange(tga, date, 30),
       DXY_1m_change: laggedChange(dxy, date, 30),
-      QQQ_1m_change: laggedChange(qqq, date, 30)
+      QQQ_1m_change: laggedChange(qqq, date, 30),
+      future_return_TOTAL3_30d: total3Return30d
     };
 
     for (const horizon of horizons) {
@@ -401,6 +466,22 @@ async function runBacktest(args) {
     readLocalCsvSeries(inputDir, "ETH_dominance", "eth_dominance.csv"),
     readLocalCsvSeries(inputDir, "TOTAL3", "total3.csv")
   ];
+  const dbResults = await Promise.all([
+    readDbSeries("tradingview_series", "BTC_D", "BTC_dominance"),
+    readDbSeries("tradingview_series", "ETH_D", "ETH_dominance"),
+    readDbSeries("tradingview_series", "TOTAL3", "TOTAL3"),
+    readDbSeries("macro_series", "M2SL", "M2SL"),
+    readDbSeries("macro_series", "RRPONTSYD", "RRPONTSYD"),
+    readDbSeries("macro_series", "TGA", "TGA")
+  ]);
+  const resolvedOptionalResults = [
+    preferSeries(localCsvResults[0], dbResults[0]),
+    preferSeries(localCsvResults[1], dbResults[1]),
+    preferSeries(localCsvResults[2], dbResults[2]),
+    dbResults[3],
+    dbResults[4],
+    dbResults[5]
+  ];
   const tasks = [
     ...symbols.map((symbol) => fetchYahooSeries(symbol, YAHOO_SYMBOLS[symbol] || `${symbol}-USD`, fetchStartMs, fetchEndMs, interval)),
     fetchYahooSeries("DXY", YAHOO_SYMBOLS.DXY, fetchStartMs, fetchEndMs, interval),
@@ -410,7 +491,7 @@ async function runBacktest(args) {
   ];
 
   const results = await Promise.all(tasks);
-  const allResults = [...results, ...localCsvResults];
+  const allResults = [...results, ...resolvedOptionalResults];
   const seriesByLabel = Object.fromEntries(allResults.map((result) => [result.label, result.series]));
   const dates = dateRange(startMs, endMs, 1);
   const rows = buildRows({ dates, seriesByLabel, horizons });
@@ -431,10 +512,16 @@ async function runBacktest(args) {
         prices: "Yahoo Finance chart",
         macro: "Yahoo Finance chart",
         stablecoins: "DefiLlama stablecoincharts/all",
-        dominance: "optional local CSV import from backtests/input",
-        total3: "optional local CSV import from backtests/input"
+        dominance: "optional local CSV import from backtests/input or tradingview_series DB",
+        total3: "optional local CSV import from backtests/input or tradingview_series DB",
+        macroLiquidity: "macro_series DB"
       },
       localCsv: Object.fromEntries(localCsvResults.map((result) => [result.label, {
+        source: result.source,
+        rows: result.series.length,
+        error: result.error
+      }])),
+      database: Object.fromEntries(dbResults.map((result) => [result.label, {
         source: result.source,
         rows: result.series.length,
         error: result.error
@@ -495,6 +582,18 @@ function average(values) {
   return usable.reduce((sum, value) => sum + Number(value), 0) / usable.length;
 }
 
+function median(values) {
+  const usable = values.filter((value) => Number.isFinite(Number(value))).map(Number).sort((a, b) => a - b);
+  if (!usable.length) return null;
+  const middle = Math.floor(usable.length / 2);
+  return usable.length % 2 ? usable[middle] : (usable[middle - 1] + usable[middle]) / 2;
+}
+
+function minValue(values) {
+  const usable = values.filter((value) => Number.isFinite(Number(value))).map(Number);
+  return usable.length ? Math.min(...usable) : null;
+}
+
 function rate(rows, predicate) {
   const usable = rows.map(predicate).filter((value) => value !== null && value !== undefined);
   if (!usable.length) return null;
@@ -507,6 +606,126 @@ function fmtPct(value) {
 
 function fmtNumber(value) {
   return value === null ? "n/a" : Number(value).toFixed(4);
+}
+
+function fmtSignedPct(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "n/a";
+  const numeric = Number(value);
+  return `${numeric >= 0 ? "+" : ""}${numeric.toFixed(4)}%`;
+}
+
+function relativeReturn(row, longSymbol, shortSymbol) {
+  const longReturn = row[`future_return_${longSymbol}_30d`];
+  const shortReturn = row[`future_return_${shortSymbol}_30d`];
+  if (!Number.isFinite(Number(longReturn)) || !Number.isFinite(Number(shortReturn))) return null;
+  return Number((Number(longReturn) - Number(shortReturn)).toFixed(4));
+}
+
+function averageAssetReturn(row) {
+  return average([row.future_return_BTC_30d, row.future_return_ETH_30d, row.future_return_SOL_30d]);
+}
+
+function signalStats(rows, signal) {
+  const samples = rows
+    .filter(signal.condition)
+    .map((row) => ({
+      row,
+      win: signal.win(row),
+      ret: signal.ret(row)
+    }))
+    .filter((sample) => sample.win !== null && sample.win !== undefined && Number.isFinite(Number(sample.ret)));
+  const returns = samples.map((sample) => Number(sample.ret));
+
+  return {
+    name: signal.name,
+    samples: samples.length,
+    winRate: samples.length ? samples.filter((sample) => sample.win).length / samples.length : null,
+    avgReturn: average(returns),
+    medianReturn: median(returns),
+    maxDrawdown: minValue(returns),
+    expectancy: average(returns)
+  };
+}
+
+function buildSignals() {
+  return [
+    {
+      name: "ETH/BTC up -> ETH outperform BTC",
+      condition: (row) => Number(row.ETH_BTC_1m_change) > 0,
+      win: (row) => row.ETH_outperforms_BTC_30d,
+      ret: (row) => relativeReturn(row, "ETH", "BTC")
+    },
+    {
+      name: "TOTAL3 1m up -> TOTAL3 future positive",
+      condition: (row) => Number(row.TOTAL3_1m_change) > 0,
+      win: (row) => row.TOTAL3_positive_30d,
+      ret: (row) => row.future_return_TOTAL3_30d
+    },
+    {
+      name: "BTC.D 1m down -> ETH outperform BTC",
+      condition: (row) => Number(row.BTC_dominance_1m_change) < 0,
+      win: (row) => row.ETH_outperforms_BTC_30d,
+      ret: (row) => relativeReturn(row, "ETH", "BTC")
+    },
+    {
+      name: "BTC.D down + ETH.D up -> ETH outperform BTC",
+      condition: (row) => Number(row.BTC_dominance_1m_change) < 0 && Number(row.ETH_dominance_1m_change) > 0,
+      win: (row) => row.ETH_outperforms_BTC_30d,
+      ret: (row) => relativeReturn(row, "ETH", "BTC")
+    },
+    {
+      name: "ETH/BTC up + TOTAL3 up -> ETH outperform BTC",
+      condition: (row) => Number(row.ETH_BTC_1m_change) > 0 && Number(row.TOTAL3_1m_change) > 0,
+      win: (row) => row.ETH_outperforms_BTC_30d,
+      ret: (row) => relativeReturn(row, "ETH", "BTC")
+    },
+    {
+      name: "ETH/BTC up + TOTAL3 up -> SOL outperform ETH",
+      condition: (row) => Number(row.ETH_BTC_1m_change) > 0 && Number(row.TOTAL3_1m_change) > 0,
+      win: (row) => row.SOL_outperforms_ETH_30d,
+      ret: (row) => relativeReturn(row, "SOL", "ETH")
+    },
+    {
+      name: "M2 up + RRP down -> BTC/ETH/SOL average return",
+      condition: (row) => Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0,
+      win: (row) => {
+        const ret = averageAssetReturn(row);
+        return ret === null ? null : ret > 0;
+      },
+      ret: averageAssetReturn
+    },
+    {
+      name: "M2 up + RRP down + TGA down -> BTC/ETH/SOL average return",
+      condition: (row) => Number(row.M2SL_1m_change) > 0 && Number(row.RRPONTSYD_1m_change) < 0 && Number(row.TGA_1m_change) < 0,
+      win: (row) => {
+        const ret = averageAssetReturn(row);
+        return ret === null ? null : ret > 0;
+      },
+      ret: averageAssetReturn
+    },
+    {
+      name: "Macro friendly + ETH/BTC up + TOTAL3 up -> ETH outperform BTC",
+      condition: (row) =>
+        Number(row.M2SL_1m_change) > 0 &&
+        Number(row.RRPONTSYD_1m_change) < 0 &&
+        Number(row.TGA_1m_change) < 0 &&
+        Number(row.ETH_BTC_1m_change) > 0 &&
+        Number(row.TOTAL3_1m_change) > 0,
+      win: (row) => row.ETH_outperforms_BTC_30d,
+      ret: (row) => relativeReturn(row, "ETH", "BTC")
+    },
+    {
+      name: "Macro friendly + ETH/BTC up + TOTAL3 up -> SOL outperform ETH",
+      condition: (row) =>
+        Number(row.M2SL_1m_change) > 0 &&
+        Number(row.RRPONTSYD_1m_change) < 0 &&
+        Number(row.TGA_1m_change) < 0 &&
+        Number(row.ETH_BTC_1m_change) > 0 &&
+        Number(row.TOTAL3_1m_change) > 0,
+      win: (row) => row.SOL_outperforms_ETH_30d,
+      ret: (row) => relativeReturn(row, "SOL", "ETH")
+    }
+  ];
 }
 
 function summarize(args) {
@@ -541,6 +760,37 @@ function summarize(args) {
     `Stablecoin expanding -> BTC/ETH/SOL avg 30d return: ${fmtNumber(average(stablecoinReturns))}% (n=${stablecoinExpanding.length})`,
     `DXY down + QQQ up -> risk asset avg 30d return: ${fmtNumber(average(riskReturns))}% (n=${dxyDownQqqUp.length})`
   ];
+
+  const signalResults = buildSignals().map((signal) => signalStats(rows, signal));
+  lines.push("");
+  lines.push("=== SIGNAL VALIDATION ===");
+  for (const result of signalResults) {
+    lines.push("");
+    lines.push(result.name);
+    lines.push(`samples: ${result.samples}`);
+    lines.push(`win rate: ${fmtPct(result.winRate)}`);
+    lines.push(`avg return: ${fmtSignedPct(result.avgReturn)}`);
+    lines.push(`median return: ${fmtSignedPct(result.medianReturn)}`);
+    lines.push(`max drawdown: ${fmtSignedPct(result.maxDrawdown)}`);
+    lines.push(`expectancy: ${fmtSignedPct(result.expectancy)}`);
+  }
+
+  const ranked = signalResults
+    .filter((result) => result.samples > 0 && Number.isFinite(Number(result.expectancy)))
+    .sort((a, b) => Number(b.expectancy) - Number(a.expectancy))
+    .slice(0, 10);
+
+  lines.push("");
+  lines.push("=== SIGNAL RANKING TOP 10 ===");
+  if (!ranked.length) {
+    lines.push("No ranked signals with usable samples.");
+  } else {
+    ranked.forEach((result, index) => {
+      lines.push(`#${index + 1} ${result.name}`);
+      lines.push(`samples: ${result.samples}`);
+      lines.push(`expectancy: ${fmtSignedPct(result.expectancy)}`);
+    });
+  }
 
   console.log(lines.join("\n"));
 }
