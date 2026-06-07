@@ -206,6 +206,7 @@ export function PublicEndpointConsole() {
   const [tradingViewMessage, setTradingViewMessage] = useState("");
   const [tradingViewError, setTradingViewError] = useState("");
   const [tradingViewLoading, setTradingViewLoading] = useState(false);
+  const [tradingViewSyncing, setTradingViewSyncing] = useState(false);
   const [macroSummary, setMacroSummary] = useState<MacroSummaryRow[]>([]);
   const [macroMessage, setMacroMessage] = useState("");
   const [macroError, setMacroError] = useState("");
@@ -335,6 +336,35 @@ export function PublicEndpointConsole() {
       setTradingViewError(error instanceof Error ? error.message : "TradingView CSV import failed");
     } finally {
       setTradingViewLoading(false);
+    }
+  }
+
+  async function syncTradingViewLatest() {
+    setTradingViewSyncing(true);
+    setTradingViewError("");
+    setTradingViewMessage("");
+
+    try {
+      const response = await fetch(buildPublicApiUrl("/api/private/tradingview/sync"), {
+        method: "POST",
+        headers: { accept: "application/json" }
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+
+      if (payload.syncError) {
+        throw new Error(payload.syncError);
+      }
+
+      setTradingViewSummary(Array.isArray(payload.series) ? payload.series : []);
+      setTradingViewMessage(`Latest sync: ${payload.latestSync?.rows ?? 0} rows for ${payload.latestSync?.date || "today"}.`);
+    } catch (error) {
+      setTradingViewError(error instanceof Error ? error.message : "TradingView latest sync failed");
+    } finally {
+      setTradingViewSyncing(false);
     }
   }
 
@@ -558,14 +588,24 @@ export function PublicEndpointConsole() {
                     BTC.D, ETH.D, TOTAL3 CSV를 저장하고 현재 DB 적재 상태를 확인합니다.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={loadTradingViewSummary}
-                  disabled={tradingViewLoading}
-                  className="rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Refresh Storage
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={loadTradingViewSummary}
+                    disabled={tradingViewLoading || tradingViewSyncing}
+                    className="rounded-md border border-line px-3 py-2 text-sm font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Refresh Storage
+                  </button>
+                  <button
+                    type="button"
+                    onClick={syncTradingViewLatest}
+                    disabled={tradingViewLoading || tradingViewSyncing}
+                    className="rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Sync Latest
+                  </button>
+                </div>
               </div>
 
               <div className="mt-3 overflow-hidden rounded-md border border-line">
@@ -632,7 +672,7 @@ export function PublicEndpointConsole() {
                 <button
                   type="button"
                   onClick={importTradingViewCsv}
-                  disabled={tradingViewLoading || !tradingViewCsv.trim()}
+                  disabled={tradingViewLoading || tradingViewSyncing || !tradingViewCsv.trim()}
                   className="rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Import CSV

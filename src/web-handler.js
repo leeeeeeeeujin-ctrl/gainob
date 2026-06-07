@@ -209,23 +209,30 @@ function normalizeTradingViewMetric(value) {
 }
 
 function parseTradingViewCsv(text) {
-  const trimmed = String(text || "").trim();
+  const trimmed = String(text || "").replace(/^\uFEFF/, "").trim();
   if (!trimmed) return [];
   const [headerLine, ...lines] = trimmed.split(/\r?\n/);
-  const headers = splitCsvLine(headerLine).map((header) => String(header).trim().toLowerCase());
-  const dateIndex = headers.indexOf("date");
-  const closeIndex = headers.indexOf("close");
+  const headers = splitCsvLine(headerLine).map((header) => String(header).replace(/^\uFEFF/, "").trim().toLowerCase());
+  const dateIndex = headers.findIndex((header) => ["date", "time", "timestamp"].includes(header));
+  const closeIndex = headers.findIndex((header) => header === "close");
 
   if (dateIndex === -1 || closeIndex === -1) {
-    throw new Error("CSV must include date and close columns.");
+    throw new Error("CSV must include date/time/timestamp and close columns.");
   }
 
   return lines
     .filter(Boolean)
     .map((line) => {
       const values = splitCsvLine(line);
-      const date = String(values[dateIndex] || "").slice(0, 10);
-      const close = Number(values[closeIndex]);
+      const rawDate = String(values[dateIndex] || "").trim();
+      const rawClose = String(values[closeIndex] || "").trim().replace(/,/g, "");
+      const numericTimestamp = Number(rawDate);
+      const date = /^\d{4}-\d{2}-\d{2}/.test(rawDate)
+        ? rawDate.slice(0, 10)
+        : Number.isFinite(numericTimestamp)
+          ? new Date(numericTimestamp > 10_000_000_000 ? numericTimestamp : numericTimestamp * 1000).toISOString().slice(0, 10)
+          : "";
+      const close = Number(rawClose);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(close)) {
         return null;
       }
@@ -3612,11 +3619,37 @@ app.get("/api/private/tradingview/summary", async (request, response) => {
     }
     let latestSync = null;
     let syncError = null;
+    const shouldSync = String(request.query.sync || "false").toLowerCase() === "true";
+    if (shouldSync) {
+      try {
+        latestSync = await syncLatestTradingViewCurrent();
+      } catch (error) {
+        syncError = error.message;
+      }
+    }
+    response.json({ latestSync, syncError, series: await getTradingViewSeriesSummary() });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/private/tradingview/sync", async (request, response) => {
+  if (!requireSiteAuth(request, response)) return;
+
+  try {
+    if (!hasDatabaseConfig()) {
+      response.status(503).json({ error: "database_not_configured" });
+      return;
+    }
+
+    let latestSync = null;
+    let syncError = null;
     try {
       latestSync = await syncLatestTradingViewCurrent();
     } catch (error) {
       syncError = error.message;
     }
+
     response.json({ latestSync, syncError, series: await getTradingViewSeriesSummary() });
   } catch (error) {
     response.status(500).json({ error: error.message });

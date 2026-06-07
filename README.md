@@ -301,6 +301,10 @@ Import page:
 
 ```http
 GET /api/private/tradingview
+GET /api/private/tradingview/summary
+GET /api/private/tradingview/summary?sync=true
+POST /api/private/tradingview/sync
+POST /api/private/tradingview/import
 ```
 
 Supported metrics:
@@ -316,6 +320,28 @@ date,close
 2024-01-01,52.1
 2024-01-02,52.4
 ```
+
+Accepted CSV header variants:
+
+- `date,close`
+- `Date,Close`
+- `time,close`
+- `Time,Close`
+- `timestamp,close`
+
+Headers are trimmed, case-insensitive, and BOM-tolerant.
+
+TradingView storage actions:
+
+- `Refresh Storage`: read DB summary only.
+- `Sync Latest`: upsert the latest current values for `BTC_D`, `ETH_D`, and `TOTAL3` using CoinGecko current data.
+- `Import CSV`: bulk upsert pasted historical TradingView CSV rows.
+
+Historical range auto-fill note:
+
+- TradingView does not provide a stable official no-key REST endpoint for historical `CRYPTOCAP:BTC.D`, `CRYPTOCAP:ETH.D`, or `CRYPTOCAP:TOTAL3`.
+- Historical ranges should be imported from TradingView CSV export for research use.
+- Automatic latest-value maintenance is supported through `Sync Latest`; automatic historical backfill is intentionally not wired to unofficial scraping.
 
 Database setup:
 
