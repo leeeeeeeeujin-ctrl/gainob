@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState } from "react";
 import { buildPublicApiUrl } from "@/lib/api-client";
@@ -22,6 +22,13 @@ type EndpointResult = {
 };
 
 const endpointPresets: EndpointPreset[] = [
+  {
+    id: "gpt-briefing",
+    label: "GPT Briefing",
+    path: "/api/public/gpt-briefing",
+    params: { profile: "liquidity_cycle_v1", timeframe: "1h", range: "30d", format: "text", includeRaw: "false" },
+    description: "Single copy-paste briefing export for ChatGPT"
+  },
   {
     id: "liquidity-dashboard",
     label: "Liquidity Dashboard",
@@ -310,3 +317,4 @@ export function PublicEndpointConsole() {
     </section>
   );
 }
+

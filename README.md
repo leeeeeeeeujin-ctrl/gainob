@@ -44,6 +44,33 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:3000
 GET https://gainob.vercel.app/api/public/liquidity-dashboard
 ```
 
+### Public Endpoint: GPT Briefing Export
+
+```http
+GET https://gainob.vercel.app/api/public/gpt-briefing?profile=liquidity_cycle_v1
+```
+
+ChatGPT에 그대로 복사할 수 있는 단일 텍스트 브리핑을 반환합니다.
+
+Query parameters:
+
+- `profile`: `liquidity_cycle_v1` | `swing_v1` | `market_overview_v1` (default: `liquidity_cycle_v1`)
+- `timeframe`: default `1h`
+- `range`: `7d` | `30d` | `90d` (default: `30d`)
+- `format`: `text` | `json` (default: `text`)
+- `includeRaw`: `false` | `true` (default: `false`)
+
+`liquidity_cycle_v1` combines these public payloads internally:
+
+- `/api/public/liquidity-dashboard`
+- `/api/public/direction?timeframe=<timeframe>&limit=5&universe=24`
+- `/api/public/sector-flow?timeframe=<timeframe>&universe=24`
+- `/api/public/opportunity?timeframe=<timeframe>&universe=24&limit=6`
+
+The default export includes summarized values only: `current`, `change_7d`, `change_30d`, `change_90d`, and `trend`.
+
+Full time series are not included by default. Use `includeRaw=true` only when limited raw context is needed.
+
 MVP 범위:
 
 - BTC Dominance
