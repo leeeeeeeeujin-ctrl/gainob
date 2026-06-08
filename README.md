@@ -461,6 +461,22 @@ Interpretation limit:
 - Compression accuracy is diagnostic only. It measures information loss after PCA compression, not trade readiness.
 - If `TOTAL3` history is missing, the `TOTAL3_positive_60d` compression test reports zero usable samples instead of fabricating labels.
 
+## Feature Lab v3 CLI
+
+Local-only outcome analysis for checking whether PCA factors, latent clusters, and similar-day matches are connected to future returns.
+
+```bash
+node scripts/feature-lab-v3.js analyze --file=feature_lab/feature-lab-v1-tv-research.csv --date=2026-06-01
+```
+
+Outputs:
+
+- `feature_lab/factor_outcome_analysis.json`
+- `feature_lab/cluster_outcome_analysis.json`
+- `feature_lab/similar_day_outcome_analysis.json`
+
+This does not train a new prediction model. It only splits PCA factor scores into high/mid/low buckets, measures forward outcomes, and reports whether discovered market-state axes are associated with later BTC, ETH, SOL, and TOTAL3 returns.
+
 Optional local CSV import:
 
 - Put local CSV files under `backtests/input/`.

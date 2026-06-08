@@ -13,6 +13,7 @@
     "backtest:v1": "node scripts/backtest-v1.js",
     "feature-lab:v1": "node scripts/feature-lab-v1.js",
     "feature-lab:v2": "node scripts/feature-lab-v2.js",
+    "feature-lab:v3": "node scripts/feature-lab-v3.js",
     "research:tradingview": "node scripts/fetch-tradingview-research-data.js",
     "db:init": "node scripts/db-init.js"
   },
