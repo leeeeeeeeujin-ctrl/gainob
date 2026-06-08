@@ -11,3 +11,4 @@ backtests/*.json
 backtests/tmp-*/
 backtests/cache/
 feature_lab/
+research_data/

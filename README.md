@@ -231,9 +231,23 @@ Current no-key sources:
 
 Current limitation:
 
-- Historical BTC dominance, ETH dominance, and TOTAL3 are written as `null` unless optional local CSV inputs are present.
+- Historical BTC dominance, ETH dominance, and TOTAL3 are written as `null` unless optional research/local CSV inputs are present.
 - Missing source values are written as `null`; the run continues.
 - 2016+ runs are supported, but each metric starts only when its provider has data. Earlier rows remain `null`.
+
+TradingView research dataset:
+
+```bash
+npm run research:tradingview
+```
+
+This writes local research CSV files:
+
+- `research_data/btc_d_daily.csv`
+- `research_data/eth_d_daily.csv`
+- `research_data/total3_daily.csv`
+
+`backtest_v1` loads these files before `backtests/input/*.csv` and before the optional DB fallback. These files are local research artifacts and are not committed.
 
 Feature alignment and leakage policy:
 
@@ -457,6 +471,13 @@ Optional local CSV import:
 - Required columns: `date,close`
 - If a file exists, `close` is used for that date. If it does not exist, the matching field stays `null`.
 - This is local-only and does not affect production APIs.
+
+Research CSV import:
+
+- `research_data/btc_d_daily.csv` maps to `BTC_dominance`.
+- `research_data/eth_d_daily.csv` maps to `ETH_dominance`.
+- `research_data/total3_daily.csv` maps to `TOTAL3`.
+- `research_data` takes priority over `backtests/input` and DB fallback for local backtests.
 
 TradingView CSV workflow:
 

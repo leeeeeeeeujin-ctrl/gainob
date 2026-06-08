@@ -14,6 +14,7 @@ const DEFAULT_INTERVAL = "1d";
 const DEFAULT_OUT_DIR = "backtests";
 const DEFAULT_INPUT_DIR = path.join(DEFAULT_OUT_DIR, "input");
 const DEFAULT_CACHE_DIR = path.join(DEFAULT_OUT_DIR, "cache");
+const DEFAULT_RESEARCH_DIR = "research_data";
 const FEATURE_LAGS = {
   BTC_price: 1,
   ETH_price: 1,
@@ -113,6 +114,7 @@ function usage() {
     "  --symbols=BTC,ETH,SOL",
     "  --outDir=backtests",
     "  --inputDir=backtests/input",
+    "  --researchDir=research_data",
     "  --cacheDir=backtests/cache",
     "  --refreshCache=true"
   ].join("\n");
@@ -555,12 +557,18 @@ async function runBacktest(args) {
   const symbols = parseList(args.symbols, DEFAULT_SYMBOLS).map((symbol) => symbol.toUpperCase());
   const outDir = args.outDir || DEFAULT_OUT_DIR;
   const inputDir = args.inputDir || DEFAULT_INPUT_DIR;
+  const researchDir = args.researchDir || DEFAULT_RESEARCH_DIR;
   const cacheDir = args.cacheDir || DEFAULT_CACHE_DIR;
   const refreshCache = String(args.refreshCache || "false").toLowerCase() === "true";
   ensureDir(outDir);
 
   const fetchStartMs = startMs - 45 * DAY_MS;
   const fetchEndMs = endMs + Math.max(...horizons) * DAY_MS + 7 * DAY_MS;
+  const researchCsvResults = [
+    readLocalCsvSeries(researchDir, "BTC_dominance", "btc_d_daily.csv"),
+    readLocalCsvSeries(researchDir, "ETH_dominance", "eth_d_daily.csv"),
+    readLocalCsvSeries(researchDir, "TOTAL3", "total3_daily.csv")
+  ];
   const localCsvResults = [
     readLocalCsvSeries(inputDir, "BTC_dominance", "btc_dominance.csv"),
     readLocalCsvSeries(inputDir, "ETH_dominance", "eth_dominance.csv"),
@@ -575,9 +583,9 @@ async function runBacktest(args) {
     readDbSeries("macro_series", "TGA", "TGA")
   ]);
   const resolvedOptionalResults = [
-    preferSeries(localCsvResults[0], dbResults[0]),
-    preferSeries(localCsvResults[1], dbResults[1]),
-    preferSeries(localCsvResults[2], dbResults[2]),
+    preferSeries(researchCsvResults[0], preferSeries(localCsvResults[0], dbResults[0])),
+    preferSeries(researchCsvResults[1], preferSeries(localCsvResults[1], dbResults[1])),
+    preferSeries(researchCsvResults[2], preferSeries(localCsvResults[2], dbResults[2])),
     dbResults[3],
     dbResults[4],
     dbResults[5]
@@ -626,6 +634,11 @@ async function runBacktest(args) {
         featureLags: FEATURE_LAGS
       },
       localCsv: Object.fromEntries(localCsvResults.map((result) => [result.label, {
+        source: result.source,
+        rows: result.series.length,
+        error: result.error
+      }])),
+      researchCsv: Object.fromEntries(researchCsvResults.map((result) => [result.label, {
         source: result.source,
         rows: result.series.length,
         error: result.error
